@@ -6,9 +6,10 @@ access.
 ## Fixed authorization and network surface
 
 - Deployment-injected public-client Entra client ID and tenant ID; no defaults and no client secret.
-- Delegated scopes: `offline_access` plus `Mail.Read` and/or `Calendars.Read` selected from the
-  fixed manifest capabilities. No `.default`, write scope, application permission, or generic
-  proxy.
+- Requests only `offline_access` plus `Mail.Read` and/or `Calendars.Read` selected from the fixed
+  manifest capabilities. Entra can return additive Graph scopes already consented for the same
+  public client; those never become Harness capabilities. The provider exposes no write tool,
+  application permission, `.default` request, or generic proxy.
 - Identity requests: the tenant-specific `devicecode` and `token` endpoints under
   `https://login.microsoftonline.com`.
 - User verification links: HTTPS only on fixed Microsoft identity hosts.

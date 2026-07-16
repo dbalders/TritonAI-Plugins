@@ -23,7 +23,6 @@ const CAPABILITY_SCOPES = {
     "calendar.read": "Calendars.Read",
 };
 const CAPABILITY_NAMES = new Set(Object.keys(CAPABILITY_SCOPES));
-const ALLOWED_SCOPES = new Set([OFFLINE_SCOPE, ...Object.values(CAPABILITY_SCOPES)]);
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const IDENTITY_RESPONSE_BYTES = 64 * 1024;
 const GRAPH_RESPONSE_BYTES = 1024 * 1024;
@@ -119,12 +118,13 @@ function canonicalScopes(value, required) {
         .filter((scope) => scope !== OFFLINE_SCOPE && !OIDC_RESPONSE_SCOPES.has(scope))
         .toSorted();
     if (unique.length !== raw.length ||
-        unique.some((scope) => !ALLOWED_SCOPES.has(scope) && !OIDC_RESPONSE_SCOPES.has(scope)) ||
-        resourceScopes.length !== expectedScopes.length ||
-        expectedScopes.some((scope, index) => resourceScopes[index] !== scope)) {
+        expectedScopes.some((scope) => !resourceScopes.includes(scope))) {
         throw new Error("Microsoft returned an unexpected delegated-scope grant.");
     }
-    return resourceScopes;
+    // Entra access tokens contain every scope previously consented for this client and resource,
+    // even when this request asks for a narrower subset. Host capabilities remain restricted to
+    // the requested manifest scopes; additive grants never widen the provider's fixed tool surface.
+    return expectedScopes;
 }
 function capabilitiesFromScopes(scopes) {
     return Object.entries(CAPABILITY_SCOPES)

@@ -305,12 +305,19 @@ describe("MicrosoftGraphProvider contract", () => {
     });
   });
 
-  it("accepts Microsoft identity response scopes without broadening Graph access", async () => {
+  it("accepts additive previously-consented scopes without broadening Graph access", async () => {
     const secrets = memorySecrets();
     const fetchImplementation = (async (input: RequestInfo | URL) =>
       String(input).endsWith("/devicecode")
         ? jsonResponse(deviceBody())
-        : jsonResponse(tokenBody("Calendars.Read Mail.Read profile openid email"))) as typeof fetch;
+        : jsonResponse(
+            tokenBody(
+              "Calendars.Read Calendars.ReadWrite Chat.Read Chat.ReadWrite Contacts.Read " +
+                "Contacts.ReadWrite email Files.Read Files.ReadWrite Mail.Read Mail.ReadWrite " +
+                "Mail.Send offline_access Presence.Read Tasks.Read Tasks.ReadWrite User.Read " +
+                "User.ReadBasic.All profile openid",
+            ),
+          )) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
 
     const flow = await graph.connect(["mail.read", "calendar.read"], lifecycle());
@@ -325,15 +332,12 @@ describe("MicrosoftGraphProvider contract", () => {
     expect(persisted).not.toContain("openid");
     expect(persisted).not.toContain("profile");
     expect(persisted).not.toContain("email");
+    expect(persisted).not.toContain("Mail.ReadWrite");
+    expect(persisted).not.toContain("Calendars.ReadWrite");
   });
 
   it("fails closed on unexpected or missing OAuth scopes", async () => {
-    for (const scopes of [
-      "offline_access Mail.Read Mail.ReadWrite",
-      "offline_access Calendars.Read",
-      "offline_access Mail.Read Calendars.Read",
-      "offline_access Mail.Read User.Read",
-    ]) {
+    for (const scopes of ["offline_access Calendars.Read", "offline_access Mail.Read Mail.Read"]) {
       const secrets = memorySecrets();
       const fetchImplementation = (async (input: RequestInfo | URL) =>
         String(input).endsWith("/devicecode")
