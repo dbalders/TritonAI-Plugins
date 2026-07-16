@@ -6,7 +6,7 @@ access.
 ## Fixed authorization and network surface
 
 - Deployment-injected public-client Entra client ID and tenant ID; no defaults and no client secret.
-- Delegated scopes: `offline_access` plus `Mail.ReadBasic` and/or `Calendars.ReadBasic` selected from the
+- Delegated scopes: `offline_access` plus `Mail.Read` and/or `Calendars.Read` selected from the
   fixed manifest capabilities. No `.default`, write scope, application permission, or generic
   proxy.
 - Identity requests: the tenant-specific `devicecode` and `token` endpoints under

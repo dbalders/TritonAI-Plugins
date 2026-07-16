@@ -33,8 +33,8 @@ const OIDC_RESPONSE_SCOPES = new Set(["openid", "profile", "email"]);
 const REFRESH_TOKEN_FIELD = ["refresh", "token"].join("_");
 const refreshValueField = ["refresh", "Token"].join("") as "refreshToken";
 const CAPABILITY_SCOPES = {
-  "mail.read": "Mail.ReadBasic",
-  "calendar.read": "Calendars.ReadBasic",
+  "mail.read": "Mail.Read",
+  "calendar.read": "Calendars.Read",
 } as const;
 const CAPABILITY_NAMES = new Set<string>(Object.keys(CAPABILITY_SCOPES));
 const ALLOWED_SCOPES = new Set([OFFLINE_SCOPE, ...Object.values(CAPABILITY_SCOPES)]);

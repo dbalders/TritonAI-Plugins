@@ -132,7 +132,7 @@ function deviceBody(suffix = "one"): Record<string, unknown> {
   };
 }
 
-function storedCredential(scopes: ReadonlyArray<string> = ["Mail.ReadBasic"]) {
+function storedCredential(scopes: ReadonlyArray<string> = ["Mail.Read"]) {
   return new TextEncoder().encode(
     JSON.stringify({
       version: 1,
@@ -228,8 +228,8 @@ describe("MicrosoftGraphProvider contract", () => {
     );
     expect(calls[0]?.init?.redirect).toBe("error");
     expect(body).toContain("offline_access");
-    expect(body).toContain("Mail.ReadBasic");
-    expect(body).not.toContain("Calendars.ReadBasic");
+    expect(body).toContain("Mail.Read");
+    expect(body).not.toContain("Calendars.Read");
     expect(body).not.toContain(".default");
     expect(body).not.toContain("client_secret");
   });
@@ -285,7 +285,7 @@ describe("MicrosoftGraphProvider contract", () => {
       events.push(url.endsWith("/devicecode") ? "device" : "token");
       return url.endsWith("/devicecode")
         ? jsonResponse(deviceBody())
-        : jsonResponse(tokenBody("offline_access Mail.ReadBasic"));
+        : jsonResponse(tokenBody("offline_access Mail.Read"));
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
     const context = lifecycle(events);
@@ -310,9 +310,7 @@ describe("MicrosoftGraphProvider contract", () => {
     const fetchImplementation = (async (input: RequestInfo | URL) =>
       String(input).endsWith("/devicecode")
         ? jsonResponse(deviceBody())
-        : jsonResponse(
-            tokenBody("Calendars.ReadBasic Mail.ReadBasic profile openid email"),
-          )) as typeof fetch;
+        : jsonResponse(tokenBody("Calendars.Read Mail.Read profile openid email"))) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
 
     const flow = await graph.connect(["mail.read", "calendar.read"], lifecycle());
@@ -331,10 +329,10 @@ describe("MicrosoftGraphProvider contract", () => {
 
   it("fails closed on unexpected or missing OAuth scopes", async () => {
     for (const scopes of [
-      "offline_access Mail.ReadBasic Mail.ReadWrite",
-      "offline_access Calendars.ReadBasic",
-      "offline_access Mail.ReadBasic Calendars.ReadBasic",
-      "offline_access Mail.ReadBasic User.Read",
+      "offline_access Mail.Read Mail.ReadWrite",
+      "offline_access Calendars.Read",
+      "offline_access Mail.Read Calendars.Read",
+      "offline_access Mail.Read User.Read",
     ]) {
       const secrets = memorySecrets();
       const fetchImplementation = (async (input: RequestInfo | URL) =>
@@ -352,7 +350,7 @@ describe("MicrosoftGraphProvider contract", () => {
     const secrets = memorySecrets();
     const fetchImplementation = (async (input: RequestInfo | URL) => {
       if (String(input).endsWith("/devicecode")) return jsonResponse(deviceBody());
-      const body = tokenBody("offline_access Mail.ReadBasic");
+      const body = tokenBody("offline_access Mail.Read");
       delete body.scope;
       return jsonResponse(body);
     }) as typeof fetch;
@@ -500,7 +498,7 @@ describe("MicrosoftGraphProvider contract", () => {
         }
         return jsonResponse(deviceBody(String(deviceCount)));
       }
-      return jsonResponse(tokenBody("offline_access Mail.ReadBasic"));
+      return jsonResponse(tokenBody("offline_access Mail.Read"));
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
     const mailFlow = await graph.connect(["mail.read"], lifecycle());
@@ -523,7 +521,7 @@ describe("MicrosoftGraphProvider contract", () => {
       events.push("token");
       expect(String(init?.body)).toContain(storedFixtureValue);
       expect(init?.redirect).toBe("error");
-      return jsonResponse(tokenBody("offline_access Mail.ReadBasic", "rotated"));
+      return jsonResponse(tokenBody("offline_access Mail.Read", "rotated"));
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
     const context = lifecycle(events);
@@ -548,8 +546,8 @@ describe("MicrosoftGraphProvider contract", () => {
       if (String(input).endsWith("/devicecode")) return jsonResponse(deviceBody());
       tokenCalls += 1;
       return tokenCalls === 1
-        ? jsonResponse(tokenBody("offline_access Mail.ReadBasic", "refreshed"))
-        : jsonResponse(tokenBody("offline_access Calendars.ReadBasic Mail.ReadBasic", "consented"));
+        ? jsonResponse(tokenBody("offline_access Mail.Read", "refreshed"))
+        : jsonResponse(tokenBody("offline_access Calendars.Read Mail.Read", "consented"));
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
 
@@ -579,7 +577,7 @@ describe("MicrosoftGraphProvider contract", () => {
     const fetchImplementation = (async (input: RequestInfo | URL) =>
       String(input).endsWith("/devicecode")
         ? jsonResponse(deviceBody())
-        : jsonResponse(tokenBody("offline_access Mail.ReadBasic"))) as typeof fetch;
+        : jsonResponse(tokenBody("offline_access Mail.Read"))) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
     const flow = await graph.connect(["mail.read"], lifecycle());
     await expect(graph.poll(flow.flowId, lifecycle())).rejects.toThrow(/uncertain set/u);
@@ -607,9 +605,7 @@ describe("MicrosoftGraphProvider contract", () => {
       tokenCalls += 1;
       return jsonResponse(
         tokenBody(
-          tokenCalls === 1
-            ? "offline_access Mail.ReadBasic"
-            : "offline_access Calendars.ReadBasic Mail.ReadBasic",
+          tokenCalls === 1 ? "offline_access Mail.Read" : "offline_access Calendars.Read Mail.Read",
         ),
       );
     }) as typeof fetch;
@@ -675,9 +671,7 @@ describe("MicrosoftGraphProvider contract", () => {
       tokenCalls += 1;
       return jsonResponse(
         tokenBody(
-          tokenCalls === 1
-            ? "offline_access Mail.ReadBasic"
-            : "offline_access Calendars.ReadBasic Mail.ReadBasic",
+          tokenCalls === 1 ? "offline_access Mail.Read" : "offline_access Calendars.Read Mail.Read",
         ),
       );
     }) as typeof fetch;
@@ -713,15 +707,13 @@ describe("MicrosoftGraphProvider contract", () => {
       if (tokenCalls === 2) {
         markRefreshStarted();
         await refreshGate;
-        return jsonResponse(tokenBody("offline_access Mail.ReadBasic", "refreshed"));
+        return jsonResponse(tokenBody("offline_access Mail.Read", "refreshed"));
       }
       if (tokenCalls === 3) {
         markPollTokenReturned();
-        return jsonResponse(
-          tokenBody("offline_access Calendars.ReadBasic Mail.ReadBasic", "consented"),
-        );
+        return jsonResponse(tokenBody("offline_access Calendars.Read Mail.Read", "consented"));
       }
-      return jsonResponse(tokenBody("offline_access Mail.ReadBasic"));
+      return jsonResponse(tokenBody("offline_access Mail.Read"));
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
     try {
@@ -767,7 +759,7 @@ describe("MicrosoftGraphProvider contract", () => {
     const fetchImplementation = (async (input: RequestInfo | URL) =>
       String(input).endsWith("/devicecode")
         ? jsonResponse(deviceBody())
-        : jsonResponse(tokenBody("offline_access Mail.ReadBasic"))) as typeof fetch;
+        : jsonResponse(tokenBody("offline_access Mail.Read"))) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
     const flow = await graph.connect(["mail.read"], lifecycle());
     await expect(graph.poll(flow.flowId)).rejects.toThrow(/commit admission/u);
@@ -802,7 +794,7 @@ describe("MicrosoftGraphProvider contract", () => {
       if (String(input).endsWith("/devicecode")) return jsonResponse(deviceBody());
       markTokenStarted();
       await tokenGate;
-      return jsonResponse(tokenBody("offline_access Mail.ReadBasic"));
+      return jsonResponse(tokenBody("offline_access Mail.Read"));
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
     const flow = await graph.connect(["mail.read"], lifecycle());
@@ -836,7 +828,7 @@ describe("MicrosoftGraphProvider tools", () => {
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
       if (url.endsWith("/token")) {
         tokenRequests += 1;
-        return jsonResponse(tokenBody("offline_access Mail.ReadBasic", String(tokenRequests)));
+        return jsonResponse(tokenBody("offline_access Mail.Read", String(tokenRequests)));
       }
       graphRequests += 1;
       if (graphRequests === 1) return new Response(null, { status: 401 });
@@ -867,7 +859,7 @@ describe("MicrosoftGraphProvider tools", () => {
     const fetchImplementation = (async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
-      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadBasic"));
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
       markGraphStarted();
       await graphGate;
       return jsonResponse({ value: [] });
@@ -894,7 +886,7 @@ describe("MicrosoftGraphProvider tools", () => {
       const url = String(input);
       calls.push(url);
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
-      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadBasic"));
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
       return jsonResponse({
         value: [
           {
@@ -929,8 +921,7 @@ describe("MicrosoftGraphProvider tools", () => {
       const url = String(input);
       calls.push(url);
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
-      if (url.endsWith("/token"))
-        return jsonResponse(tokenBody("offline_access Calendars.ReadBasic"));
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Calendars.Read"));
       return jsonResponse({
         value: [
           {
@@ -961,8 +952,7 @@ describe("MicrosoftGraphProvider tools", () => {
     const fetchImplementation = (async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
-      if (url.endsWith("/token"))
-        return jsonResponse(tokenBody("offline_access Calendars.ReadBasic"));
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Calendars.Read"));
       return jsonResponse({
         value: [
           {
@@ -995,7 +985,7 @@ describe("MicrosoftGraphProvider tools", () => {
       const url = String(input);
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
       if (url.endsWith("/token"))
-        return jsonResponse(tokenBody("offline_access Mail.ReadBasic Calendars.ReadBasic"));
+        return jsonResponse(tokenBody("offline_access Mail.Read Calendars.Read"));
       graphCalls += 1;
       return jsonResponse({ value: [] });
     }) as typeof fetch;
@@ -1028,7 +1018,7 @@ describe("MicrosoftGraphProvider tools", () => {
     const fetchImplementation = (async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
-      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadBasic"));
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
       graphCalls += 1;
       return jsonResponse({ value: [] });
     }) as typeof fetch;
@@ -1049,7 +1039,7 @@ describe("MicrosoftGraphProvider tools", () => {
       const fetchImplementation = (async (input: RequestInfo | URL) => {
         const url = String(input);
         if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
-        if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadBasic"));
+        if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
         return jsonResponse(response);
       }) as typeof fetch;
       const graph = provider(secrets.service, fetchImplementation);
@@ -1065,7 +1055,7 @@ describe("MicrosoftGraphProvider tools", () => {
     const fetchImplementation = (async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
-      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadBasic"));
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
       return jsonResponse({ value: [], padding: "x".repeat(1024 * 1024) });
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
@@ -1082,7 +1072,7 @@ describe("MicrosoftGraphProvider tools", () => {
         return Promise.resolve(
           requests === 1
             ? jsonResponse(deviceBody())
-            : jsonResponse(tokenBody("offline_access Mail.ReadBasic")),
+            : jsonResponse(tokenBody("offline_access Mail.Read")),
         );
       }
       return new Promise<Response>((_resolve, reject) => {
@@ -1119,7 +1109,7 @@ describe("MicrosoftGraphProvider tools", () => {
         return Promise.resolve(
           requests === 1
             ? jsonResponse(deviceBody())
-            : jsonResponse(tokenBody("offline_access Mail.ReadBasic")),
+            : jsonResponse(tokenBody("offline_access Mail.Read")),
         );
       }
       markStarted();
@@ -1156,7 +1146,7 @@ describe("MicrosoftGraphProvider tools", () => {
     const fetchImplementation = (async (_input: RequestInfo | URL) => {
       requests += 1;
       if (requests === 1) return jsonResponse(deviceBody());
-      if (requests === 2) return jsonResponse(tokenBody("offline_access Mail.ReadBasic"));
+      if (requests === 2) return jsonResponse(tokenBody("offline_access Mail.Read"));
       markGraphStarted();
       await graphGate;
       return jsonResponse({ value: [] });
@@ -1195,8 +1185,8 @@ describe("MicrosoftGraphProvider tools", () => {
         return jsonResponse(
           tokenBody(
             tokenCalls === 1
-              ? "offline_access Mail.ReadBasic"
-              : "offline_access Calendars.ReadBasic Mail.ReadBasic",
+              ? "offline_access Mail.Read"
+              : "offline_access Calendars.Read Mail.Read",
           ),
         );
       }
@@ -1237,8 +1227,8 @@ describe("MicrosoftGraphProvider tools", () => {
         return jsonResponse(
           tokenBody(
             tokenCalls === 1
-              ? "offline_access Mail.ReadBasic"
-              : "offline_access Calendars.ReadBasic Mail.ReadBasic",
+              ? "offline_access Mail.Read"
+              : "offline_access Calendars.Read Mail.Read",
             String(tokenCalls),
           ),
         );
