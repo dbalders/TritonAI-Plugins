@@ -24,6 +24,12 @@ importers:
         specifier: 2.9.0
         version: 2.9.0
 
+  plugins/microsoft-365-read:
+    dependencies:
+      effect:
+        specifier: 4.0.0-beta.78
+        version: 4.0.0-beta.78
+
 packages:
 
   '@babel/code-frame@7.29.7':

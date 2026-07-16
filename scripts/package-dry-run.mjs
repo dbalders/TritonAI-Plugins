@@ -9,6 +9,7 @@ import {
   assertPackedMetadata,
   assertPackedStaticFiles,
   assertSafePackageFiles,
+  assertSourceMetadataUnchanged,
   assertStaticSourceUnchanged,
 } from "./package-artifact.mjs";
 import { discoverPluginDirectories } from "./plugin-directories.mjs";
@@ -130,7 +131,13 @@ if (pluginDirectories.length === 0) {
       const currentManifest = validateManifestV1(
         JSON.parse(await Fs.readFile(manifestPath, "utf8")),
       );
-      assertPackedMetadata(directory, packageJson, manifest, currentPackageJson, currentManifest);
+      assertSourceMetadataUnchanged(
+        directory,
+        packageJson,
+        manifest,
+        currentPackageJson,
+        currentManifest,
+      );
       const files = run("tar", ["-tzf", firstTarball]).trim().split("\n").toSorted();
       assertSafePackageFiles(directory, files, manifest);
       const archiveTypes = run("tar", ["-tvzf", firstTarball])

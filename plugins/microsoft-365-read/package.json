@@ -1,0 +1,30 @@
+{
+  "name": "@tritonai/plugin-microsoft-365-read",
+  "version": "1.0.0",
+  "private": true,
+  "files": [
+    ".tritonai-plugin",
+    "skills",
+    "dist",
+    "README.md",
+    "SECURITY.md"
+  ],
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "compatibility:harness": "node scripts/verify-harness-contract.mjs",
+    "prepack": "pnpm build",
+    "test": "vp test run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "effect": "4.0.0-beta.78"
+  }
+}

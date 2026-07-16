@@ -6,6 +6,7 @@ import {
   assertPackedMetadata,
   assertPackedStaticFiles,
   assertSafePackageFiles,
+  assertSourceMetadataUnchanged,
   assertStaticSourceUnchanged,
 } from "../scripts/package-artifact.mjs";
 import { parseSkillFrontmatter } from "../scripts/skill-frontmatter.mjs";
@@ -119,9 +120,17 @@ test("accepts only declared package metadata and skill roots", () => {
 });
 
 test("rejects packed metadata that differs from reviewed source", () => {
-  const packageJson = { name: "@tritonai/plugin-fixture-reader", version: "1.0.0" };
+  const packageJson = {
+    name: "@tritonai/plugin-fixture-reader",
+    version: "1.0.0",
+    scripts: { prepack: "pnpm build", test: "vp test run" },
+  };
+  const packedPackageJson = {
+    ...packageJson,
+    scripts: { test: "vp test run" },
+  };
   assert.doesNotThrow(() =>
-    assertPackedMetadata("fixture-reader", packageJson, manifest, packageJson, manifest),
+    assertPackedMetadata("fixture-reader", packageJson, manifest, packedPackageJson, manifest),
   );
   assert.throws(
     () =>
@@ -129,18 +138,36 @@ test("rejects packed metadata that differs from reviewed source", () => {
         "fixture-reader",
         packageJson,
         manifest,
-        { ...packageJson, version: "2.0.0" },
+        { ...packedPackageJson, version: "2.0.0" },
         manifest,
       ),
     /package.json differs/u,
   );
   assert.throws(
     () =>
-      assertPackedMetadata("fixture-reader", packageJson, manifest, packageJson, {
+      assertPackedMetadata("fixture-reader", packageJson, manifest, packedPackageJson, {
         ...manifest,
         version: "2.0.0",
       }),
     /manifest differs/u,
+  );
+  assert.throws(
+    () => assertPackedMetadata("fixture-reader", packageJson, manifest, packageJson, manifest),
+    /must not retain the prepack/u,
+  );
+  assert.doesNotThrow(() =>
+    assertSourceMetadataUnchanged("fixture-reader", packageJson, manifest, packageJson, manifest),
+  );
+  assert.throws(
+    () =>
+      assertSourceMetadataUnchanged(
+        "fixture-reader",
+        packageJson,
+        manifest,
+        { ...packageJson, scripts: { test: "vp test run" } },
+        manifest,
+      ),
+    /changed reviewed source package.json/u,
   );
 });
 
