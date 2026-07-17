@@ -1020,6 +1020,14 @@ describe("MicrosoftGraphProvider tools", () => {
             location: { displayName: "Online" },
             organizer: { emailAddress: { name: "Person", address: "person@example.edu" } },
           },
+          {
+            id: "event-2",
+            subject: "System event",
+            start: { dateTime: "2026-07-15T11:00:00", timeZone: "Pacific Standard Time" },
+            end: { dateTime: "2026-07-15T12:00:00", timeZone: "Pacific Standard Time" },
+            location: null,
+            organizer: { emailAddress: null },
+          },
         ],
       });
     }) as typeof fetch;
@@ -1029,7 +1037,10 @@ describe("MicrosoftGraphProvider tools", () => {
       start: "2026-07-15T00:00:00-07:00",
       end: "2026-07-16T00:00:00-07:00",
     });
-    expect(result).toMatchObject({ events: [{ id: "event-1" }], hasMore: false });
+    expect(result).toMatchObject({
+      events: [{ id: "event-1" }, { id: "event-2", organizer: null }],
+      hasMore: false,
+    });
     expect(calls.at(-1)?.startsWith("https://graph.microsoft.com/v1.0/me/calendarView?")).toBe(
       true,
     );

@@ -562,7 +562,10 @@ function calendarResult(value: Record<string, unknown>) {
       item.location === null || item.location === undefined ? null : asRecord(item.location);
     const organizer =
       item.organizer === null || item.organizer === undefined ? null : asRecord(item.organizer);
-    const emailAddress = organizer === null ? null : asRecord(organizer.emailAddress);
+    const emailAddress =
+      organizer === null || organizer.emailAddress === null || organizer.emailAddress === undefined
+        ? null
+        : asRecord(organizer.emailAddress);
     return {
       id: boundedString(item.id, 512),
       subject: boundedOptionalString(item.subject, 1_000),
