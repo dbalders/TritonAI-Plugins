@@ -953,6 +953,13 @@ describe("MicrosoftGraphProvider tools", () => {
             receivedDateTime: "2026-07-15T10:00:00Z",
             isRead: false,
           },
+          {
+            id: "message-2",
+            subject: "System notice",
+            from: { emailAddress: null },
+            receivedDateTime: "2026-07-15T11:00:00Z",
+            isRead: true,
+          },
         ],
         "@odata.nextLink": "https://graph.microsoft.com/v1.0/ignored",
       });
@@ -963,7 +970,10 @@ describe("MicrosoftGraphProvider tools", () => {
       query: 'budget "Q4"',
       limit: 5,
     });
-    expect(result).toMatchObject({ messages: [{ id: "message-1" }], hasMore: true });
+    expect(result).toMatchObject({
+      messages: [{ id: "message-1" }, { id: "message-2", from: null }],
+      hasMore: true,
+    });
     expect(calls.filter((url) => url.includes("/me/messages?"))).toHaveLength(1);
     const graphUrl = calls.at(-1) ?? "";
     expect(graphUrl.startsWith("https://graph.microsoft.com/v1.0/me/messages?")).toBe(true);

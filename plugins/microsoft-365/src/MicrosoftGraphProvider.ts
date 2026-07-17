@@ -517,7 +517,10 @@ function mailResult(value: Record<string, unknown>, limit: number) {
   const messages = value.value.map((raw) => {
     const item = asRecord(raw);
     const from = item.from === null || item.from === undefined ? null : asRecord(item.from);
-    const emailAddress = from === null ? null : asRecord(from.emailAddress);
+    const emailAddress =
+      from === null || from.emailAddress === null || from.emailAddress === undefined
+        ? null
+        : asRecord(from.emailAddress);
     return {
       id: boundedString(item.id, 512),
       subject: boundedOptionalString(item.subject, 1_000),
