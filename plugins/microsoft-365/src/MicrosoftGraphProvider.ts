@@ -17,7 +17,7 @@ import {
 
 /** Package-local suffix; the Harness adds the collision-free package namespace. */
 export const MICROSOFT_GRAPH_SECRET_SUFFIX = "oauth";
-export const MICROSOFT_GRAPH_PROVIDER_ID = "microsoft-graph-read";
+export const MICROSOFT_GRAPH_PROVIDER_ID = "microsoft-graph";
 
 const GRAPH_ORIGIN = "https://graph.microsoft.com";
 const GRAPH_API_ROOT = `${GRAPH_ORIGIN}/v1.0`;
@@ -34,7 +34,13 @@ const REFRESH_TOKEN_FIELD = ["refresh", "token"].join("_");
 const refreshValueField = ["refresh", "Token"].join("") as "refreshToken";
 const CAPABILITY_SCOPES = {
   "mail.read": "Mail.Read",
+  "mail.draft.create": "Mail.ReadWrite",
   "calendar.read": "Calendars.Read",
+  "calendar.write": "Calendars.ReadWrite",
+  "chat.read": "Chat.Read",
+  // The tenant already approved Chat.ReadWrite for this public client. The provider's fixed tool
+  // surface remains send-only for this capability and never exposes chat create/edit/delete.
+  "chat.write": "Chat.ReadWrite",
 } as const;
 const CAPABILITY_NAMES = new Set<string>(Object.keys(CAPABILITY_SCOPES));
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
@@ -42,6 +48,9 @@ const IDENTITY_RESPONSE_BYTES = 64 * 1024;
 const GRAPH_RESPONSE_BYTES = 1024 * 1024;
 const MAX_TOKEN_CHARS = 16_384;
 const MAX_CALENDAR_RANGE_MS = 31 * 86_400_000;
+const MAX_BODY_CHARS = 50_000;
+const MAX_CHAT_BODY_CHARS = 20_000;
+const MAX_CHAT_REQUEST_BYTES = 28 * 1024;
 const ACCESS_TOKEN_SKEW_MS = 60_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -79,8 +88,122 @@ const CalendarEventsInput = Schema.Struct({
   ),
 });
 
+const EmailAddress = Schema.String.check(
+  Schema.isMinLength(3),
+  Schema.isMaxLength(320),
+  Schema.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/u),
+).annotate({ description: "A single email address." });
+
+const RecipientList = Schema.Array(EmailAddress).check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(25),
+);
+
+const OptionalRecipientList = Schema.Array(EmailAddress).check(Schema.isMaxLength(25));
+
+const MailDraftCreateInput = Schema.Struct({
+  to: RecipientList.annotate({ description: "Primary recipients (1-25)." }),
+  cc: Schema.optionalKey(OptionalRecipientList.annotate({ description: "CC recipients (0-25)." })),
+  bcc: Schema.optionalKey(
+    OptionalRecipientList.annotate({ description: "BCC recipients (0-25)." }),
+  ),
+  subject: Schema.String.check(Schema.isMaxLength(255)).annotate({
+    description: "Draft subject (maximum 255 characters).",
+  }),
+  body: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_BODY_CHARS)).annotate({
+    description: "Plain-text draft body.",
+  }),
+});
+
+const Attendee = Schema.Struct({
+  address: EmailAddress,
+  type: Schema.Literals(["required", "optional", "resource"]).annotate({
+    description: "Attendee role to preserve in Microsoft 365.",
+  }),
+  name: Schema.optionalKey(
+    Schema.String.check(Schema.isMaxLength(512)).annotate({
+      description: "Optional attendee display name.",
+    }),
+  ),
+});
+
+const AttendeeList = Schema.Array(Attendee).check(Schema.isMaxLength(50));
+
+const CalendarEventFields = {
+  subject: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255)).annotate({
+    description: "Event subject.",
+  }),
+  start: Schema.String.check(Schema.isMaxLength(64)).annotate({
+    description: "Inclusive ISO 8601 start timestamp.",
+  }),
+  end: Schema.String.check(Schema.isMaxLength(64)).annotate({
+    description: "Exclusive ISO 8601 end timestamp.",
+  }),
+  location: Schema.optionalKey(
+    Schema.String.check(Schema.isMaxLength(1_000)).annotate({
+      description: "Optional location display name.",
+    }),
+  ),
+  body: Schema.optionalKey(
+    Schema.String.check(Schema.isMaxLength(MAX_BODY_CHARS)).annotate({
+      description: "Optional plain-text event body.",
+    }),
+  ),
+  attendees: Schema.optionalKey(
+    AttendeeList.annotate({ description: "Optional complete attendee list (0-50)." }),
+  ),
+};
+
+const CalendarEventCreateInput = Schema.Struct(CalendarEventFields);
+
+const CalendarEventUpdateInput = Schema.Struct({
+  eventId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+    description: "Exact Microsoft 365 event identifier.",
+  }),
+  subject: Schema.optionalKey(CalendarEventFields.subject),
+  start: Schema.optionalKey(CalendarEventFields.start),
+  end: Schema.optionalKey(CalendarEventFields.end),
+  location: CalendarEventFields.location,
+  attendees: CalendarEventFields.attendees,
+});
+
+const ChatListInput = Schema.Struct({
+  limit: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 25 })).annotate({
+      description: "Maximum number of chats (1-25).",
+    }),
+  ),
+});
+
+const ChatMessagesInput = Schema.Struct({
+  chatId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+    description: "Exact Microsoft 365 chat identifier.",
+  }),
+  limit: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })).annotate({
+      description: "Maximum number of messages (1-50).",
+    }),
+  ),
+});
+
+const ChatMessageSendInput = Schema.Struct({
+  chatId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+    description: "Exact destination Microsoft 365 chat identifier.",
+  }),
+  body: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(MAX_CHAT_BODY_CHARS),
+  ).annotate({ description: "Plain-text chat message whose encoded request is at most 28 KB." }),
+});
+
 const decodeMailSearchInput = Schema.decodeUnknownPromise(MailSearchInput);
 const decodeCalendarEventsInput = Schema.decodeUnknownPromise(CalendarEventsInput);
+const decodeMailDraftCreateInput = Schema.decodeUnknownPromise(MailDraftCreateInput);
+const decodeCalendarEventCreateInput = Schema.decodeUnknownPromise(CalendarEventCreateInput);
+const decodeCalendarEventUpdateInput = Schema.decodeUnknownPromise(CalendarEventUpdateInput);
+const decodeChatListInput = Schema.decodeUnknownPromise(ChatListInput);
+const decodeChatMessagesInput = Schema.decodeUnknownPromise(ChatMessagesInput);
+const decodeChatMessageSendInput = Schema.decodeUnknownPromise(ChatMessageSendInput);
 
 export const MICROSOFT_GRAPH_TOOLS = [
   {
@@ -94,6 +217,15 @@ export const MICROSOFT_GRAPH_TOOLS = [
     openWorld: true,
   },
   {
+    name: "microsoft365.mail.draft.create",
+    description: "Create one unsent plain-text Microsoft 365 mail draft through a fixed endpoint.",
+    input: MailDraftCreateInput,
+    readOnly: false,
+    destructive: false,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
     name: "microsoft365.calendar.events",
     description:
       "Read Microsoft 365 calendar events through the fixed calendar-view endpoint in a bounded timestamp range.",
@@ -101,6 +233,52 @@ export const MICROSOFT_GRAPH_TOOLS = [
     readOnly: true,
     destructive: false,
     idempotent: true,
+    openWorld: true,
+  },
+  {
+    name: "microsoft365.calendar.event.create",
+    description: "Create one Microsoft 365 calendar event through the fixed events endpoint.",
+    input: CalendarEventCreateInput,
+    readOnly: false,
+    destructive: false,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "microsoft365.calendar.event.update",
+    description:
+      "Update the subject, time, location, or attendee list on one Microsoft 365 calendar event.",
+    input: CalendarEventUpdateInput,
+    readOnly: false,
+    destructive: true,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "microsoft365.chat.list",
+    description: "List a bounded number of Microsoft 365 chats through the fixed chats endpoint.",
+    input: ChatListInput,
+    readOnly: true,
+    destructive: false,
+    idempotent: true,
+    openWorld: true,
+  },
+  {
+    name: "microsoft365.chat.messages",
+    description: "Read bounded message history from one exact Microsoft 365 chat.",
+    input: ChatMessagesInput,
+    readOnly: true,
+    destructive: false,
+    idempotent: true,
+    openWorld: true,
+  },
+  {
+    name: "microsoft365.chat.message.send",
+    description: "Send one plain-text message to one existing Microsoft 365 chat.",
+    input: ChatMessageSendInput,
+    readOnly: false,
+    destructive: false,
+    idempotent: false,
     openWorld: true,
   },
 ] as const satisfies ReadonlyArray<IntegrationProviderTool>;
@@ -131,7 +309,7 @@ type Fetch = typeof globalThis.fetch;
 function validateEntraIdentifier(value: string, label: string): string {
   const normalized = value.trim();
   if (!ENTRA_IDENTIFIER.test(normalized)) {
-    throw new Error(`Microsoft 365 Read requires a valid Entra ${label}.`);
+    throw new Error(`Microsoft 365 requires a valid Entra ${label}.`);
   }
   return normalized;
 }
@@ -399,6 +577,176 @@ function calendarResult(value: Record<string, unknown>) {
   return { events, hasMore: typeof value["@odata.nextLink"] === "string" };
 }
 
+function graphEmailAddress(value: unknown) {
+  const item = asRecord(value);
+  return {
+    name: boundedOptionalString(item.name, 512),
+    address: boundedString(item.address, 320),
+  };
+}
+
+function graphRecipients(value: unknown): ReadonlyArray<ReturnType<typeof graphEmailAddress>> {
+  if (!Array.isArray(value) || value.length > 50) {
+    throw new Error("Microsoft Graph returned an invalid recipient response.");
+  }
+  return value.map((raw) => graphEmailAddress(asRecord(raw).emailAddress));
+}
+
+function mailDraftResult(value: Record<string, unknown>) {
+  if (value.isDraft !== true) {
+    throw new Error("Microsoft Graph did not return an unsent mail draft.");
+  }
+  return {
+    id: boundedString(value.id, 512),
+    subject: boundedOptionalString(value.subject, 998),
+    to: graphRecipients(value.toRecipients),
+    cc: graphRecipients(value.ccRecipients),
+    bcc: graphRecipients(value.bccRecipients),
+    isDraft: true,
+    webLink: boundedOptionalString(value.webLink, 2_048),
+  };
+}
+
+function graphAttendees(value: unknown) {
+  if (!Array.isArray(value) || value.length > 500) {
+    throw new Error("Microsoft Graph returned an invalid attendee response.");
+  }
+  return value.map((raw) => {
+    const item = asRecord(raw);
+    return {
+      emailAddress: graphEmailAddress(item.emailAddress),
+      type: boundedString(item.type, 32),
+    };
+  });
+}
+
+function eventResult(value: Record<string, unknown>) {
+  const location =
+    value.location === null || value.location === undefined ? null : asRecord(value.location);
+  return {
+    id: boundedString(value.id, 512),
+    subject: boundedOptionalString(value.subject, 1_000),
+    start: graphDateTime(value.start),
+    end: graphDateTime(value.end),
+    location: location === null ? null : boundedOptionalString(location.displayName, 1_000),
+    attendees: graphAttendees(value.attendees),
+    webLink: boundedOptionalString(value.webLink, 2_048),
+  };
+}
+
+function chatsResult(value: Record<string, unknown>, limit: number) {
+  if (!Array.isArray(value.value) || value.value.length > limit) {
+    throw new Error("Microsoft Graph returned an invalid chat response.");
+  }
+  return {
+    chats: value.value.map((raw) => {
+      const item = asRecord(raw);
+      return {
+        id: boundedString(item.id, 512),
+        topic: boundedOptionalString(item.topic, 1_000),
+        chatType: boundedString(item.chatType, 64),
+        createdDateTime: boundedOptionalString(item.createdDateTime, 64),
+        lastUpdatedDateTime: boundedOptionalString(item.lastUpdatedDateTime, 64),
+        webUrl: boundedOptionalString(item.webUrl, 2_048),
+      };
+    }),
+    hasMore: typeof value["@odata.nextLink"] === "string",
+  };
+}
+
+function chatMessageResult(value: Record<string, unknown>) {
+  const from = value.from === null || value.from === undefined ? null : asRecord(value.from);
+  const user = from?.user === null || from?.user === undefined ? null : asRecord(from.user);
+  const body = asRecord(value.body);
+  const contentType = boundedString(body.contentType, 16);
+  if (contentType !== "text" && contentType !== "html") {
+    throw new Error("Microsoft Graph returned an invalid chat body type.");
+  }
+  return {
+    id: boundedString(value.id, 512),
+    createdDateTime: boundedString(value.createdDateTime, 64),
+    lastModifiedDateTime: boundedOptionalString(value.lastModifiedDateTime, 64),
+    from:
+      user === null
+        ? null
+        : {
+            id: boundedOptionalString(user.id, 512),
+            displayName: boundedOptionalString(user.displayName, 512),
+          },
+    body: {
+      contentType,
+      content: boundedString(body.content, MAX_BODY_CHARS),
+    },
+    webUrl: boundedOptionalString(value.webUrl, 2_048),
+  };
+}
+
+function chatMessagesResult(value: Record<string, unknown>, limit: number) {
+  if (!Array.isArray(value.value) || value.value.length > limit) {
+    throw new Error("Microsoft Graph returned an invalid chat-message response.");
+  }
+  return {
+    messages: value.value.map((raw) => chatMessageResult(asRecord(raw))),
+    hasMore: typeof value["@odata.nextLink"] === "string",
+  };
+}
+
+function recipients(addresses: ReadonlyArray<string>) {
+  return addresses.map((address) => ({ emailAddress: { address } }));
+}
+
+function attendees(
+  values: ReadonlyArray<{
+    readonly address: string;
+    readonly name?: string;
+    readonly type: "required" | "optional" | "resource";
+  }>,
+) {
+  return values.map(({ address, name, type }) => ({
+    emailAddress: { address, ...(name === undefined ? {} : { name }) },
+    type,
+  }));
+}
+
+function graphUtcDateTime(value: string) {
+  return { dateTime: isoTimestamp(value).replace(/Z$/u, ""), timeZone: "UTC" };
+}
+
+function calendarRange(startValue: string, endValue: string) {
+  const start = isoTimestamp(startValue);
+  const end = isoTimestamp(endValue);
+  const range = Date.parse(end) - Date.parse(start);
+  if (range <= 0 || range > MAX_CALENDAR_RANGE_MS) {
+    throw new IntegrationProviderPublicError(
+      "Calendar range must be positive and no longer than 31 days.",
+    );
+  }
+  return { start, end };
+}
+
+function eventBody(values: {
+  readonly subject: string;
+  readonly start: string;
+  readonly end: string;
+  readonly location?: string;
+  readonly body?: string;
+  readonly attendees?: ReadonlyArray<{
+    readonly address: string;
+    readonly name?: string;
+    readonly type: "required" | "optional" | "resource";
+  }>;
+}) {
+  calendarRange(values.start, values.end);
+  return {
+    subject: values.subject,
+    start: graphUtcDateTime(values.start),
+    end: graphUtcDateTime(values.end),
+    ...(values.location === undefined ? {} : { location: { displayName: values.location } }),
+    ...(values.body === undefined ? {} : { body: { contentType: "text", content: values.body } }),
+    ...(values.attendees === undefined ? {} : { attendees: attendees(values.attendees) }),
+  };
+}
+
 export class MicrosoftGraphProvider implements IntegrationProvider {
   readonly id = MICROSOFT_GRAPH_PROVIDER_ID;
   readonly tools = MICROSOFT_GRAPH_TOOLS;
@@ -429,7 +777,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
     this.#clientId = validateEntraIdentifier(configuration.clientId, "client ID");
     const tenantId = validateEntraIdentifier(configuration.tenantId, "tenant ID");
     if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 30_000) {
-      throw new Error("Microsoft 365 Read requires a bounded request timeout.");
+      throw new Error("Microsoft 365 requires a bounded request timeout.");
     }
     this.#loginRoot = `${IDENTITY_ORIGIN}/${tenantId}/oauth2/v2.0`;
     this.#fetch = fetchImplementation;
@@ -442,7 +790,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
     maximumBytes: number,
     inspectResponse?: (response: Response) => void,
   ) {
-    if (this.#closed) throw new Error("Microsoft 365 Read is closed.");
+    if (this.#closed) throw new Error("Microsoft 365 is closed.");
     const controller = new AbortController();
     this.#requestControllers.add(controller);
     const timeoutSignal = AbortSignal.timeout(this.#requestTimeoutMs);
@@ -530,7 +878,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         state: "error",
         accountLabel: null,
         grantedCapabilities: [],
-        message: "The Microsoft 365 Read provider is closed.",
+        message: "The Microsoft 365 provider is closed.",
       };
     }
     if (this.#disconnecting) {
@@ -538,7 +886,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         state: "error",
         accountLabel: null,
         grantedCapabilities: [],
-        message: "Microsoft 365 Read is disconnecting.",
+        message: "Microsoft 365 is disconnecting.",
       };
     }
     const generation = this.#generation;
@@ -550,7 +898,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
           state: "error",
           accountLabel: null,
           grantedCapabilities: [],
-          message: "The Microsoft 365 Read provider is closed.",
+          message: "The Microsoft 365 provider is closed.",
         };
       }
       if (this.#uncertainCredentialState) {
@@ -589,7 +937,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         state: "connected",
         accountLabel: null,
         grantedCapabilities: capabilitiesFromScopes(credential.grantedScopes),
-        message: "Connected with read-only delegated access.",
+        message: "Connected with delegated access for the selected capabilities.",
       };
     } catch {
       return {
@@ -607,7 +955,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
     submission?: IntegrationConnectionSubmission,
   ): Promise<IntegrationDeviceCodeConnectResult> {
     if (submission !== undefined) throw new Error("Microsoft device sign-in rejects submissions.");
-    if (this.#closed || this.#disconnecting) throw new Error("Microsoft 365 Read is unavailable.");
+    if (this.#closed || this.#disconnecting) throw new Error("Microsoft 365 is unavailable.");
     if (this.#uncertainCredentialState) throw new Error("Microsoft credential state is uncertain.");
     if (context?.signal.aborted) throw new Error("Microsoft sign-in was cancelled.");
     if (
@@ -615,7 +963,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
       new Set(capabilities).size !== capabilities.length ||
       capabilities.some((capability) => !CAPABILITY_NAMES.has(capability))
     ) {
-      throw new Error("Unsupported Microsoft 365 Read capability.");
+      throw new Error("Unsupported Microsoft 365 capability.");
     }
     const generation = this.#generation;
     const connectAttempt = ++this.#connectAttempt;
@@ -786,7 +1134,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
       return {
         state: "connected",
         retryAfterSeconds: null,
-        message: "Microsoft 365 Read is connected.",
+        message: "Microsoft 365 is connected.",
       };
     } catch (error) {
       if (
@@ -806,8 +1154,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
     return this.#serializeCredential(async () => {
       if (this.#uncertainCredentialState)
         throw new Error("Microsoft credential state is uncertain.");
-      if (this.#closed || this.#disconnecting)
-        throw new Error("Microsoft 365 Read is unavailable.");
+      if (this.#closed || this.#disconnecting) throw new Error("Microsoft 365 is unavailable.");
       const access = this.#accessToken;
       if (access && access.expiresAt - ACCESS_TOKEN_SKEW_MS > Date.now()) return;
       const credential = await this.#readCredential(context?.signal);
@@ -884,10 +1231,44 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
     });
   }
 
-  async #graph(path: string, accessToken: string, signal?: AbortSignal) {
+  #assertInvocationCurrent(generation: number) {
+    if (
+      this.#closed ||
+      this.#disconnecting ||
+      this.#uncertainCredentialState ||
+      generation !== this.#generation
+    ) {
+      throw new Error("Microsoft access was revoked or became uncertain.");
+    }
+  }
+
+  #requireCapability(access: AccessToken, capability: keyof typeof CAPABILITY_SCOPES) {
+    if (!access.grantedScopes.includes(CAPABILITY_SCOPES[capability])) {
+      throw new IntegrationProviderPublicError(
+        `Microsoft 365 ${capability} access is not granted.`,
+      );
+    }
+  }
+
+  async #graph(
+    path: string,
+    accessToken: string,
+    options: {
+      readonly method?: "GET" | "POST" | "PATCH";
+      readonly body?: unknown;
+      readonly signal?: AbortSignal;
+    } = {},
+  ) {
+    const headers: Record<string, string> = { authorization: `Bearer ${accessToken}` };
+    if (options.body !== undefined) headers["content-type"] = "application/json";
     const { response, json } = await this.#request(
       `${GRAPH_API_ROOT}${path}`,
-      { headers: { authorization: `Bearer ${accessToken}` }, signal: signal ?? null },
+      {
+        method: options.method ?? "GET",
+        headers,
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+        signal: options.signal ?? null,
+      },
       GRAPH_RESPONSE_BYTES,
       (received) => {
         if (received.status === 401 && this.#accessToken?.value === accessToken) {
@@ -906,20 +1287,18 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
     context?: IntegrationInvocationContext,
   ): Promise<unknown> {
     if (this.#closed || this.#disconnecting || this.#uncertainCredentialState) {
-      throw new Error("Microsoft 365 Read is unavailable.");
+      throw new Error("Microsoft 365 is unavailable.");
     }
     if (context?.signal.aborted) throw new Error("Microsoft request was cancelled.");
     const access = this.#accessToken;
     if (!access || access.expiresAt - ACCESS_TOKEN_SKEW_MS <= Date.now()) {
       throw new IntegrationProviderPublicError(
-        "The Microsoft 365 Read session needs a safe refresh. Disconnect and reconnect.",
+        "The Microsoft 365 session needs a safe refresh. Disconnect and reconnect.",
       );
     }
     const generation = this.#generation;
     if (toolName === "microsoft365.mail.search") {
-      if (!access.grantedScopes.includes(CAPABILITY_SCOPES["mail.read"])) {
-        throw new IntegrationProviderPublicError("Microsoft 365 Read mail access is not granted.");
-      }
+      this.#requireCapability(access, "mail.read");
       const values = await decodeMailSearchInput(input, {
         errors: "all",
         onExcessProperty: "error",
@@ -933,41 +1312,43 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
       if (query) {
         params.set("$search", '"' + query.replaceAll('"', " ").replaceAll("\\", " ") + '"');
       } else params.set("$orderby", "receivedDateTime desc");
-      const result = await this.#graph(
-        `/me/messages?${params.toString()}`,
-        access.value,
-        context?.signal,
-      );
-      if (
-        this.#closed ||
-        this.#disconnecting ||
-        this.#uncertainCredentialState ||
-        generation !== this.#generation
-      ) {
-        throw new Error("Microsoft access was revoked or became uncertain.");
-      }
+      const result = await this.#graph(`/me/messages?${params.toString()}`, access.value, {
+        signal: context?.signal,
+      });
+      this.#assertInvocationCurrent(generation);
       return mailResult(result, limit);
     }
+    if (toolName === "microsoft365.mail.draft.create") {
+      this.#requireCapability(access, "mail.draft.create");
+      const values = await decodeMailDraftCreateInput(input, {
+        errors: "all",
+        onExcessProperty: "error",
+      });
+      const result = await this.#graph("/me/messages", access.value, {
+        method: "POST",
+        body: {
+          subject: values.subject,
+          body: { contentType: "text", content: values.body },
+          toRecipients: recipients(values.to),
+          ccRecipients: recipients(values.cc ?? []),
+          bccRecipients: recipients(values.bcc ?? []),
+        },
+        signal: context?.signal,
+      });
+      this.#assertInvocationCurrent(generation);
+      return mailDraftResult(result);
+    }
     if (toolName === "microsoft365.calendar.events") {
-      if (!access.grantedScopes.includes(CAPABILITY_SCOPES["calendar.read"])) {
-        throw new IntegrationProviderPublicError(
-          "Microsoft 365 Read calendar access is not granted.",
-        );
-      }
+      this.#requireCapability(access, "calendar.read");
       const values = await decodeCalendarEventsInput(input, {
         errors: "all",
         onExcessProperty: "error",
       });
-      const start = isoTimestamp(values.start ?? new Date().toISOString());
-      const end = isoTimestamp(
-        values.end ?? new Date(Date.parse(start) + 7 * 86_400_000).toISOString(),
+      const defaultStart = isoTimestamp(values.start ?? new Date().toISOString());
+      const { start, end } = calendarRange(
+        defaultStart,
+        values.end ?? new Date(Date.parse(defaultStart) + 7 * 86_400_000).toISOString(),
       );
-      const range = Date.parse(end) - Date.parse(start);
-      if (range <= 0 || range > MAX_CALENDAR_RANGE_MS) {
-        throw new IntegrationProviderPublicError(
-          "Calendar range must be positive and no longer than 31 days.",
-        );
-      }
       const params = new URLSearchParams({
         startDateTime: start,
         endDateTime: end,
@@ -975,22 +1356,123 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         $top: "50",
         $orderby: "start/dateTime",
       });
-      const result = await this.#graph(
-        `/me/calendarView?${params.toString()}`,
-        access.value,
-        context?.signal,
-      );
-      if (
-        this.#closed ||
-        this.#disconnecting ||
-        this.#uncertainCredentialState ||
-        generation !== this.#generation
-      ) {
-        throw new Error("Microsoft access was revoked or became uncertain.");
-      }
+      const result = await this.#graph(`/me/calendarView?${params.toString()}`, access.value, {
+        signal: context?.signal,
+      });
+      this.#assertInvocationCurrent(generation);
       return calendarResult(result);
     }
-    throw new Error("Unsupported Microsoft 365 Read tool.");
+    if (toolName === "microsoft365.calendar.event.create") {
+      this.#requireCapability(access, "calendar.write");
+      const values = await decodeCalendarEventCreateInput(input, {
+        errors: "all",
+        onExcessProperty: "error",
+      });
+      const result = await this.#graph("/me/events", access.value, {
+        method: "POST",
+        body: eventBody(values),
+        signal: context?.signal,
+      });
+      this.#assertInvocationCurrent(generation);
+      return eventResult(result);
+    }
+    if (toolName === "microsoft365.calendar.event.update") {
+      this.#requireCapability(access, "calendar.write");
+      const values = await decodeCalendarEventUpdateInput(input, {
+        errors: "all",
+        onExcessProperty: "error",
+      });
+      const hasStart = values.start !== undefined;
+      const hasEnd = values.end !== undefined;
+      if (hasStart !== hasEnd) {
+        throw new IntegrationProviderPublicError(
+          "Calendar event updates must provide start and end together.",
+        );
+      }
+      const hasMutation = [values.subject, values.start, values.location, values.attendees].some(
+        (value) => value !== undefined,
+      );
+      if (!hasMutation) {
+        throw new IntegrationProviderPublicError(
+          "Calendar event update must include at least one changed field.",
+        );
+      }
+      if (values.start !== undefined && values.end !== undefined) {
+        calendarRange(values.start, values.end);
+      }
+      const body = {
+        ...(values.subject === undefined ? {} : { subject: values.subject }),
+        ...(values.start === undefined ? {} : { start: graphUtcDateTime(values.start) }),
+        ...(values.end === undefined ? {} : { end: graphUtcDateTime(values.end) }),
+        ...(values.location === undefined ? {} : { location: { displayName: values.location } }),
+        ...(values.attendees === undefined ? {} : { attendees: attendees(values.attendees) }),
+      };
+      const result = await this.#graph(
+        `/me/events/${encodeURIComponent(values.eventId)}`,
+        access.value,
+        { method: "PATCH", body, signal: context?.signal },
+      );
+      this.#assertInvocationCurrent(generation);
+      return eventResult(result);
+    }
+    if (toolName === "microsoft365.chat.list") {
+      this.#requireCapability(access, "chat.read");
+      const values = await decodeChatListInput(input, {
+        errors: "all",
+        onExcessProperty: "error",
+      });
+      const limit = values.limit ?? 10;
+      const params = new URLSearchParams({ $top: String(limit) });
+      const result = await this.#graph(`/me/chats?${params.toString()}`, access.value, {
+        signal: context?.signal,
+      });
+      this.#assertInvocationCurrent(generation);
+      return chatsResult(result, limit);
+    }
+    if (toolName === "microsoft365.chat.messages") {
+      this.#requireCapability(access, "chat.read");
+      const values = await decodeChatMessagesInput(input, {
+        errors: "all",
+        onExcessProperty: "error",
+      });
+      const limit = values.limit ?? 20;
+      const params = new URLSearchParams({
+        $top: String(limit),
+        $orderby: "createdDateTime desc",
+      });
+      const result = await this.#graph(
+        `/chats/${encodeURIComponent(values.chatId)}/messages?${params.toString()}`,
+        access.value,
+        { signal: context?.signal },
+      );
+      this.#assertInvocationCurrent(generation);
+      return chatMessagesResult(result, limit);
+    }
+    if (toolName === "microsoft365.chat.message.send") {
+      this.#requireCapability(access, "chat.write");
+      const values = await decodeChatMessageSendInput(input, {
+        errors: "all",
+        onExcessProperty: "error",
+      });
+      const body = { body: { contentType: "text", content: values.body } };
+      if (encoder.encode(JSON.stringify(body)).byteLength > MAX_CHAT_REQUEST_BYTES) {
+        throw new IntegrationProviderPublicError(
+          "Chat message is too large; its encoded request must be at most 28 KB.",
+        );
+      }
+      const result = await this.#graph(
+        `/chats/${encodeURIComponent(values.chatId)}/messages`,
+        access.value,
+        {
+          method: "POST",
+          body,
+          signal: context?.signal,
+        },
+      );
+      this.#assertInvocationCurrent(generation);
+      return chatMessageResult(result);
+    }
+    throw new Error("Unsupported Microsoft 365 tool.");
   }
 
   async close(): Promise<void> {

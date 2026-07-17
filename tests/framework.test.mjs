@@ -21,16 +21,46 @@ const manifest = {
   version: "1.0.0",
   compatibility: { harness: { min: "0.2.0", maxExclusive: "0.3.0" } },
   capabilities: [
-    { id: "fixture.read", displayName: "Read fixture", description: "Read fixture data." },
+    {
+      id: "fixture.read",
+      displayName: "Read fixture",
+      description: "Read fixture data.",
+      access: "default",
+    },
+    {
+      id: "fixture.write",
+      displayName: "Write fixture",
+      description: "Write fixture data.",
+      access: "opt-in",
+    },
   ],
   tools: [],
   skills: [
-    { name: "fixture-reader", description: "Read fixture data.", capability: "fixture.read" },
+    {
+      name: "fixture-reader",
+      description: "Read fixture data.",
+      capabilities: ["fixture.read", "fixture.write"],
+    },
   ],
 };
 
 test("accepts a strict skill-only Harness v1 manifest", () => {
   assert.equal(validateManifestV1(structuredClone(manifest)).id, "fixture-reader");
+});
+
+test("accepts access policy, multi-capability dependencies, and tool effects", () => {
+  const withTool = structuredClone(manifest);
+  withTool.provider = "fixture-provider";
+  withTool.tools = [
+    {
+      name: "fixture.write",
+      displayName: "Write fixture",
+      description: "Write fixture data.",
+      capabilities: ["fixture.write"],
+      effect: "write",
+    },
+  ];
+  assert.equal(validateManifestV1(withTool).tools[0].effect, "write");
 });
 
 test("rejects unsupported and missing manifest fields", () => {
@@ -60,6 +90,14 @@ test("rejects mismatched providers and tools and unknown capabilities", () => {
   assert.throws(() => validateManifestV1(withTool), /exactly when/u);
   withTool.provider = "fixture-provider";
   assert.throws(() => validateManifestV1(withTool), /unknown capability/u);
+
+  const mixedDependencySpelling = structuredClone(manifest);
+  mixedDependencySpelling.skills[0].capability = "fixture.read";
+  assert.throws(() => validateManifestV1(mixedDependencySpelling), /unknown capability/u);
+
+  const invalidAccess = structuredClone(manifest);
+  invalidAccess.capabilities[0].access = "always";
+  assert.throws(() => validateManifestV1(invalidAccess), /capability/u);
 });
 
 test("parses bounded YAML skill frontmatter", () => {

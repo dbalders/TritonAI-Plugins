@@ -24,6 +24,8 @@ const CAPABILITY_SCOPES = {
     "calendar.read": "Calendars.Read",
     "calendar.write": "Calendars.ReadWrite",
     "chat.read": "Chat.Read",
+    // The tenant already approved Chat.ReadWrite for this public client. The provider's fixed tool
+    // surface remains send-only for this capability and never exposes chat create/edit/delete.
     "chat.write": "Chat.ReadWrite",
 };
 const CAPABILITY_NAMES = new Set(Object.keys(CAPABILITY_SCOPES));
@@ -34,6 +36,7 @@ const MAX_TOKEN_CHARS = 16_384;
 const MAX_CALENDAR_RANGE_MS = 31 * 86_400_000;
 const MAX_BODY_CHARS = 50_000;
 const MAX_CHAT_BODY_CHARS = 20_000;
+const MAX_CHAT_REQUEST_BYTES = 28 * 1024;
 const ACCESS_TOKEN_SKEW_MS = 60_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -61,8 +64,8 @@ const MailDraftCreateInput = Schema.Struct({
     to: RecipientList.annotate({ description: "Primary recipients (1-25)." }),
     cc: Schema.optionalKey(OptionalRecipientList.annotate({ description: "CC recipients (0-25)." })),
     bcc: Schema.optionalKey(OptionalRecipientList.annotate({ description: "BCC recipients (0-25)." })),
-    subject: Schema.String.check(Schema.isMaxLength(998)).annotate({
-        description: "Draft subject (maximum 998 characters).",
+    subject: Schema.String.check(Schema.isMaxLength(255)).annotate({
+        description: "Draft subject (maximum 255 characters).",
     }),
     body: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_BODY_CHARS)).annotate({
         description: "Plain-text draft body.",
@@ -70,13 +73,16 @@ const MailDraftCreateInput = Schema.Struct({
 });
 const Attendee = Schema.Struct({
     address: EmailAddress,
+    type: Schema.Literals(["required", "optional", "resource"]).annotate({
+        description: "Attendee role to preserve in Microsoft 365.",
+    }),
     name: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(512)).annotate({
         description: "Optional attendee display name.",
     })),
 });
 const AttendeeList = Schema.Array(Attendee).check(Schema.isMaxLength(50));
 const CalendarEventFields = {
-    subject: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_000)).annotate({
+    subject: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255)).annotate({
         description: "Event subject.",
     }),
     start: Schema.String.check(Schema.isMaxLength(64)).annotate({
@@ -102,7 +108,6 @@ const CalendarEventUpdateInput = Schema.Struct({
     start: Schema.optionalKey(CalendarEventFields.start),
     end: Schema.optionalKey(CalendarEventFields.end),
     location: CalendarEventFields.location,
-    body: CalendarEventFields.body,
     attendees: CalendarEventFields.attendees,
 });
 const ChatListInput = Schema.Struct({
@@ -122,7 +127,7 @@ const ChatMessageSendInput = Schema.Struct({
     chatId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
         description: "Exact destination Microsoft 365 chat identifier.",
     }),
-    body: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_CHAT_BODY_CHARS)).annotate({ description: "Plain-text chat message." }),
+    body: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_CHAT_BODY_CHARS)).annotate({ description: "Plain-text chat message whose encoded request is at most 28 KB." }),
 });
 const decodeMailSearchInput = Schema.decodeUnknownPromise(MailSearchInput);
 const decodeCalendarEventsInput = Schema.decodeUnknownPromise(CalendarEventsInput);
@@ -171,11 +176,11 @@ export const MICROSOFT_GRAPH_TOOLS = [
     },
     {
         name: "microsoft365.calendar.event.update",
-        description: "Update explicitly supplied fields on one Microsoft 365 calendar event.",
+        description: "Update the subject, time, location, or attendee list on one Microsoft 365 calendar event.",
         input: CalendarEventUpdateInput,
         readOnly: false,
         destructive: true,
-        idempotent: true,
+        idempotent: false,
         openWorld: true,
     },
     {
@@ -473,7 +478,7 @@ function mailDraftResult(value) {
     };
 }
 function graphAttendees(value) {
-    if (!Array.isArray(value) || value.length > 50) {
+    if (!Array.isArray(value) || value.length > 500) {
         throw new Error("Microsoft Graph returned an invalid attendee response.");
     }
     return value.map((raw) => {
@@ -553,9 +558,9 @@ function recipients(addresses) {
     return addresses.map((address) => ({ emailAddress: { address } }));
 }
 function attendees(values) {
-    return values.map(({ address, name }) => ({
+    return values.map(({ address, name, type }) => ({
         emailAddress: { address, ...(name === undefined ? {} : { name }) },
-        type: "required",
+        type,
     }));
 }
 function graphUtcDateTime(value) {
@@ -1098,7 +1103,7 @@ export class MicrosoftGraphProvider {
                 errors: "all",
                 onExcessProperty: "error",
             });
-            const defaultStart = values.start ?? new Date().toISOString();
+            const defaultStart = isoTimestamp(values.start ?? new Date().toISOString());
             const { start, end } = calendarRange(defaultStart, values.end ?? new Date(Date.parse(defaultStart) + 7 * 86_400_000).toISOString());
             const params = new URLSearchParams({
                 startDateTime: start,
@@ -1138,13 +1143,7 @@ export class MicrosoftGraphProvider {
             if (hasStart !== hasEnd) {
                 throw new IntegrationProviderPublicError("Calendar event updates must provide start and end together.");
             }
-            const hasMutation = [
-                values.subject,
-                values.start,
-                values.location,
-                values.body,
-                values.attendees,
-            ].some((value) => value !== undefined);
+            const hasMutation = [values.subject, values.start, values.location, values.attendees].some((value) => value !== undefined);
             if (!hasMutation) {
                 throw new IntegrationProviderPublicError("Calendar event update must include at least one changed field.");
             }
@@ -1156,9 +1155,6 @@ export class MicrosoftGraphProvider {
                 ...(values.start === undefined ? {} : { start: graphUtcDateTime(values.start) }),
                 ...(values.end === undefined ? {} : { end: graphUtcDateTime(values.end) }),
                 ...(values.location === undefined ? {} : { location: { displayName: values.location } }),
-                ...(values.body === undefined
-                    ? {}
-                    : { body: { contentType: "text", content: values.body } }),
                 ...(values.attendees === undefined ? {} : { attendees: attendees(values.attendees) }),
             };
             const result = await this.#graph(`/me/events/${encodeURIComponent(values.eventId)}`, access.value, { method: "PATCH", body, signal: context?.signal });
@@ -1172,10 +1168,7 @@ export class MicrosoftGraphProvider {
                 onExcessProperty: "error",
             });
             const limit = values.limit ?? 10;
-            const params = new URLSearchParams({
-                $top: String(limit),
-                $select: "id,topic,chatType,createdDateTime,lastUpdatedDateTime,webUrl",
-            });
+            const params = new URLSearchParams({ $top: String(limit) });
             const result = await this.#graph(`/me/chats?${params.toString()}`, access.value, {
                 signal: context?.signal,
             });
@@ -1203,9 +1196,13 @@ export class MicrosoftGraphProvider {
                 errors: "all",
                 onExcessProperty: "error",
             });
+            const body = { body: { contentType: "text", content: values.body } };
+            if (encoder.encode(JSON.stringify(body)).byteLength > MAX_CHAT_REQUEST_BYTES) {
+                throw new IntegrationProviderPublicError("Chat message is too large; its encoded request must be at most 28 KB.");
+            }
             const result = await this.#graph(`/chats/${encodeURIComponent(values.chatId)}/messages`, access.value, {
                 method: "POST",
-                body: { body: { contentType: "text", content: values.body } },
+                body,
                 signal: context?.signal,
             });
             this.#assertInvocationCurrent(generation);

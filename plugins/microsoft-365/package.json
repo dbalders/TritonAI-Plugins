@@ -1,5 +1,5 @@
 {
-  "name": "@tritonai/plugin-microsoft-365-read",
+  "name": "@tritonai/plugin-microsoft-365",
   "version": "1.0.0",
   "private": true,
   "files": [

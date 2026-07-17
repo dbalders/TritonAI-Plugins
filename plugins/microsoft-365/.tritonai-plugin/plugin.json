@@ -2,9 +2,9 @@
   "apiVersion": "tritonai.harness/v1",
   "kind": "IntegrationPlugin",
   "manifestVersion": 1,
-  "id": "microsoft-365-read",
-  "name": "Microsoft 365 Read",
-  "description": "Read mail and calendar data through dedicated, least-privilege Microsoft Graph tools.",
+  "id": "microsoft-365",
+  "name": "Microsoft 365",
+  "description": "Read mail, calendars, and chats, and opt in to narrowly scoped Microsoft Graph writes.",
   "version": "1.0.0",
   "compatibility": {
     "harness": {
@@ -12,17 +12,43 @@
       "maxExclusive": "0.3.0"
     }
   },
-  "provider": "microsoft-graph-read",
+  "provider": "microsoft-graph",
   "capabilities": [
     {
       "id": "mail.read",
       "displayName": "Read mail",
-      "description": "Read message metadata and search mail. No send, edit, or delete access."
+      "description": "Search message metadata. No send, edit, move, or delete access.",
+      "access": "default"
+    },
+    {
+      "id": "mail.draft.create",
+      "displayName": "Create mail drafts",
+      "description": "Create unsent mail drafts. Cannot send, move, or delete mail.",
+      "access": "opt-in"
     },
     {
       "id": "calendar.read",
       "displayName": "Read calendars",
-      "description": "Read calendar events. No create, edit, or delete access."
+      "description": "Read calendar events. No create, edit, or delete access.",
+      "access": "default"
+    },
+    {
+      "id": "calendar.write",
+      "displayName": "Create and edit events",
+      "description": "Create or edit calendar events. Cannot delete events or respond to invitations.",
+      "access": "opt-in"
+    },
+    {
+      "id": "chat.read",
+      "displayName": "Read chats",
+      "description": "List chats and read bounded message history. Cannot create, edit, or delete chats or messages.",
+      "access": "opt-in"
+    },
+    {
+      "id": "chat.write",
+      "displayName": "Send chat messages",
+      "description": "Send a plain-text message to an existing chat. Cannot create chats or edit or delete messages.",
+      "access": "opt-in"
     }
   ],
   "tools": [
@@ -30,25 +56,74 @@
       "name": "microsoft365.mail.search",
       "displayName": "Search mail",
       "description": "Search recent Microsoft 365 mail with a bounded read-only query.",
-      "capability": "mail.read"
+      "capabilities": ["mail.read"],
+      "effect": "read"
+    },
+    {
+      "name": "microsoft365.mail.draft.create",
+      "displayName": "Create mail draft",
+      "description": "Create one unsent, plain-text Microsoft 365 mail draft.",
+      "capabilities": ["mail.draft.create"],
+      "effect": "write"
     },
     {
       "name": "microsoft365.calendar.events",
       "displayName": "Read calendar events",
       "description": "Read Microsoft 365 calendar events in a bounded date range.",
-      "capability": "calendar.read"
+      "capabilities": ["calendar.read"],
+      "effect": "read"
+    },
+    {
+      "name": "microsoft365.calendar.event.create",
+      "displayName": "Create calendar event",
+      "description": "Create one Microsoft 365 calendar event.",
+      "capabilities": ["calendar.write"],
+      "effect": "write"
+    },
+    {
+      "name": "microsoft365.calendar.event.update",
+      "displayName": "Edit calendar event",
+      "description": "Edit the subject, time, location, or attendee list on one Microsoft 365 calendar event.",
+      "capabilities": ["calendar.write"],
+      "effect": "write"
+    },
+    {
+      "name": "microsoft365.chat.list",
+      "displayName": "List chats",
+      "description": "List a bounded number of the user's Microsoft 365 chats.",
+      "capabilities": ["chat.read"],
+      "effect": "read"
+    },
+    {
+      "name": "microsoft365.chat.messages",
+      "displayName": "Read chat messages",
+      "description": "Read a bounded number of messages from one Microsoft 365 chat.",
+      "capabilities": ["chat.read"],
+      "effect": "read"
+    },
+    {
+      "name": "microsoft365.chat.message.send",
+      "displayName": "Send chat message",
+      "description": "Send one plain-text message to an existing Microsoft 365 chat.",
+      "capabilities": ["chat.write"],
+      "effect": "write"
     }
   ],
   "skills": [
     {
       "name": "microsoft-365-mail",
-      "description": "Read and summarize Microsoft 365 mail through TritonAI Harness. Use when the user asks to search, review, or triage their Microsoft 365 inbox.",
-      "capability": "mail.read"
+      "description": "Search Microsoft 365 mail or create an unsent draft through TritonAI Harness. Use when the user asks to review, search, or triage mail, or to prepare an email draft without sending it.",
+      "capabilities": ["mail.read", "mail.draft.create"]
     },
     {
       "name": "microsoft-365-calendar",
-      "description": "Read and summarize Microsoft 365 calendar events through TritonAI Harness. Use when the user asks to review their Microsoft 365 schedule or events.",
-      "capability": "calendar.read"
+      "description": "Read, create, or edit Microsoft 365 calendar events through TritonAI Harness. Use when the user asks about their schedule or requests a new or changed calendar event.",
+      "capabilities": ["calendar.read", "calendar.write"]
+    },
+    {
+      "name": "microsoft-365-chat",
+      "description": "Read Microsoft 365 chats or send a message to an existing chat through TritonAI Harness. Use when the user asks to review Microsoft Teams chats, read chat history, or send a chat reply.",
+      "capabilities": ["chat.read", "chat.write"]
     }
   ]
 }

@@ -54,6 +54,7 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
         body: Schema.optionalKey<Schema.String>;
         attendees: Schema.optionalKey<Schema.$Array<Schema.Struct<{
             readonly address: Schema.String;
+            readonly type: Schema.Literals<readonly ["required", "optional", "resource"]>;
             readonly name: Schema.optionalKey<Schema.String>;
         }>>>;
     }>;
@@ -63,22 +64,22 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly openWorld: true;
 }, {
     readonly name: "microsoft365.calendar.event.update";
-    readonly description: "Update explicitly supplied fields on one Microsoft 365 calendar event.";
+    readonly description: "Update the subject, time, location, or attendee list on one Microsoft 365 calendar event.";
     readonly input: Schema.Struct<{
         readonly eventId: Schema.String;
         readonly subject: Schema.optionalKey<Schema.String>;
         readonly start: Schema.optionalKey<Schema.String>;
         readonly end: Schema.optionalKey<Schema.String>;
         readonly location: Schema.optionalKey<Schema.String>;
-        readonly body: Schema.optionalKey<Schema.String>;
         readonly attendees: Schema.optionalKey<Schema.$Array<Schema.Struct<{
             readonly address: Schema.String;
+            readonly type: Schema.Literals<readonly ["required", "optional", "resource"]>;
             readonly name: Schema.optionalKey<Schema.String>;
         }>>>;
     }>;
     readonly readOnly: false;
     readonly destructive: true;
-    readonly idempotent: true;
+    readonly idempotent: false;
     readonly openWorld: true;
 }, {
     readonly name: "microsoft365.chat.list";
@@ -164,6 +165,7 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
             body: Schema.optionalKey<Schema.String>;
             attendees: Schema.optionalKey<Schema.$Array<Schema.Struct<{
                 readonly address: Schema.String;
+                readonly type: Schema.Literals<readonly ["required", "optional", "resource"]>;
                 readonly name: Schema.optionalKey<Schema.String>;
             }>>>;
         }>;
@@ -173,22 +175,22 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.calendar.event.update";
-        readonly description: "Update explicitly supplied fields on one Microsoft 365 calendar event.";
+        readonly description: "Update the subject, time, location, or attendee list on one Microsoft 365 calendar event.";
         readonly input: Schema.Struct<{
             readonly eventId: Schema.String;
             readonly subject: Schema.optionalKey<Schema.String>;
             readonly start: Schema.optionalKey<Schema.String>;
             readonly end: Schema.optionalKey<Schema.String>;
             readonly location: Schema.optionalKey<Schema.String>;
-            readonly body: Schema.optionalKey<Schema.String>;
             readonly attendees: Schema.optionalKey<Schema.$Array<Schema.Struct<{
                 readonly address: Schema.String;
+                readonly type: Schema.Literals<readonly ["required", "optional", "resource"]>;
                 readonly name: Schema.optionalKey<Schema.String>;
             }>>>;
         }>;
         readonly readOnly: false;
         readonly destructive: true;
-        readonly idempotent: true;
+        readonly idempotent: false;
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.chat.list";

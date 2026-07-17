@@ -21,9 +21,16 @@ const MANIFEST_KEYS = new Set([
   "tools",
   "skills",
 ]);
-const CAPABILITY_KEYS = new Set(["id", "displayName", "description"]);
-const TOOL_KEYS = new Set(["name", "displayName", "description", "capability"]);
-const SKILL_KEYS = new Set(["name", "description", "capability"]);
+const CAPABILITY_KEYS = new Set(["id", "displayName", "description", "access"]);
+const TOOL_KEYS = new Set([
+  "name",
+  "displayName",
+  "description",
+  "capability",
+  "capabilities",
+  "effect",
+]);
+const SKILL_KEYS = new Set(["name", "description", "capability", "capabilities"]);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -151,7 +158,10 @@ export function validateManifestV1(value) {
         capability.id.length <= MAX_ID_LENGTH &&
         ID.test(capability.id) &&
         nonEmpty(capability.displayName) &&
-        nonEmpty(capability.description),
+        nonEmpty(capability.description) &&
+        (capability.access === undefined ||
+          capability.access === "default" ||
+          capability.access === "opt-in"),
       "Every capability requires a unique id, displayName, and description.",
     );
     assert(!capabilityIds.has(capability.id), `Duplicate capability ${capability.id}.`);
@@ -177,9 +187,24 @@ export function validateManifestV1(value) {
         `Every ${kind} requires a stable name and description.`,
       );
       assert(kind !== "tool" || nonEmpty(entry.displayName), "Every tool requires a displayName.");
+      const references = Array.isArray(entry.capabilities)
+        ? entry.capabilities
+        : nonEmpty(entry.capability)
+          ? [entry.capability]
+          : [];
       assert(
-        nonEmpty(entry.capability) && capabilityIds.has(entry.capability),
+        references.length > 0 &&
+          references.every((capability) => nonEmpty(capability) && capabilityIds.has(capability)) &&
+          new Set(references).size === references.length &&
+          !(entry.capability !== undefined && entry.capabilities !== undefined),
         `${kind} ${entry.name} references an unknown capability.`,
+      );
+      assert(
+        kind !== "tool" ||
+          entry.effect === undefined ||
+          entry.effect === "read" ||
+          entry.effect === "write",
+        `Tool ${entry.name} has an invalid effect.`,
       );
       assert(!names.has(entry.name), `Duplicate ${kind} name ${entry.name}.`);
       names.add(entry.name);

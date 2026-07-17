@@ -3,8 +3,8 @@ import type * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
 
 /**
- * Narrow structural boundary matching TritonAI Harness PR #47 at
- * a8ea487eaa506a2013f3b32dd3098e37ade1e359. The Harness does not yet export a
+ * Narrow structural boundary matching TritonAI Harness PR #74 at
+ * 33a0b5087981142209ccaa0a317c5baa9e4d35be. The Harness does not yet export a
  * provider SDK, so its build composition must prove this assignment against
  * IntegrationRegistry.ts when it pins and bundles this source package.
  */

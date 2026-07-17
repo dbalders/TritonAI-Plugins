@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 
-const expectedHead = "a8ea487eaa506a2013f3b32dd3098e37ade1e359";
+const expectedHead = "33a0b5087981142209ccaa0a317c5baa9e4d35be";
 const packageRoot = Path.resolve(import.meta.dirname, "..");
 const repositoryRoot = Path.resolve(packageRoot, "../..");
 const harnessRoot = process.env.TRITONAI_HARNESS_ROOT;
@@ -68,14 +68,17 @@ assert(
   "Compiled provider tool set differs from the manifest tool set.",
 );
 for (const tool of providerModule.MICROSOFT_GRAPH_TOOLS) {
+  const manifestTool = validatedManifest.tools.find(({ name }) => name === tool.name);
   assert(
-    typeof tool.description === "string" &&
+    manifestTool !== undefined &&
+      typeof tool.description === "string" &&
       typeof tool.input === "object" &&
       tool.input !== null &&
-      tool.readOnly === true &&
-      tool.destructive === false &&
+      tool.readOnly === (manifestTool.effect !== "write") &&
+      typeof tool.destructive === "boolean" &&
+      typeof tool.idempotent === "boolean" &&
       tool.openWorld === true,
-    `Compiled tool ${String(tool.name)} does not satisfy the read-only Harness boundary.`,
+    `Compiled tool ${String(tool.name)} does not satisfy its Harness effect boundary.`,
   );
 }
 

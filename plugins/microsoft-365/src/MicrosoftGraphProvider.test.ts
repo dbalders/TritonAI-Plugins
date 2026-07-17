@@ -187,14 +187,31 @@ describe("MicrosoftGraphProvider contract", () => {
     expect(() => provider(secrets.service, globalThis.fetch, 1.5)).toThrow(/bounded/u);
   });
 
-  it("publishes executable exact Effect schemas and truthful read metadata", async () => {
+  it("publishes executable exact Effect schemas and truthful effect metadata", async () => {
+    const expected = new Map([
+      ["microsoft365.mail.search", { readOnly: true, destructive: false, idempotent: true }],
+      [
+        "microsoft365.mail.draft.create",
+        { readOnly: false, destructive: false, idempotent: false },
+      ],
+      ["microsoft365.calendar.events", { readOnly: true, destructive: false, idempotent: true }],
+      [
+        "microsoft365.calendar.event.create",
+        { readOnly: false, destructive: false, idempotent: false },
+      ],
+      [
+        "microsoft365.calendar.event.update",
+        { readOnly: false, destructive: true, idempotent: false },
+      ],
+      ["microsoft365.chat.list", { readOnly: true, destructive: false, idempotent: true }],
+      ["microsoft365.chat.messages", { readOnly: true, destructive: false, idempotent: true }],
+      [
+        "microsoft365.chat.message.send",
+        { readOnly: false, destructive: false, idempotent: false },
+      ],
+    ]);
     for (const tool of MICROSOFT_GRAPH_TOOLS) {
-      expect(tool).toMatchObject({
-        readOnly: true,
-        destructive: false,
-        idempotent: true,
-        openWorld: true,
-      });
+      expect(tool).toMatchObject({ ...expected.get(tool.name), openWorld: true });
       expect(Schema.toJsonSchemaDocument(tool.input).schema).toMatchObject({ type: "object" });
     }
     const mail = MICROSOFT_GRAPH_TOOLS[0];
@@ -206,6 +223,42 @@ describe("MicrosoftGraphProvider contract", () => {
         },
       ),
     ).rejects.toBeDefined();
+  });
+
+  it("maps every selected capability to only its fixed delegated scope", async () => {
+    const secrets = memorySecrets();
+    const calls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return jsonResponse(deviceBody());
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+
+    await graph.connect(
+      [
+        "mail.read",
+        "mail.draft.create",
+        "calendar.read",
+        "calendar.write",
+        "chat.read",
+        "chat.write",
+      ],
+      lifecycle(),
+    );
+    const body = String(calls[0]?.init?.body);
+    for (const scope of [
+      "Mail.Read",
+      "Mail.ReadWrite",
+      "Calendars.Read",
+      "Calendars.ReadWrite",
+      "Chat.Read",
+      "Chat.ReadWrite",
+    ]) {
+      expect(body).toContain(scope);
+    }
+    expect(body).not.toContain("Mail.Send");
+    expect(body).not.toContain("ChatMessage.Send");
+    expect(body).not.toContain(".default");
   });
 
   it("requests only explicit incremental read scopes from the fixed tenant host", async () => {
@@ -951,6 +1004,179 @@ describe("MicrosoftGraphProvider tools", () => {
     );
   });
 
+  it("creates only an unsent plain-text mail draft with projected output", async () => {
+    const secrets = memorySecrets();
+    const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      graphCalls.push({ url, init });
+      return jsonResponse(
+        {
+          id: "draft-1",
+          subject: "Review",
+          toRecipients: [{ emailAddress: { address: "person@example.edu" } }],
+          ccRecipients: [],
+          bccRecipients: [],
+          isDraft: true,
+          webLink: "https://outlook.office.com/mail/draft-1",
+        },
+        201,
+      );
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.draft.create"]);
+
+    await expect(
+      graph.invoke("microsoft365.mail.draft.create", {
+        to: ["person@example.edu"],
+        subject: "Review",
+        body: "Please review this draft.",
+      }),
+    ).resolves.toMatchObject({ id: "draft-1", isDraft: true });
+    expect(graphCalls).toHaveLength(1);
+    expect(graphCalls[0]?.url).toBe("https://graph.microsoft.com/v1.0/me/messages");
+    expect(graphCalls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(graphCalls[0]?.init?.body))).toEqual({
+      subject: "Review",
+      body: { contentType: "text", content: "Please review this draft." },
+      toRecipients: [{ emailAddress: { address: "person@example.edu" } }],
+      ccRecipients: [],
+      bccRecipients: [],
+    });
+  });
+
+  it("creates and edits calendar events only through fixed event endpoints", async () => {
+    const secrets = memorySecrets();
+    const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const response = {
+      id: "event/id?fixture",
+      subject: "Planning",
+      start: { dateTime: "2026-07-20T16:00:00.0000000", timeZone: "UTC" },
+      end: { dateTime: "2026-07-20T17:00:00.0000000", timeZone: "UTC" },
+      location: { displayName: "Online" },
+      attendees: Array.from({ length: 51 }, (_, index) => ({
+        emailAddress: { name: "Person", address: "person@example.edu" },
+        type: "required",
+        fixtureIndex: index,
+      })),
+      webLink: "https://outlook.office.com/calendar/event",
+    };
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token"))
+        return jsonResponse(tokenBody("offline_access Calendars.ReadWrite"));
+      graphCalls.push({ url, init });
+      return jsonResponse(response, init?.method === "POST" ? 201 : 200);
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["calendar.write"]);
+
+    const created = await graph.invoke("microsoft365.calendar.event.create", {
+      subject: "Planning",
+      start: "2026-07-20T09:00:00-07:00",
+      end: "2026-07-20T10:00:00-07:00",
+      location: "Online",
+      body: "Agenda",
+      attendees: [{ address: "person@example.edu", name: "Person", type: "optional" }],
+    });
+    expect(created).toMatchObject({ id: "event/id?fixture", subject: "Planning" });
+    expect((created as { attendees: ReadonlyArray<unknown> }).attendees).toHaveLength(51);
+    await expect(
+      graph.invoke("microsoft365.calendar.event.update", {
+        eventId: "event/id?fixture",
+        subject: "Updated planning",
+        location: "Room 1",
+      }),
+    ).resolves.toMatchObject({ id: "event/id?fixture" });
+
+    expect(graphCalls.map(({ init }) => init?.method)).toEqual(["POST", "PATCH"]);
+    expect(graphCalls[0]?.url).toBe("https://graph.microsoft.com/v1.0/me/events");
+    expect(graphCalls[1]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/events/event%2Fid%3Ffixture",
+    );
+    expect(JSON.parse(String(graphCalls[0]?.init?.body))).toMatchObject({
+      subject: "Planning",
+      start: { dateTime: "2026-07-20T16:00:00.000", timeZone: "UTC" },
+      end: { dateTime: "2026-07-20T17:00:00.000", timeZone: "UTC" },
+      body: { contentType: "text", content: "Agenda" },
+      attendees: [
+        {
+          emailAddress: { address: "person@example.edu", name: "Person" },
+          type: "optional",
+        },
+      ],
+    });
+    expect(JSON.parse(String(graphCalls[1]?.init?.body))).toEqual({
+      subject: "Updated planning",
+      location: { displayName: "Room 1" },
+    });
+  });
+
+  it("lists chats, reads bounded history, and sends plain text to an existing chat", async () => {
+    const secrets = memorySecrets();
+    const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const message = {
+      id: "message-1",
+      createdDateTime: "2026-07-16T12:00:00Z",
+      lastModifiedDateTime: null,
+      from: { user: { id: "user-1", displayName: "Person" } },
+      body: { contentType: "text", content: "Hello" },
+      webUrl: "https://teams.microsoft.com/message-1",
+    };
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token"))
+        return jsonResponse(tokenBody("offline_access Chat.Read Chat.ReadWrite"));
+      graphCalls.push({ url, init });
+      if (url.includes("/me/chats?")) {
+        return jsonResponse({
+          value: [
+            {
+              id: "chat/id?fixture",
+              topic: "Project",
+              chatType: "group",
+              createdDateTime: "2026-07-01T00:00:00Z",
+              lastUpdatedDateTime: "2026-07-16T12:00:00Z",
+              webUrl: "https://teams.microsoft.com/chat",
+            },
+          ],
+        });
+      }
+      return init?.method === "POST"
+        ? jsonResponse(message, 201)
+        : jsonResponse({ value: [message] });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["chat.read", "chat.write"]);
+
+    await expect(graph.invoke("microsoft365.chat.list", { limit: 5 })).resolves.toMatchObject({
+      chats: [{ id: "chat/id?fixture", topic: "Project" }],
+    });
+    await expect(
+      graph.invoke("microsoft365.chat.messages", { chatId: "chat/id?fixture", limit: 5 }),
+    ).resolves.toMatchObject({ messages: [{ id: "message-1", body: { content: "Hello" } }] });
+    await expect(
+      graph.invoke("microsoft365.chat.message.send", {
+        chatId: "chat/id?fixture",
+        body: "Hello",
+      }),
+    ).resolves.toMatchObject({ id: "message-1", body: { contentType: "text" } });
+
+    expect(graphCalls[0]?.url).not.toContain("%24select");
+    expect(graphCalls[1]?.url).toContain("/chats/chat%2Fid%3Ffixture/messages?");
+    expect(graphCalls[2]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/chats/chat%2Fid%3Ffixture/messages",
+    );
+    expect(graphCalls[2]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(graphCalls[2]?.init?.body))).toEqual({
+      body: { contentType: "text", content: "Hello" },
+    });
+  });
+
   it("accepts bounded empty optional fields in Graph projections", async () => {
     const secrets = memorySecrets();
     const fetchImplementation = (async (input: RequestInfo | URL) => {
@@ -1016,6 +1242,85 @@ describe("MicrosoftGraphProvider tools", () => {
     expect(graphCalls).toBe(0);
   });
 
+  it("rejects unsafe write input before Graph", async () => {
+    const secrets = memorySecrets();
+    let graphCalls = 0;
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) {
+        return jsonResponse(
+          tokenBody("offline_access Mail.ReadWrite Calendars.ReadWrite Chat.Read Chat.ReadWrite"),
+        );
+      }
+      graphCalls += 1;
+      return jsonResponse({});
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.draft.create", "calendar.write", "chat.read", "chat.write"]);
+
+    for (const input of [
+      { to: [], subject: "x", body: "x" },
+      { to: ["not-an-email"], subject: "x", body: "x" },
+      { to: ["person@example.edu"], subject: "x", body: "" },
+      { to: ["person@example.edu"], subject: "x".repeat(256), body: "x" },
+      { to: ["person@example.edu"], subject: "x", body: "x", send: true },
+    ]) {
+      await expect(graph.invoke("microsoft365.mail.draft.create", input)).rejects.toBeDefined();
+    }
+    for (const input of [
+      { eventId: "event-1" },
+      { eventId: "event-1", start: "2026-07-20T09:00:00Z" },
+      { eventId: "event-1", body: "Do not replace online meeting bodies." },
+      { eventId: "event-1", subject: "x".repeat(256) },
+      {
+        eventId: "event-1",
+        start: "2026-07-20T10:00:00Z",
+        end: "2026-07-20T09:00:00Z",
+      },
+      { eventId: "", subject: "Changed" },
+    ]) {
+      await expect(graph.invoke("microsoft365.calendar.event.update", input)).rejects.toBeDefined();
+    }
+    await expect(
+      graph.invoke("microsoft365.calendar.event.create", {
+        subject: "Role required",
+        start: "2026-07-20T09:00:00Z",
+        end: "2026-07-20T10:00:00Z",
+        attendees: [{ address: "person@example.edu" }],
+      }),
+    ).rejects.toBeDefined();
+    for (const [tool, input] of [
+      ["microsoft365.chat.messages", { chatId: "", limit: 1 }],
+      ["microsoft365.chat.messages", { chatId: "chat-1", limit: 51 }],
+      ["microsoft365.chat.message.send", { chatId: "chat-1", body: "" }],
+      ["microsoft365.chat.message.send", { chatId: "chat-1", body: "😀".repeat(8_000) }],
+      ["microsoft365.chat.message.send", { chatId: "chat-1", body: "x", html: true }],
+    ] as const) {
+      await expect(graph.invoke(tool, input)).rejects.toBeDefined();
+    }
+    expect(graphCalls).toBe(0);
+  });
+
+  it("validates an explicit calendar start before deriving the default end", async () => {
+    const secrets = memorySecrets();
+    let graphCalls = 0;
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Calendars.Read"));
+      graphCalls += 1;
+      return jsonResponse({ value: [] });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["calendar.read"]);
+
+    await expect(
+      graph.invoke("microsoft365.calendar.events", { start: "not-a-date" }),
+    ).rejects.toThrow(/ISO 8601/u);
+    expect(graphCalls).toBe(0);
+  });
+
   it("rejects undeclared tools and capabilities without a network call", async () => {
     const secrets = memorySecrets();
     let graphCalls = 0;
@@ -1030,6 +1335,24 @@ describe("MicrosoftGraphProvider tools", () => {
     await authorize(graph);
     await expect(graph.invoke("microsoft365.generic.request", {})).rejects.toThrow(/Unsupported/u);
     await expect(graph.invoke("microsoft365.calendar.events", {})).rejects.toThrow(/not granted/u);
+    await expect(
+      graph.invoke("microsoft365.mail.draft.create", {
+        to: ["person@example.edu"],
+        subject: "x",
+        body: "x",
+      }),
+    ).rejects.toThrow(/not granted/u);
+    await expect(
+      graph.invoke("microsoft365.calendar.event.create", {
+        subject: "x",
+        start: "2026-07-20T09:00:00Z",
+        end: "2026-07-20T10:00:00Z",
+      }),
+    ).rejects.toThrow(/not granted/u);
+    await expect(graph.invoke("microsoft365.chat.list", {})).rejects.toThrow(/not granted/u);
+    await expect(
+      graph.invoke("microsoft365.chat.message.send", { chatId: "chat-1", body: "x" }),
+    ).rejects.toThrow(/not granted/u);
     expect(graphCalls).toBe(0);
   });
 
