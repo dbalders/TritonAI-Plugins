@@ -902,6 +902,27 @@ describe("MicrosoftGraphProvider tools", () => {
     expect(tokenRequests).toBe(2);
   });
 
+  it.each([
+    [400, /could not accept/u],
+    [401, /session expired/u],
+    [403, /denied/u],
+    [404, /not found/u],
+    [409, /changed or conflicts/u],
+    [429, /rate limiting/u],
+  ])("surfaces a safe public error for Graph HTTP %i", async (status, message) => {
+    const secrets = memorySecrets();
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
+      return jsonResponse({ error: { code: "fixture" } }, status);
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph);
+
+    await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(message);
+  });
+
   it("does not revoke an in-flight read during routine access-token refresh", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const secrets = memorySecrets();

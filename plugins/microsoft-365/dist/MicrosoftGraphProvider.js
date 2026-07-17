@@ -100,6 +100,7 @@ const CalendarEventFields = {
     attendees: Schema.optionalKey(AttendeeList.annotate({ description: "Optional complete attendee list (0-50)." })),
 };
 const CalendarEventCreateInput = Schema.Struct(CalendarEventFields);
+// Deliberately omit body: replacing it can remove existing Teams meeting join information.
 const CalendarEventUpdateInput = Schema.Struct({
     eventId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
         description: "Exact Microsoft 365 event identifier.",
@@ -1041,8 +1042,27 @@ export class MicrosoftGraphProvider {
                 this.#accessToken = null;
             }
         });
-        if (!response.ok)
+        if (!response.ok) {
+            if (response.status === 401) {
+                throw new IntegrationProviderPublicError("The Microsoft 365 session expired. Refresh access and try again.");
+            }
+            if (response.status === 403) {
+                throw new IntegrationProviderPublicError("Microsoft 365 denied this request. Check the enabled access and reconnect if needed.");
+            }
+            if (response.status === 404) {
+                throw new IntegrationProviderPublicError("The requested Microsoft 365 item was not found.");
+            }
+            if (response.status === 409) {
+                throw new IntegrationProviderPublicError("Microsoft 365 could not complete the request because the item changed or conflicts with current state.");
+            }
+            if (response.status === 429) {
+                throw new IntegrationProviderPublicError("Microsoft 365 is temporarily rate limiting requests. Try again later.");
+            }
+            if (response.status >= 400 && response.status < 500) {
+                throw new IntegrationProviderPublicError("Microsoft 365 could not accept this request.");
+            }
             throw new Error(`Microsoft Graph request failed with HTTP ${response.status}.`);
+        }
         return json;
     }
     async invoke(toolName, input, context) {
