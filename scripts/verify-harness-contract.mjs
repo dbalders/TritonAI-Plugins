@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 
 import { discoverPluginDirectories } from "./plugin-directories.mjs";
 
-const expectedHead = "a8ea487eaa506a2013f3b32dd3098e37ade1e359";
+const expectedHead = "33a0b5087981142209ccaa0a317c5baa9e4d35be";
 const harnessRoot = process.env.TRITONAI_HARNESS_ROOT;
 if (!harnessRoot) {
   throw new Error(
@@ -88,11 +88,20 @@ const frameworkProbe = {
   version: "1.0.0",
   compatibility: { harness: { min: "0.2.0", maxExclusive: "0.3.0" } },
   capabilities: [
-    { id: "probe.read", displayName: "Read probe", description: "Read-only probe capability." },
+    {
+      id: "probe.read",
+      displayName: "Read probe",
+      description: "Read-only probe capability.",
+      access: "default",
+    },
   ],
   tools: [],
   skills: [
-    { name: "framework-probe", description: "Framework probe skill.", capability: "probe.read" },
+    {
+      name: "framework-probe",
+      description: "Framework probe skill.",
+      capabilities: ["probe.read"],
+    },
   ],
 };
 const validated = manifestModule.validateIntegrationManifest(frameworkProbe);

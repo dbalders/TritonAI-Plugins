@@ -6,6 +6,7 @@ import {
   assertPackedMetadata,
   assertPackedStaticFiles,
   assertSafePackageFiles,
+  assertSourceMetadataUnchanged,
   assertStaticSourceUnchanged,
 } from "../scripts/package-artifact.mjs";
 import { parseSkillFrontmatter } from "../scripts/skill-frontmatter.mjs";
@@ -20,16 +21,46 @@ const manifest = {
   version: "1.0.0",
   compatibility: { harness: { min: "0.2.0", maxExclusive: "0.3.0" } },
   capabilities: [
-    { id: "fixture.read", displayName: "Read fixture", description: "Read fixture data." },
+    {
+      id: "fixture.read",
+      displayName: "Read fixture",
+      description: "Read fixture data.",
+      access: "default",
+    },
+    {
+      id: "fixture.write",
+      displayName: "Write fixture",
+      description: "Write fixture data.",
+      access: "opt-in",
+    },
   ],
   tools: [],
   skills: [
-    { name: "fixture-reader", description: "Read fixture data.", capability: "fixture.read" },
+    {
+      name: "fixture-reader",
+      description: "Read fixture data.",
+      capabilities: ["fixture.read", "fixture.write"],
+    },
   ],
 };
 
 test("accepts a strict skill-only Harness v1 manifest", () => {
   assert.equal(validateManifestV1(structuredClone(manifest)).id, "fixture-reader");
+});
+
+test("accepts access policy, multi-capability dependencies, and tool effects", () => {
+  const withTool = structuredClone(manifest);
+  withTool.provider = "fixture-provider";
+  withTool.tools = [
+    {
+      name: "fixture.write",
+      displayName: "Write fixture",
+      description: "Write fixture data.",
+      capabilities: ["fixture.write"],
+      effect: "write",
+    },
+  ];
+  assert.equal(validateManifestV1(withTool).tools[0].effect, "write");
 });
 
 test("rejects unsupported and missing manifest fields", () => {
@@ -59,6 +90,14 @@ test("rejects mismatched providers and tools and unknown capabilities", () => {
   assert.throws(() => validateManifestV1(withTool), /exactly when/u);
   withTool.provider = "fixture-provider";
   assert.throws(() => validateManifestV1(withTool), /unknown capability/u);
+
+  const mixedDependencySpelling = structuredClone(manifest);
+  mixedDependencySpelling.skills[0].capability = "fixture.read";
+  assert.throws(() => validateManifestV1(mixedDependencySpelling), /unknown capability/u);
+
+  const invalidAccess = structuredClone(manifest);
+  invalidAccess.capabilities[0].access = "always";
+  assert.throws(() => validateManifestV1(invalidAccess), /capability/u);
 });
 
 test("parses bounded YAML skill frontmatter", () => {
@@ -119,9 +158,17 @@ test("accepts only declared package metadata and skill roots", () => {
 });
 
 test("rejects packed metadata that differs from reviewed source", () => {
-  const packageJson = { name: "@tritonai/plugin-fixture-reader", version: "1.0.0" };
+  const packageJson = {
+    name: "@tritonai/plugin-fixture-reader",
+    version: "1.0.0",
+    scripts: { prepack: "pnpm build", test: "vp test run" },
+  };
+  const packedPackageJson = {
+    ...packageJson,
+    scripts: { test: "vp test run" },
+  };
   assert.doesNotThrow(() =>
-    assertPackedMetadata("fixture-reader", packageJson, manifest, packageJson, manifest),
+    assertPackedMetadata("fixture-reader", packageJson, manifest, packedPackageJson, manifest),
   );
   assert.throws(
     () =>
@@ -129,18 +176,36 @@ test("rejects packed metadata that differs from reviewed source", () => {
         "fixture-reader",
         packageJson,
         manifest,
-        { ...packageJson, version: "2.0.0" },
+        { ...packedPackageJson, version: "2.0.0" },
         manifest,
       ),
     /package.json differs/u,
   );
   assert.throws(
     () =>
-      assertPackedMetadata("fixture-reader", packageJson, manifest, packageJson, {
+      assertPackedMetadata("fixture-reader", packageJson, manifest, packedPackageJson, {
         ...manifest,
         version: "2.0.0",
       }),
     /manifest differs/u,
+  );
+  assert.throws(
+    () => assertPackedMetadata("fixture-reader", packageJson, manifest, packageJson, manifest),
+    /must not retain the prepack/u,
+  );
+  assert.doesNotThrow(() =>
+    assertSourceMetadataUnchanged("fixture-reader", packageJson, manifest, packageJson, manifest),
+  );
+  assert.throws(
+    () =>
+      assertSourceMetadataUnchanged(
+        "fixture-reader",
+        packageJson,
+        manifest,
+        { ...packageJson, scripts: { test: "vp test run" } },
+        manifest,
+      ),
+    /changed reviewed source package.json/u,
   );
 });
 

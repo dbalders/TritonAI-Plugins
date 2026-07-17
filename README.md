@@ -30,11 +30,12 @@ See [architecture.md](docs/architecture.md), [release-checklist.md](docs/release
 
 ## Harness v1 compatibility
 
-The reviewed framework target is Harness PR #47 at
-`a8ea487eaa506a2013f3b32dd3098e37ade1e359`. That head owns the v1 manifest, catalog, package-scoped
-secrets, lifecycle, skill materialization, and tool invocation contracts. It does not export a
-provider SDK or implement a runtime plugin loader, so provider packages must prove structural
-compatibility when they are added and the Harness build must own final composition.
+The reviewed framework target is Harness PR #74 at
+`33a0b5087981142209ccaa0a317c5baa9e4d35be`. That head owns the v1 manifest, capability access
+policy, catalog, package-scoped secrets, lifecycle, skill materialization, write approval, and tool
+invocation contracts. It does not export a provider SDK or implement a runtime plugin loader, so
+provider packages must prove structural compatibility when they are added and the Harness build
+must own final composition.
 
 This foundation validates the generic Harness v1 boundary but deliberately makes no claim about a
 production provider. A provider plugin must commit its reviewed `dist/` output, export its exact

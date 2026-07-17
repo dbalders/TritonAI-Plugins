@@ -6,7 +6,28 @@ function assert(condition, message) {
 
 function normalizedPackageJson(value) {
   const { _id: _ignoredId, gitHead: _ignoredGitHead, ...reviewed } = value;
-  return reviewed;
+  const { prepack: _ignoredPrepack, ...scripts } = reviewed.scripts ?? {};
+  return { ...reviewed, ...(reviewed.scripts ? { scripts } : {}) };
+}
+
+function assertPackedMetadataMatches(
+  directory,
+  sourcePackageJson,
+  sourceManifest,
+  candidatePackageJson,
+  candidateManifest,
+) {
+  assert(
+    isDeepStrictEqual(
+      normalizedPackageJson(candidatePackageJson),
+      normalizedPackageJson(sourcePackageJson),
+    ),
+    `${directory}: packed package.json differs from reviewed source metadata.`,
+  );
+  assert(
+    isDeepStrictEqual(candidateManifest, sourceManifest),
+    `${directory}: packed plugin manifest differs from reviewed source metadata.`,
+  );
 }
 
 export function assertPackedMetadata(
@@ -16,13 +37,35 @@ export function assertPackedMetadata(
   packedPackageJson,
   packedManifest,
 ) {
+  // pnpm executes the reviewed source prepack script, then deliberately omits that lifecycle entry
+  // from the archived package.json. Retaining it would let a consumer rebuild reviewed dist bytes.
   assert(
-    isDeepStrictEqual(normalizedPackageJson(packedPackageJson), sourcePackageJson),
-    `${directory}: packed package.json differs from reviewed source metadata.`,
+    packedPackageJson.scripts?.prepack === undefined,
+    `${directory}: packed package metadata must not retain the prepack lifecycle script.`,
+  );
+  assertPackedMetadataMatches(
+    directory,
+    sourcePackageJson,
+    sourceManifest,
+    packedPackageJson,
+    packedManifest,
+  );
+}
+
+export function assertSourceMetadataUnchanged(
+  directory,
+  sourcePackageJson,
+  sourceManifest,
+  currentPackageJson,
+  currentManifest,
+) {
+  assert(
+    isDeepStrictEqual(currentPackageJson, sourcePackageJson),
+    `${directory}: package lifecycle changed reviewed source package.json.`,
   );
   assert(
-    isDeepStrictEqual(packedManifest, sourceManifest),
-    `${directory}: packed plugin manifest differs from reviewed source metadata.`,
+    isDeepStrictEqual(currentManifest, sourceManifest),
+    `${directory}: package lifecycle changed reviewed source plugin manifest.`,
   );
 }
 
