@@ -5,12 +5,21 @@ import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 
 import { discoverPluginDirectories } from "./plugin-directories.mjs";
+import { REVIEWED_HARNESS_COMMIT } from "./reviewed-harness.mjs";
 
-const expectedHead = "33a0b5087981142209ccaa0a317c5baa9e4d35be";
 const harnessRoot = process.env.TRITONAI_HARNESS_ROOT;
+const expectedHarnessCommit = process.env.TRITONAI_HARNESS_COMMIT;
 if (!harnessRoot) {
   throw new Error(
     "TRITONAI_HARNESS_ROOT must identify a clean checkout at the exact reviewed Harness head.",
+  );
+}
+if (!/^[a-f0-9]{40}$/u.test(expectedHarnessCommit ?? "")) {
+  throw new Error("TRITONAI_HARNESS_COMMIT must be the full reviewed Harness commit SHA.");
+}
+if (expectedHarnessCommit !== REVIEWED_HARNESS_COMMIT) {
+  throw new Error(
+    `TRITONAI_HARNESS_COMMIT must match the repository-reviewed Harness commit ${REVIEWED_HARNESS_COMMIT}.`,
   );
 }
 const harness = Path.resolve(harnessRoot);
@@ -21,9 +30,11 @@ function assert(condition, message) {
 
 const git = spawnSync("git", ["rev-parse", "HEAD"], { cwd: harness, encoding: "utf8" });
 assert(git.status === 0, `Harness checkout is unavailable at ${harness}.`);
+const actualHead = git.stdout.trim();
+assert(/^[a-f0-9]{40}$/u.test(actualHead), "Harness HEAD must be a full commit SHA.");
 assert(
-  git.stdout.trim() === expectedHead,
-  `Harness HEAD must be exact reviewed head ${expectedHead}.`,
+  actualHead === REVIEWED_HARNESS_COMMIT,
+  `Harness checkout is at ${actualHead}, expected ${REVIEWED_HARNESS_COMMIT}.`,
 );
 const harnessStatus = spawnSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
   cwd: harness,
@@ -32,7 +43,7 @@ const harnessStatus = spawnSync("git", ["status", "--porcelain=v1", "--untracked
 assert(harnessStatus.status === 0, "Could not verify Harness working-tree state.");
 assert(
   harnessStatus.stdout.trim() === "",
-  "Harness worktree must be clean so compatibility is proven against the exact pinned commit.",
+  "Harness worktree must be clean so the contract is proven against one immutable commit.",
 );
 
 const registry = await Fs.readFile(
@@ -52,11 +63,12 @@ const harnessPackage = JSON.parse(await Fs.readFile(Path.join(harness, "package.
 for (const fragment of [
   "beginCommit(): Promise<AbortSignal>",
   "status(context?: IntegrationInvocationContext)",
+  "prepare?(context: IntegrationLifecycleContext)",
   "context?: IntegrationLifecycleContext",
   "context?: IntegrationInvocationContext",
   "readonly manifest: IntegrationManifest",
   "readonly sourceRoot?: string",
-  "readonly bundledFiles?: Readonly<Record<string, string>>",
+  "readonly bundledFiles?: Readonly<Record<string, string | Uint8Array>>",
   "close?(): Promise<void>",
 ]) {
   assert(registry.includes(fragment), `Harness provider contract drifted: missing ${fragment}`);
@@ -79,14 +91,13 @@ const manifestModule = await import(
   pathToFileURL(Path.join(harness, "apps/server/src/integrations/manifest.ts")).href
 );
 const frameworkProbe = {
-  apiVersion: "tritonai.harness/v1",
+  apiVersion: "tritonai.harness/v2",
   kind: "IntegrationPlugin",
-  manifestVersion: 1,
+  manifestVersion: 2,
   id: "framework-probe",
   name: "Framework Probe",
-  description: "Validates the repository's generic Harness v1 manifest boundary.",
+  description: "Validates the repository's generic Harness v2 manifest boundary.",
   version: "1.0.0",
-  compatibility: { harness: { min: "0.2.0", maxExclusive: "0.3.0" } },
   capabilities: [
     {
       id: "probe.read",
@@ -106,10 +117,6 @@ const frameworkProbe = {
 };
 const validated = manifestModule.validateIntegrationManifest(frameworkProbe);
 assert(validated.id === frameworkProbe.id, "Exact Harness rejected the framework probe manifest.");
-assert(
-  manifestModule.manifestCompatibility(validated).compatible === true,
-  "Framework probe compatibility range rejected the exact Harness version.",
-);
 
 const pluginsRoot = Path.resolve(import.meta.dirname, "..", "plugins");
 for (const directory of await discoverPluginDirectories(pluginsRoot)) {
@@ -119,10 +126,6 @@ for (const directory of await discoverPluginDirectories(pluginsRoot)) {
   const packageJson = JSON.parse(await Fs.readFile(Path.join(packageRoot, "package.json"), "utf8"));
   const harnessValidated = manifestModule.validateIntegrationManifest(manifest);
   assert(harnessValidated.id === directory, `${directory}: exact Harness rejected the plugin id.`);
-  assert(
-    manifestModule.manifestCompatibility(harnessValidated).compatible === true,
-    `${directory}: exact Harness rejected the declared compatibility range.`,
-  );
   if (harnessValidated.tools.length > 0) {
     const providerModule = await import(
       pathToFileURL(Path.join(packageRoot, "dist", "index.js")).href
@@ -131,24 +134,23 @@ for (const directory of await discoverPluginDirectories(pluginsRoot)) {
       isDeepStrictEqual(providerModule.manifest, harnessValidated),
       `${directory}: compiled provider must export its exact validated manifest as manifest.`,
     );
-    const compatibility = spawnSync(
+    const contract = spawnSync(
       "pnpm",
-      ["--filter", packageJson.name, "--fail-if-no-match", "run", "compatibility:harness"],
+      ["--filter", packageJson.name, "--fail-if-no-match", "run", "contract:harness"],
       {
         cwd: Path.resolve(pluginsRoot, ".."),
         encoding: "utf8",
         env: {
           ...process.env,
           TRITONAI_HARNESS_ROOT: harness,
-          TRITONAI_PLUGIN_MANIFEST: manifestPath,
         },
       },
     );
     assert(
-      compatibility.status === 0,
-      `${directory}: provider compatibility proof failed.\n${compatibility.stderr || compatibility.stdout}`,
+      contract.status === 0,
+      `${directory}: provider contract proof failed.\n${contract.stderr || contract.stdout}`,
     );
   }
 }
 
-console.log(`exact Harness v1 framework checks passed at ${expectedHead}`);
+console.log(`exact Harness v2 framework checks passed at ${actualHead}`);

@@ -3,10 +3,9 @@ import type * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
 
 /**
- * Narrow structural boundary matching TritonAI Harness PR #74 at
- * 33a0b5087981142209ccaa0a317c5baa9e4d35be. The Harness does not yet export a
- * provider SDK, so its build composition must prove this assignment against
- * IntegrationRegistry.ts when it pins and bundles this source package.
+ * Narrow structural boundary for the current TritonAI Harness v2 contract.
+ * Harness build composition proves this assignment against IntegrationRegistry.ts
+ * when it pins and bundles this source package.
  */
 export interface IntegrationInvocationContext {
   readonly signal: AbortSignal;
@@ -68,6 +67,7 @@ export interface IntegrationProvider {
   readonly id: string;
   readonly tools: ReadonlyArray<IntegrationProviderTool>;
   status(context?: IntegrationInvocationContext): Promise<IntegrationProviderStatus>;
+  prepare?(context: IntegrationLifecycleContext): Promise<void>;
   connect?(
     capabilities: ReadonlyArray<string>,
     context?: IntegrationLifecycleContext,

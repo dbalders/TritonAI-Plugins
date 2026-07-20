@@ -1,17 +1,11 @@
 {
-  "apiVersion": "tritonai.harness/v1",
+  "apiVersion": "tritonai.harness/v2",
   "kind": "IntegrationPlugin",
-  "manifestVersion": 1,
+  "manifestVersion": 2,
   "id": "microsoft-365",
   "name": "Microsoft 365",
   "description": "Read mail, calendars, and chats, and opt in to narrowly scoped Microsoft Graph writes.",
-  "version": "1.0.0",
-  "compatibility": {
-    "harness": {
-      "min": "0.2.0",
-      "maxExclusive": "0.3.0"
-    }
-  },
+  "version": "1.0.1",
   "provider": "microsoft-graph",
   "capabilities": [
     {

@@ -14,7 +14,7 @@ Each direct child of `plugins/` is an independent package. A plugin may contribu
 it may also provide server-side tools through the Harness provider contract. Production packages
 must include:
 
-- a strict `.tritonai-plugin/plugin.json` Harness v1 manifest;
+- a strict `.tritonai-plugin/plugin.json` Harness v2 manifest;
 - package and manifest versions that agree;
 - normal Codex skills under `skills/` when skills are declared;
 - a narrow compiled provider export under `dist/` when tools are declared; and
@@ -28,34 +28,37 @@ runtime cancellation.
 See [architecture.md](docs/architecture.md), [release-checklist.md](docs/release-checklist.md), and
 [SECURITY.md](SECURITY.md).
 
-## Harness v1 compatibility
+## Harness v2 contract
 
-The reviewed framework target is Harness PR #74 at
-`33a0b5087981142209ccaa0a317c5baa9e4d35be`. That head owns the v1 manifest, capability access
-policy, catalog, package-scoped secrets, lifecycle, skill materialization, write approval, and tool
-invocation contracts. It does not export a provider SDK or implement a runtime plugin loader, so
-provider packages must prove structural compatibility when they are added and the Harness build
-must own final composition.
+Manifest `apiVersion` and `manifestVersion` identify the one current Harness contract. That contract
+owns capability access policy, catalog, package-scoped secrets, lifecycle, skill materialization,
+write approval, and tool invocation. Provider packages prove structural conformance against a
+clean Harness checkout at the repository-owned commit in `scripts/reviewed-harness.mjs`, while the
+Harness build owns final composition. The current reviewed target is Harness PR #89 at
+`110ce1b4293cdebb30a73faf8f499740773b17b3`.
 
-This foundation validates the generic Harness v1 boundary but deliberately makes no claim about a
+This foundation validates the generic Harness v2 boundary but deliberately makes no claim about a
 production provider. A provider plugin must commit its reviewed `dist/` output, export its exact
-validated manifest as `manifest`, and define a `compatibility:harness` script. The script must prove
-the provider export and declared tool set against `TRITONAI_HARNESS_ROOT`; `readiness:local` runs it
-against the exact pinned Harness checkout. A plugin PR must also add its Harness-owned composition
-proof.
+validated manifest as `manifest`, and define a `contract:harness` script. The script must prove
+the provider export and declared tool set against `TRITONAI_HARNESS_ROOT` at
+`TRITONAI_HARNESS_COMMIT`; `readiness:local` runs it against that exact clean Harness checkout. A
+plugin PR must also add its Harness-owned composition proof.
 
 ## Local verification
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm readiness
-TRITONAI_HARNESS_ROOT=/path/to/pinned-harness pnpm readiness:local
+TRITONAI_HARNESS_ROOT=/path/to/pinned-harness \
+TRITONAI_HARNESS_COMMIT=<full-reviewed-commit-sha> \
+pnpm readiness:local
 ```
 
 `readiness` supports both an empty foundation and populated plugin workspaces. It checks formatting,
 lint, repository/package structure, workspace typechecks, plugin tests, and deterministic package
-contents. `readiness:local` additionally checks a clean Harness worktree at the exact reviewed
-framework commit.
+contents. `readiness:local` additionally requires the expected Harness commit to match the
+repository-owned pin, checks a clean Harness worktree at that exact commit, and reports the commit
+used for the proof.
 
 Publication, GitHub repository creation, tags, pushes, Harness composition, and releases remain
 explicit owner actions.

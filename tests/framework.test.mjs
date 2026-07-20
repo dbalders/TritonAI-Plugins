@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { validateManifestV1 } from "../scripts/manifest-v1.mjs";
+import { validateManifestV2 } from "../scripts/manifest-v2.mjs";
 import {
   assertPackedMetadata,
   assertPackedStaticFiles,
@@ -12,14 +12,13 @@ import {
 import { parseSkillFrontmatter } from "../scripts/skill-frontmatter.mjs";
 
 const manifest = {
-  apiVersion: "tritonai.harness/v1",
+  apiVersion: "tritonai.harness/v2",
   kind: "IntegrationPlugin",
-  manifestVersion: 1,
+  manifestVersion: 2,
   id: "fixture-reader",
   name: "Fixture Reader",
   description: "A framework validation fixture.",
   version: "1.0.0",
-  compatibility: { harness: { min: "0.2.0", maxExclusive: "0.3.0" } },
   capabilities: [
     {
       id: "fixture.read",
@@ -44,8 +43,20 @@ const manifest = {
   ],
 };
 
-test("accepts a strict skill-only Harness v1 manifest", () => {
-  assert.equal(validateManifestV1(structuredClone(manifest)).id, "fixture-reader");
+test("accepts a strict skill-only Harness v2 manifest", () => {
+  assert.equal(validateManifestV2(structuredClone(manifest)).id, "fixture-reader");
+});
+
+test("rejects the previous Harness manifest contract", () => {
+  assert.throws(
+    () =>
+      validateManifestV2({
+        ...manifest,
+        apiVersion: "tritonai.harness/v1",
+        manifestVersion: 1,
+      }),
+    /unsupported/iu,
+  );
 });
 
 test("accepts access policy, multi-capability dependencies, and tool effects", () => {
@@ -60,23 +71,31 @@ test("accepts access policy, multi-capability dependencies, and tool effects", (
       effect: "write",
     },
   ];
-  assert.equal(validateManifestV1(withTool).tools[0].effect, "write");
+  assert.equal(validateManifestV2(withTool).tools[0].effect, "write");
 });
 
 test("rejects unsupported and missing manifest fields", () => {
   assert.throws(
-    () => validateManifestV1({ ...manifest, unsupported: true }),
+    () => validateManifestV2({ ...manifest, unsupported: true }),
     /unsupported fields/u,
   );
-  const missing = structuredClone(manifest);
-  delete missing.compatibility;
-  assert.throws(() => validateManifestV1(missing), /compatibility/u);
+  assert.throws(
+    () =>
+      validateManifestV2({
+        ...manifest,
+        compatibility: { harness: { min: "0.2.0", maxExclusive: "0.3.0" } },
+      }),
+    /unsupported fields/u,
+  );
+  const missingAccess = structuredClone(manifest);
+  delete missingAccess.capabilities[0].access;
+  assert.throws(() => validateManifestV2(missingAccess), /capability/u);
 });
 
 test("rejects mismatched providers and tools and unknown capabilities", () => {
   const withProviderOnly = structuredClone(manifest);
   withProviderOnly.provider = "fixture-provider";
-  assert.throws(() => validateManifestV1(withProviderOnly), /exactly when/u);
+  assert.throws(() => validateManifestV2(withProviderOnly), /exactly when/u);
 
   const withTool = structuredClone(manifest);
   withTool.tools = [
@@ -84,20 +103,34 @@ test("rejects mismatched providers and tools and unknown capabilities", () => {
       name: "fixture.read",
       displayName: "Read fixture",
       description: "Read fixture data.",
-      capability: "missing.read",
+      capabilities: ["missing.read"],
+      effect: "read",
     },
   ];
-  assert.throws(() => validateManifestV1(withTool), /exactly when/u);
+  assert.throws(() => validateManifestV2(withTool), /exactly when/u);
   withTool.provider = "fixture-provider";
-  assert.throws(() => validateManifestV1(withTool), /unknown capability/u);
+  assert.throws(() => validateManifestV2(withTool), /unknown capability/u);
 
-  const mixedDependencySpelling = structuredClone(manifest);
-  mixedDependencySpelling.skills[0].capability = "fixture.read";
-  assert.throws(() => validateManifestV1(mixedDependencySpelling), /unknown capability/u);
+  const legacyDependencySpelling = structuredClone(manifest);
+  delete legacyDependencySpelling.skills[0].capabilities;
+  legacyDependencySpelling.skills[0].capability = "fixture.read";
+  assert.throws(() => validateManifestV2(legacyDependencySpelling), /unsupported skill fields/u);
+
+  const missingEffect = structuredClone(manifest);
+  missingEffect.provider = "fixture-provider";
+  missingEffect.tools = [
+    {
+      name: "fixture.read",
+      displayName: "Read fixture",
+      description: "Read fixture data.",
+      capabilities: ["fixture.read"],
+    },
+  ];
+  assert.throws(() => validateManifestV2(missingEffect), /invalid effect/u);
 
   const invalidAccess = structuredClone(manifest);
   invalidAccess.capabilities[0].access = "always";
-  assert.throws(() => validateManifestV1(invalidAccess), /capability/u);
+  assert.throws(() => validateManifestV2(invalidAccess), /capability/u);
 });
 
 test("parses bounded YAML skill frontmatter", () => {
