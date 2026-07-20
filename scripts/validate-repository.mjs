@@ -1,7 +1,7 @@
 import * as Fs from "node:fs/promises";
 import * as Path from "node:path";
 
-import { validateManifestV1 } from "./manifest-v1.mjs";
+import { validateManifestV2 } from "./manifest-v2.mjs";
 import { discoverPluginDirectories } from "./plugin-directories.mjs";
 import { parseSkillFrontmatter } from "./skill-frontmatter.mjs";
 
@@ -46,7 +46,7 @@ for (const directory of entries) {
   const packageRoot = Path.join(pluginsRoot, directory);
   await regularTree(packageRoot);
   const packageJson = await json(Path.join(packageRoot, "package.json"));
-  const manifest = validateManifestV1(
+  const manifest = validateManifestV2(
     await json(Path.join(packageRoot, ".tritonai-plugin", "plugin.json")),
   );
   assert(packageJson.name === `@tritonai/plugin-${directory}`, `${directory}: package name drift.`);
@@ -82,7 +82,7 @@ for (const directory of entries) {
         packageJson.exports?.["."]?.default === "./dist/index.js",
       `${directory}: provider package must export compiled dist/index files.`,
     );
-    for (const script of ["build", "prepack", "typecheck", "compatibility:harness"]) {
+    for (const script of ["build", "prepack", "typecheck", "contract:harness"]) {
       assert(
         typeof packageJson.scripts?.[script] === "string" && packageJson.scripts[script].trim(),
         `${directory}: provider package must define a ${script} script.`,

@@ -14,7 +14,7 @@ identifiers.
 ## Supported line
 
 Security fixes target the latest immutable source ref selected by the consuming Harness build. The
-Harness pin, plugin manifest version, package version, and Harness compatibility range identify the
+Harness commit, manifest API/version, package version, and immutable file digests identify the
 deployed combination; there is no independent runtime update channel.
 
 ## Plugin expectations

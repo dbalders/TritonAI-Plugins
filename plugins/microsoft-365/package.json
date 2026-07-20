@@ -1,6 +1,6 @@
 {
   "name": "@tritonai/plugin-microsoft-365",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "files": [
     ".tritonai-plugin",
@@ -19,7 +19,7 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
-    "compatibility:harness": "node scripts/verify-harness-contract.mjs",
+    "contract:harness": "node scripts/verify-harness-contract.mjs",
     "prepack": "pnpm build",
     "test": "vp test run",
     "typecheck": "tsc --noEmit"

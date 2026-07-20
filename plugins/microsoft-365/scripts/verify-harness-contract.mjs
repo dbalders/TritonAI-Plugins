@@ -5,10 +5,12 @@ import { spawnSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 
-const expectedHead = "33a0b5087981142209ccaa0a317c5baa9e4d35be";
+import { REVIEWED_HARNESS_COMMIT } from "../../../scripts/reviewed-harness.mjs";
+
 const packageRoot = Path.resolve(import.meta.dirname, "..");
 const repositoryRoot = Path.resolve(packageRoot, "../..");
 const harnessRoot = process.env.TRITONAI_HARNESS_ROOT;
+const expectedHarnessCommit = process.env.TRITONAI_HARNESS_COMMIT;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -18,10 +20,23 @@ assert(
   typeof harnessRoot === "string" && harnessRoot.length > 0,
   "TRITONAI_HARNESS_ROOT must identify the exact reviewed Harness checkout.",
 );
+assert(
+  /^[a-f0-9]{40}$/u.test(expectedHarnessCommit ?? ""),
+  "TRITONAI_HARNESS_COMMIT must be the full reviewed Harness commit SHA.",
+);
+assert(
+  expectedHarnessCommit === REVIEWED_HARNESS_COMMIT,
+  `TRITONAI_HARNESS_COMMIT must match the repository-reviewed Harness commit ${REVIEWED_HARNESS_COMMIT}.`,
+);
 const harness = Path.resolve(harnessRoot);
 const git = spawnSync("git", ["rev-parse", "HEAD"], { cwd: harness, encoding: "utf8" });
 assert(git.status === 0, `Harness checkout is unavailable at ${harness}.`);
-assert(git.stdout.trim() === expectedHead, `Harness HEAD must be ${expectedHead}.`);
+const actualHead = git.stdout.trim();
+assert(/^[a-f0-9]{40}$/u.test(actualHead), "Harness HEAD must be a full commit SHA.");
+assert(
+  actualHead === REVIEWED_HARNESS_COMMIT,
+  `Harness checkout is at ${actualHead}, expected ${REVIEWED_HARNESS_COMMIT}.`,
+);
 const harnessStatus = spawnSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
   cwd: harness,
   encoding: "utf8",
@@ -29,7 +44,7 @@ const harnessStatus = spawnSync("git", ["status", "--porcelain=v1", "--untracked
 assert(harnessStatus.status === 0, "Could not verify the Harness working-tree state.");
 assert(
   harnessStatus.stdout.trim() === "",
-  "Harness worktree must be clean so provider compatibility uses only reviewed contents.",
+  "Harness worktree must be clean so the provider contract uses only reviewed contents.",
 );
 
 const manifest = JSON.parse(
@@ -39,10 +54,6 @@ const manifestModule = await import(
   pathToFileURL(Path.join(harness, "apps/server/src/integrations/manifest.ts")).href
 );
 const validatedManifest = manifestModule.validateIntegrationManifest(manifest);
-assert(
-  manifestModule.manifestCompatibility(validatedManifest).compatible === true,
-  "Exact Harness rejected the Microsoft 365 compatibility range.",
-);
 
 const providerModule = await import(pathToFileURL(Path.join(packageRoot, "dist/index.js")).href);
 assert(
@@ -84,7 +95,7 @@ for (const tool of providerModule.MICROSOFT_GRAPH_TOOLS) {
 
 const probeDirectory = await Fs.mkdtemp(Path.join(Os.tmpdir(), "tritonai-graph-contract-"));
 try {
-  const probe = Path.join(probeDirectory, "provider-compatibility.ts");
+  const probe = Path.join(probeDirectory, "provider-contract.ts");
   const consumerProbe = Path.join(probeDirectory, "package-consumer.ts");
   const harnessRegistry = Path.join(harness, "apps/server/src/integrations/IntegrationRegistry.ts");
   const harnessSecrets = Path.join(harness, "apps/server/src/auth/ServerSecretStore.ts");
@@ -143,10 +154,10 @@ try {
   });
   assert(
     compile.status === 0,
-    `Compiled provider is not structurally assignable to exact Harness v1:\n${compile.stdout}${compile.stderr}`,
+    `Compiled provider is not structurally assignable to exact Harness v2:\n${compile.stdout}${compile.stderr}`,
   );
 } finally {
   await Fs.rm(probeDirectory, { recursive: true, force: true });
 }
 
-console.log(`Microsoft 365 provider compatibility passed at Harness ${expectedHead}`);
+console.log(`Microsoft 365 provider contract passed at Harness ${actualHead}`);

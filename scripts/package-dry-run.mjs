@@ -4,7 +4,7 @@ import * as Os from "node:os";
 import * as Path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { validateManifestV1 } from "./manifest-v1.mjs";
+import { validateManifestV2 } from "./manifest-v2.mjs";
 import {
   assertPackedMetadata,
   assertPackedStaticFiles,
@@ -89,7 +89,7 @@ if (pluginDirectories.length === 0) {
       const packagePath = Path.join(packageRoot, "package.json");
       const manifestPath = Path.join(packageRoot, ".tritonai-plugin", "plugin.json");
       const packageJson = JSON.parse(await Fs.readFile(packagePath, "utf8"));
-      const manifest = validateManifestV1(JSON.parse(await Fs.readFile(manifestPath, "utf8")));
+      const manifest = validateManifestV2(JSON.parse(await Fs.readFile(manifestPath, "utf8")));
       const sourceStaticFiles = reviewedPackages.get(directory);
       if (!sourceStaticFiles)
         throw new Error(`${directory}: reviewed package snapshot is missing.`);
@@ -98,15 +98,7 @@ if (pluginDirectories.length === 0) {
       for (const pass of ["one", "two"]) {
         const destination = Path.join(temporary, pass, directory);
         await Fs.mkdir(destination, { recursive: true });
-        run("pnpm", [
-          "--filter",
-          packageJson.name,
-          "--fail-if-no-match",
-          "pack",
-          "--pack-destination",
-          destination,
-          "--json",
-        ]);
+        run("pnpm", ["pack", "--pack-destination", destination], packageRoot);
         const tarballs = (await Fs.readdir(destination)).filter((name) => name.endsWith(".tgz"));
         if (tarballs.length !== 1) throw new Error(`${directory}: expected exactly one tarball.`);
         const tarball = Path.join(destination, tarballs[0]);
@@ -123,12 +115,12 @@ if (pluginDirectories.length === 0) {
       const packedPackageJson = JSON.parse(
         run("tar", ["-xOf", firstTarball, "package/package.json"]),
       );
-      const packedManifest = validateManifestV1(
+      const packedManifest = validateManifestV2(
         JSON.parse(run("tar", ["-xOf", firstTarball, "package/.tritonai-plugin/plugin.json"])),
       );
       assertPackedMetadata(directory, packageJson, manifest, packedPackageJson, packedManifest);
       const currentPackageJson = JSON.parse(await Fs.readFile(packagePath, "utf8"));
-      const currentManifest = validateManifestV1(
+      const currentManifest = validateManifestV2(
         JSON.parse(await Fs.readFile(manifestPath, "utf8")),
       );
       assertSourceMetadataUnchanged(
