@@ -97,7 +97,7 @@ export function validateManifestV2(value) {
         nonEmpty(capability.displayName) &&
         nonEmpty(capability.description) &&
         (capability.access === "default" || capability.access === "opt-in"),
-      "Every capability requires a unique id, displayName, and description.",
+      "Every capability requires a unique id, displayName, description, and explicit access value.",
     );
     assert(!capabilityIds.has(capability.id), `Duplicate capability ${capability.id}.`);
     capabilityIds.add(capability.id);

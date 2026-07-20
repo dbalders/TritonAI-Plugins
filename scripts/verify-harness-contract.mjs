@@ -143,7 +143,6 @@ for (const directory of await discoverPluginDirectories(pluginsRoot)) {
         env: {
           ...process.env,
           TRITONAI_HARNESS_ROOT: harness,
-          TRITONAI_PLUGIN_MANIFEST: manifestPath,
         },
       },
     );
