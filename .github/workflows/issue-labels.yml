@@ -1,6 +1,9 @@
 name: Issue Labels
 
 on:
+  issues:
+    types:
+      - opened
   push:
     branches:
       - main
@@ -11,6 +14,10 @@ on:
 
 permissions:
   issues: write
+
+concurrency:
+  group: issue-labels-${{ github.repository }}
+  cancel-in-progress: true
 
 jobs:
   sync:
@@ -135,6 +142,41 @@ jobs:
                   if (createError.status !== 422) {
                     throw createError;
                   }
+
+                  const { data: racedLabel } = await github.rest.issues.getLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: label.name,
+                  });
+                  if (
+                    racedLabel.color !== label.color ||
+                    (racedLabel.description ?? "") !== label.description
+                  ) {
+                    await github.rest.issues.updateLabel({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      name: label.name,
+                      color: label.color,
+                      description: label.description,
+                    });
+                  }
                 }
+              }
+            }
+
+            if (context.eventName === "issues" && context.payload.action === "opened") {
+              const title = context.payload.issue?.title ?? "";
+              const typeLabel = title.startsWith("[Bug]:")
+                ? "bug"
+                : title.startsWith("[Feature]:")
+                  ? "feature"
+                  : null;
+              if (typeLabel) {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  labels: [typeLabel],
+                });
               }
             }
