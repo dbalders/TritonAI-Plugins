@@ -1,0 +1,83 @@
+name: Feature request
+description: Propose a scoped plugin improvement or new capability.
+title: "[Feature]: "
+labels:
+  - feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for a new plugin capability or meaningful improvement.
+        Small requests with a clear permission boundary and user outcome are easiest to evaluate.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I am describing a concrete problem or use case.
+          required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Microsoft 365 plugin
+        - New provider or integration
+        - Provider tools or external API behavior
+        - Plugin manifest or capabilities
+        - Bundled skills
+        - Harness contract integration
+        - Build, validation, packaging, or release tooling
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What is hard or impossible today, and who is affected?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the tool, skill, manifest, or behavior you want.
+
+  - type: textarea
+    id: permissions
+    attributes:
+      label: Capabilities and permissions
+      description: Identify required external permissions and the narrowest TritonAI capability grant.
+      placeholder: Reuse mail.read; no new Microsoft Graph permission required.
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Smallest useful scope
+      description: What is the narrowest implementation that solves the problem?
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List observable behavior and validation expectations.
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Security, privacy, and compatibility risks
+      description: Note sensitive data, write operations, rate limits, or Harness contract considerations.
+
+  - type: textarea
+    id: references
+    attributes:
+      label: Examples or references
+      description: Link relevant API documentation, screenshots, or comparable behavior.
