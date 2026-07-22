@@ -32,7 +32,7 @@ const CAPABILITY_NAMES = new Set(Object.keys(CAPABILITY_SCOPES));
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const IDENTITY_RESPONSE_BYTES = 64 * 1024;
 const GRAPH_RESPONSE_BYTES = 1024 * 1024;
-const GRAPH_ATTACHMENT_RESPONSE_BYTES = 5 * 1024 * 1024;
+const GRAPH_LARGE_RESPONSE_BYTES = 5 * 1024 * 1024;
 const MAX_TOKEN_CHARS = 16_384;
 const MAX_CALENDAR_RANGE_MS = 31 * 86_400_000;
 const MAX_BODY_CHARS = 50_000;
@@ -1241,7 +1241,10 @@ export class MicrosoftGraphProvider {
                 errors: "all",
                 onExcessProperty: "error",
             });
-            const result = await this.#graph(`/me/messages/${encodeURIComponent(values.messageId)}`, access.value, { signal: context?.signal });
+            const result = await this.#graph(`/me/messages/${encodeURIComponent(values.messageId)}`, access.value, {
+                signal: context?.signal,
+                maximumResponseBytes: GRAPH_LARGE_RESPONSE_BYTES,
+            });
             this.#assertInvocationCurrent(generation);
             return mailGetResult(result);
         }
@@ -1268,7 +1271,7 @@ export class MicrosoftGraphProvider {
             });
             const result = await this.#graph(`/me/messages/${encodeURIComponent(values.messageId)}/attachments/${encodeURIComponent(values.attachmentId)}?$expand=microsoft.graph.itemattachment/item`, access.value, {
                 signal: context?.signal,
-                maximumResponseBytes: GRAPH_ATTACHMENT_RESPONSE_BYTES,
+                maximumResponseBytes: GRAPH_LARGE_RESPONSE_BYTES,
             });
             this.#assertInvocationCurrent(generation);
             validateGraphResource(result);
@@ -1326,6 +1329,7 @@ export class MicrosoftGraphProvider {
             });
             const result = await this.#graph(`/me/calendarView?${params.toString()}`, access.value, {
                 signal: context?.signal,
+                maximumResponseBytes: GRAPH_LARGE_RESPONSE_BYTES,
             });
             this.#assertInvocationCurrent(generation);
             return calendarResult(result);
@@ -1353,7 +1357,7 @@ export class MicrosoftGraphProvider {
             });
             const result = await this.#graph(`/me/events/${encodeURIComponent(values.eventId)}/attachments/${encodeURIComponent(values.attachmentId)}?$expand=microsoft.graph.itemattachment/item`, access.value, {
                 signal: context?.signal,
-                maximumResponseBytes: GRAPH_ATTACHMENT_RESPONSE_BYTES,
+                maximumResponseBytes: GRAPH_LARGE_RESPONSE_BYTES,
             });
             this.#assertInvocationCurrent(generation);
             validateGraphResource(result);
