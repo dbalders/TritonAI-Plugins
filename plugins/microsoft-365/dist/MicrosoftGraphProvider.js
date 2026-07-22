@@ -569,7 +569,7 @@ function mailGetResult(value) {
     }
     return compatibleResult({
         ...mailFields(value),
-        body: { contentType, content: body.content },
+        body: { contentType, content: body.content.slice(0, MAX_BODY_CHARS) },
     }, value);
 }
 function mailDraftResult(value) {

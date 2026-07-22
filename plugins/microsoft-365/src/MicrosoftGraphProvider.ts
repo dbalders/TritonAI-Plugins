@@ -725,7 +725,7 @@ function mailGetResult(value: Record<string, unknown>) {
   return compatibleResult(
     {
       ...mailFields(value),
-      body: { contentType, content: body.content },
+      body: { contentType, content: body.content.slice(0, MAX_BODY_CHARS) },
     },
     value,
   );

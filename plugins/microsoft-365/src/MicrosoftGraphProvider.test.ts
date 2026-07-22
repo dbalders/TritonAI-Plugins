@@ -1692,15 +1692,16 @@ describe("MicrosoftGraphProvider tools", () => {
     expect(graphCalls).toBe(0);
   });
 
-  it("passes through unfamiliar Graph response fields within the response-size bound", async () => {
+  it("keeps a bounded compatible body and the complete Graph message", async () => {
     const secrets = memorySecrets();
+    const bodyContent = "x".repeat(50_001);
     const response = {
       id: "message-1",
       subject: "Future property",
       from: { emailAddress: { name: "Person", address: "person@example.edu" } },
       receivedDateTime: "2026-07-15T10:00:00Z",
       isRead: false,
-      body: { contentType: "html", content: "<p>Message body</p>" },
+      body: { contentType: "html", content: bodyContent },
       futureGraphProperty: { nested: [1, 2, 3] },
     };
     const fetchImplementation = (async (input: RequestInfo | URL) => {
@@ -1712,14 +1713,16 @@ describe("MicrosoftGraphProvider tools", () => {
     const graph = provider(secrets.service, fetchImplementation);
     await authorize(graph);
 
-    await expect(
-      graph.invoke("microsoft365.mail.get", { messageId: "message-1" }),
-    ).resolves.toMatchObject({
+    const result = await graph.invoke("microsoft365.mail.get", { messageId: "message-1" });
+    expect(result).toMatchObject({
       id: "message-1",
       from: { name: "Person", address: "person@example.edu" },
-      body: { content: "<p>Message body</p>" },
       graphResponse: { futureGraphProperty: { nested: [1, 2, 3] } },
     });
+    expect((result as { body: { content: string } }).body.content).toBe(
+      bodyContent.slice(0, 50_000),
+    );
+    expect((result as { graphResponse: unknown }).graphResponse).toEqual(response);
   });
 
   it("rejects a Graph collection larger than the requested result bound", async () => {
