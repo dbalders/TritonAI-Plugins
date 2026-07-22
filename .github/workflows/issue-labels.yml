@@ -1,0 +1,193 @@
+name: Issue Labels
+
+on:
+  issues:
+    types:
+      - opened
+  push:
+    branches:
+      - main
+    paths:
+      - .github/ISSUE_TEMPLATE/**
+      - .github/workflows/issue-labels.yml
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+concurrency:
+  group: issue-labels-${{ github.repository }}-${{ github.event.issue.number || 'sync' }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Sync issue labels
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Ensure managed issue labels exist
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const managedLabels = [
+              {
+                name: "feature",
+                color: "a2eeef",
+                description: "A product idea, enhancement, or new capability request.",
+              },
+              {
+                name: "bug",
+                color: "d73a4a",
+                description: "Something is broken or behaving incorrectly.",
+              },
+              {
+                name: "documentation",
+                color: "0075ca",
+                description: "Documentation-only work.",
+              },
+              {
+                name: "question",
+                color: "d876e3",
+                description: "A question or support-style discussion.",
+              },
+              {
+                name: "maintenance",
+                color: "cfd3d7",
+                description: "Internal cleanup, tooling, tests, or upkeep.",
+              },
+              {
+                name: "research",
+                color: "c5def5",
+                description: "Investigation or decision work before implementation.",
+              },
+              {
+                name: "blocked",
+                color: "b60205",
+                description: "Blocked by tests, review, missing info, or another dependency.",
+              },
+              {
+                name: "needs review",
+                color: "fbca04",
+                description: "Needs human product or maintainer review.",
+              },
+              {
+                name: "needs decision",
+                color: "d4c5f9",
+                description: "Needs a maintainer decision or manual follow-up.",
+              },
+              {
+                name: "accepted",
+                color: "0e8a16",
+                description: "Accepted direction, not necessarily ready for automation.",
+              },
+              {
+                name: "ready",
+                color: "1d76db",
+                description: "Scoped and ready for implementation.",
+              },
+              {
+                name: "declined",
+                color: "7057ff",
+                description: "Not planned or not appropriate for this project.",
+              },
+              {
+                name: "duplicate",
+                color: "e4e669",
+                description: "Already tracked by another issue or pull request.",
+              },
+              {
+                name: "automation candidate",
+                color: "bfd4f2",
+                description: "May be suitable for automation after approval or clarification.",
+              },
+              {
+                name: "auto PR",
+                color: "5319e7",
+                description: "Automation is allowed to attempt a pull request.",
+              },
+            ];
+            for (const label of managedLabels) {
+              try {
+                const { data: existing } = await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: label.name,
+                });
+
+                if (
+                  existing.color !== label.color ||
+                  (existing.description ?? "") !== label.description
+                ) {
+                  await github.rest.issues.updateLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: label.name,
+                    color: label.color,
+                    description: label.description,
+                  });
+                }
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+
+                try {
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: label.name,
+                    color: label.color,
+                    description: label.description,
+                  });
+                } catch (createError) {
+                  const errors = Array.isArray(createError.response?.data?.errors)
+                    ? createError.response.data.errors
+                    : [];
+                  const labelAlreadyExists =
+                    createError.status === 422 &&
+                    errors.some(
+                      (entry) =>
+                        typeof entry === "object" &&
+                        entry !== null &&
+                        entry.code === "already_exists",
+                    );
+                  if (!labelAlreadyExists) {
+                    throw createError;
+                  }
+
+                  const { data: racedLabel } = await github.rest.issues.getLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: label.name,
+                  });
+                  if (
+                    racedLabel.color !== label.color ||
+                    (racedLabel.description ?? "") !== label.description
+                  ) {
+                    await github.rest.issues.updateLabel({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      name: label.name,
+                      color: label.color,
+                      description: label.description,
+                    });
+                  }
+                }
+              }
+            }
+
+            if (context.eventName === "issues" && context.payload.action === "opened") {
+              const title = context.payload.issue?.title ?? "";
+              const typeLabel = title.startsWith("[Bug]:")
+                ? "bug"
+                : title.startsWith("[Feature]:")
+                  ? "feature"
+                  : null;
+              if (typeLabel) {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  labels: [typeLabel],
+                });
+              }
+            }

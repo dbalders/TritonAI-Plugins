@@ -1,0 +1,103 @@
+name: Bug report
+description: Report broken plugin behavior, regressions, or integration failures.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for broken plugin behavior, regressions, or reliability problems.
+        Search existing issues first and keep the report focused on one problem.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I removed access tokens, message contents, and other sensitive data.
+          required: true
+        - label: I included enough detail to reproduce or investigate the problem.
+          required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the repository is affected?
+      options:
+        - Microsoft 365 plugin
+        - Provider tools or external API behavior
+        - Plugin manifest or capabilities
+        - Bundled skills
+        - Harness contract integration
+        - Build, validation, packaging, or release tooling
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide a minimal, deterministic reproduction. Use placeholders instead of secrets.
+      placeholder: |
+        1. Enable the plugin and grant ...
+        2. Invoke ... with ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      options:
+        - Blocks work completely
+        - Major degradation or frequent failure
+        - Minor bug or occasional failure
+        - Cosmetic or documentation issue
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version or commit
+      placeholder: v0.1.0 or main @ abc1234
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Harness version, provider, and model if relevant.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or errors
+      description: Include only relevant output. Remove credentials and private data.
+      render: shell
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Workaround
+      description: Include any temporary workaround you found.
