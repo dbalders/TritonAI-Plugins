@@ -8,6 +8,8 @@ description: Read, create, or edit Outlook calendar events through TritonAI Harn
 Use the narrow calendar tool that matches the request:
 
 - Use `microsoft365.calendar.events` for a bounded date range.
+- Use `microsoft365.calendar.event.get` with an exact event ID when the event body or other event
+  fields are needed.
 - Use `microsoft365.calendar.event.attachments.list` and
   `microsoft365.calendar.event.attachment.get` to read attachments from an exact event.
 - Use `microsoft365.calendar.event.create` to create one event.

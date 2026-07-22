@@ -89,6 +89,13 @@
       "effect": "read"
     },
     {
+      "name": "microsoft365.calendar.event.get",
+      "displayName": "Read calendar event",
+      "description": "Read one Microsoft 365 calendar event.",
+      "capabilities": ["calendar.read"],
+      "effect": "read"
+    },
+    {
       "name": "microsoft365.calendar.event.create",
       "displayName": "Create calendar event",
       "description": "Create one Microsoft 365 calendar event.",

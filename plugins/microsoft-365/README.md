@@ -29,6 +29,7 @@ The fixed endpoints follow the Microsoft Graph contracts for [reading a message]
 [creating a draft message](https://learn.microsoft.com/en-us/graph/api/user-post-messages?view=graph-rest-1.0),
 [reading message attachments](https://learn.microsoft.com/en-us/graph/api/message-list-attachments?view=graph-rest-1.0),
 [creating an event](https://learn.microsoft.com/en-us/graph/api/calendar-post-events?view=graph-rest-1.0),
+[reading an event](https://learn.microsoft.com/en-us/graph/api/event-get?view=graph-rest-1.0),
 [reading event attachments](https://learn.microsoft.com/en-us/graph/api/event-list-attachments?view=graph-rest-1.0),
 [updating an event](https://learn.microsoft.com/en-us/graph/api/event-update?view=graph-rest-1.0),
 [listing chats](https://learn.microsoft.com/en-us/graph/api/chat-list?view=graph-rest-1.0),
@@ -39,9 +40,10 @@ Inputs, result counts, date ranges, response bytes, strings, OAuth scopes, and r
 bounded. Pagination links are not followed by the provider. Draft bodies and chat messages use plain
 text; draft file contents use base64 as required by Microsoft Graph.
 
-Mail search requests only identification fields, previews, and attachment presence. Tool result
-fields remain at the top level for compatibility, and the unmodified Graph result is included under
-`graphResponse`. This includes the full message body returned by Graph for a single-message read.
+Mail search and calendar-view requests only identification fields, previews, and attachment
+presence. Exact message and event reads return the complete Graph resource. Tool result fields
+remain at the top level for compatibility, and the unmodified Graph result is included under
+`graphResponse`.
 
 Attachment list tools request metadata only so file bytes cannot make the list unusable. The matching
 single-attachment tool returns Graph's file `contentBytes` or expands an attached Outlook item, up to

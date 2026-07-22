@@ -97,6 +97,12 @@ const CalendarEventsInput = Schema.Struct({
   ),
 });
 
+const CalendarEventGetInput = Schema.Struct({
+  eventId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+    description: "Exact Microsoft 365 event identifier.",
+  }),
+});
+
 const AttachmentLimit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })).annotate({
   description: "Maximum number of attachments (1-50).",
 });
@@ -271,6 +277,7 @@ const decodeMailGetInput = Schema.decodeUnknownPromise(MailGetInput);
 const decodeMailAttachmentListInput = Schema.decodeUnknownPromise(MailAttachmentListInput);
 const decodeMailAttachmentGetInput = Schema.decodeUnknownPromise(MailAttachmentGetInput);
 const decodeCalendarEventsInput = Schema.decodeUnknownPromise(CalendarEventsInput);
+const decodeCalendarEventGetInput = Schema.decodeUnknownPromise(CalendarEventGetInput);
 const decodeCalendarAttachmentListInput = Schema.decodeUnknownPromise(CalendarAttachmentListInput);
 const decodeCalendarAttachmentGetInput = Schema.decodeUnknownPromise(CalendarAttachmentGetInput);
 const decodeMailDraftCreateInput = Schema.decodeUnknownPromise(MailDraftCreateInput);
@@ -334,6 +341,15 @@ export const MICROSOFT_GRAPH_TOOLS = [
     description:
       "Read Microsoft 365 calendar events through the fixed calendar-view endpoint in a bounded timestamp range.",
     input: CalendarEventsInput,
+    readOnly: true,
+    destructive: false,
+    idempotent: true,
+    openWorld: true,
+  },
+  {
+    name: "microsoft365.calendar.event.get",
+    description: "Read one exact Microsoft 365 calendar event through the fixed events endpoint.",
+    input: CalendarEventGetInput,
     readOnly: true,
     destructive: false,
     idempotent: true,
@@ -1648,13 +1664,30 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         endDateTime: end,
         $top: "50",
         $orderby: "start/dateTime",
+        $select: "id,subject,start,end,location,organizer,bodyPreview,hasAttachments",
       });
       const result = await this.#graph(`/me/calendarView?${params.toString()}`, access.value, {
         signal: context?.signal,
-        maximumResponseBytes: GRAPH_LARGE_RESPONSE_BYTES,
       });
       this.#assertInvocationCurrent(generation);
       return calendarResult(result);
+    }
+    if (toolName === "microsoft365.calendar.event.get") {
+      this.#requireCapability(access, "calendar.read");
+      const values = await decodeCalendarEventGetInput(input, {
+        errors: "all",
+        onExcessProperty: "error",
+      });
+      const result = await this.#graph(
+        `/me/events/${encodeURIComponent(values.eventId)}`,
+        access.value,
+        {
+          signal: context?.signal,
+          maximumResponseBytes: GRAPH_LARGE_RESPONSE_BYTES,
+        },
+      );
+      this.#assertInvocationCurrent(generation);
+      return eventResult(result);
     }
     if (toolName === "microsoft365.calendar.event.attachments.list") {
       this.#requireCapability(access, "calendar.read");

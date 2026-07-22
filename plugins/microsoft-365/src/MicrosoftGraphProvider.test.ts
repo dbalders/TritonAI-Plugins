@@ -204,6 +204,7 @@ describe("MicrosoftGraphProvider contract", () => {
         { readOnly: false, destructive: false, idempotent: false },
       ],
       ["microsoft365.calendar.events", { readOnly: true, destructive: false, idempotent: true }],
+      ["microsoft365.calendar.event.get", { readOnly: true, destructive: false, idempotent: true }],
       [
         "microsoft365.calendar.event.attachments.list",
         { readOnly: true, destructive: false, idempotent: true },
@@ -1068,7 +1069,7 @@ describe("MicrosoftGraphProvider tools", () => {
     );
   });
 
-  it("keeps compatible calendar fields with the complete Graph response", async () => {
+  it("keeps calendar discovery light and reads one complete event", async () => {
     const secrets = memorySecrets();
     const calls: string[] = [];
     const fetchImplementation = (async (input: RequestInfo | URL) => {
@@ -1076,6 +1077,25 @@ describe("MicrosoftGraphProvider tools", () => {
       calls.push(url);
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
       if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Calendars.Read"));
+      if (url.endsWith("/me/events/event%2Fid%3Ffixture")) {
+        return jsonResponse({
+          id: "event-1",
+          subject: "Review",
+          start: { dateTime: "2026-07-15T09:00:00", timeZone: "Pacific Standard Time" },
+          end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
+          location: { displayName: "Online" },
+          attendees: [
+            {
+              emailAddress: { name: "Person", address: "person@example.edu" },
+              type: "required",
+              status: { response: "accepted" },
+            },
+          ],
+          webLink: "https://outlook.office.com/calendar/event-1",
+          body: { contentType: "html", content: "<p>Complete agenda</p>" },
+          fixtureProperty: { preserved: true },
+        });
+      }
       return jsonResponse({
         value: [
           {
@@ -1085,9 +1105,8 @@ describe("MicrosoftGraphProvider tools", () => {
             end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
             location: { displayName: "Online" },
             organizer: { emailAddress: { name: "Person", address: "person@example.edu" } },
-            body: { contentType: "html", content: "<p>Complete agenda</p>" },
-            attendees: [{ status: { response: "accepted" } }],
-            fixtureProperty: { preserved: true },
+            bodyPreview: "Complete agenda",
+            hasAttachments: true,
           },
           {
             id: "event-2",
@@ -1116,18 +1135,30 @@ describe("MicrosoftGraphProvider tools", () => {
         value: [
           {
             id: "event-1",
-            body: { content: "<p>Complete agenda</p>" },
-            attendees: [{ status: { response: "accepted" } }],
-            fixtureProperty: { preserved: true },
+            bodyPreview: "Complete agenda",
+            hasAttachments: true,
           },
           { id: "event-2", organizer: { emailAddress: null } },
         ],
       },
     });
-    expect(calls.at(-1)?.startsWith("https://graph.microsoft.com/v1.0/me/calendarView?")).toBe(
-      true,
+    const calendarUrl = calls.find((url) => url.includes("/me/calendarView?")) ?? "";
+    expect(calendarUrl.startsWith("https://graph.microsoft.com/v1.0/me/calendarView?")).toBe(true);
+    expect(decodeURIComponent(calendarUrl)).toContain(
+      "$select=id,subject,start,end,location,organizer,bodyPreview,hasAttachments",
     );
-    expect(calls.at(-1)).not.toContain("%24select");
+    await expect(
+      graph.invoke("microsoft365.calendar.event.get", { eventId: "event/id?fixture" }),
+    ).resolves.toMatchObject({
+      id: "event-1",
+      attendees: [{ emailAddress: { address: "person@example.edu" }, type: "required" }],
+      graphResponse: {
+        body: { content: "<p>Complete agenda</p>" },
+        attendees: [{ status: { response: "accepted" } }],
+        fixtureProperty: { preserved: true },
+      },
+    });
+    expect(calls.at(-1)).toBe("https://graph.microsoft.com/v1.0/me/events/event%2Fid%3Ffixture");
   });
 
   it("reads mail and calendar attachments under the existing read capabilities", async () => {
@@ -1514,6 +1545,9 @@ describe("MicrosoftGraphProvider tools", () => {
       { messageId: "message-1", extra: true },
     ]) {
       await expect(graph.invoke("microsoft365.mail.get", input)).rejects.toBeDefined();
+    }
+    for (const input of [null, { eventId: "" }, { eventId: "x".repeat(513), extra: true }]) {
+      await expect(graph.invoke("microsoft365.calendar.event.get", input)).rejects.toBeDefined();
     }
     for (const [tool, input] of [
       ["microsoft365.mail.attachments.list", { messageId: "", limit: 1 }],

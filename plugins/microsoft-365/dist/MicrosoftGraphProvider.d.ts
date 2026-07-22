@@ -81,6 +81,16 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly idempotent: true;
     readonly openWorld: true;
 }, {
+    readonly name: "microsoft365.calendar.event.get";
+    readonly description: "Read one exact Microsoft 365 calendar event through the fixed events endpoint.";
+    readonly input: Schema.Struct<{
+        readonly eventId: Schema.String;
+    }>;
+    readonly readOnly: true;
+    readonly destructive: false;
+    readonly idempotent: true;
+    readonly openWorld: true;
+}, {
     readonly name: "microsoft365.calendar.event.create";
     readonly description: "Create one Microsoft 365 calendar event through the fixed events endpoint.";
     readonly input: Schema.Struct<{
@@ -245,6 +255,16 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly input: Schema.Struct<{
             readonly start: Schema.optionalKey<Schema.String>;
             readonly end: Schema.optionalKey<Schema.String>;
+        }>;
+        readonly readOnly: true;
+        readonly destructive: false;
+        readonly idempotent: true;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.calendar.event.get";
+        readonly description: "Read one exact Microsoft 365 calendar event through the fixed events endpoint.";
+        readonly input: Schema.Struct<{
+            readonly eventId: Schema.String;
         }>;
         readonly readOnly: true;
         readonly destructive: false;
