@@ -190,6 +190,7 @@ describe("MicrosoftGraphProvider contract", () => {
   it("publishes executable exact Effect schemas and truthful effect metadata", async () => {
     const expected = new Map([
       ["microsoft365.mail.search", { readOnly: true, destructive: false, idempotent: true }],
+      ["microsoft365.mail.get", { readOnly: true, destructive: false, idempotent: true }],
       [
         "microsoft365.mail.draft.create",
         { readOnly: false, destructive: false, idempotent: false },
@@ -970,6 +971,7 @@ describe("MicrosoftGraphProvider tools", () => {
           {
             id: "message-1",
             subject: "Budget",
+            bodyPreview: "Quarterly budget review",
             from: { emailAddress: { name: "Person", address: "person@example.edu" } },
             receivedDateTime: "2026-07-15T10:00:00Z",
             isRead: false,
@@ -977,6 +979,7 @@ describe("MicrosoftGraphProvider tools", () => {
           {
             id: "message-2",
             subject: "System notice",
+            bodyPreview: null,
             from: { emailAddress: null },
             receivedDateTime: "2026-07-15T11:00:00Z",
             isRead: true,
@@ -992,14 +995,84 @@ describe("MicrosoftGraphProvider tools", () => {
       limit: 5,
     });
     expect(result).toMatchObject({
-      messages: [{ id: "message-1" }, { id: "message-2", from: null }],
+      messages: [
+        { id: "message-1", preview: "Quarterly budget review" },
+        { id: "message-2", from: null, preview: null },
+      ],
       hasMore: true,
     });
     expect(calls.filter((url) => url.includes("/me/messages?"))).toHaveLength(1);
     const graphUrl = calls.at(-1) ?? "";
     expect(graphUrl.startsWith("https://graph.microsoft.com/v1.0/me/messages?")).toBe(true);
     expect(graphUrl).toContain("%24top=5");
+    expect(decodeURIComponent(graphUrl)).toContain(
+      "$select=id,subject,from,receivedDateTime,isRead,bodyPreview",
+    );
     expect(graphUrl).not.toContain("Q4%22");
+  });
+
+  it("reads one safely encoded mail message and passes through an HTML fallback", async () => {
+    const secrets = memorySecrets();
+    const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
+      graphCalls.push({ url, init });
+      return jsonResponse({
+        id: "message/id?fixture",
+        subject: "CAB review",
+        from: { emailAddress: { name: "Person", address: "person@example.edu" } },
+        receivedDateTime: "2026-07-15T10:00:00Z",
+        isRead: false,
+        body: { contentType: "html", content: "<p>Review details</p>" },
+      });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph);
+
+    await expect(
+      graph.invoke("microsoft365.mail.get", { messageId: "message/id?fixture" }),
+    ).resolves.toEqual({
+      id: "message/id?fixture",
+      subject: "CAB review",
+      from: { name: "Person", address: "person@example.edu" },
+      receivedDateTime: "2026-07-15T10:00:00Z",
+      isRead: false,
+      body: { contentType: "html", content: "<p>Review details</p>" },
+    });
+
+    const call = graphCalls[0]!;
+    expect(call.url).toContain("/me/messages/message%2Fid%3Ffixture?");
+    expect(decodeURIComponent(call.url)).toContain(
+      "$select=id,subject,from,receivedDateTime,isRead,body",
+    );
+    expect(new Headers(call.init?.headers).get("Prefer")).toBe('outlook.body-content-type="text"');
+    expect(call.init?.method).toBe("GET");
+  });
+
+  it("truncates mail message bodies to the output limit", async () => {
+    const secrets = memorySecrets();
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
+      return jsonResponse({
+        id: "message-1",
+        subject: null,
+        from: null,
+        receivedDateTime: "2026-07-15T10:00:00Z",
+        isRead: true,
+        body: { contentType: "text", content: "x".repeat(50_001) },
+      });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph);
+
+    const result = (await graph.invoke("microsoft365.mail.get", {
+      messageId: "message-1",
+    })) as { readonly body: { readonly content: string } };
+    expect(result.body.content).toBe("x".repeat(50_000));
   });
 
   it("uses only the fixed bounded calendarView endpoint", async () => {
@@ -1271,6 +1344,14 @@ describe("MicrosoftGraphProvider tools", () => {
       { query: "x".repeat(201) },
     ]) {
       await expect(graph.invoke("microsoft365.mail.search", input)).rejects.toBeDefined();
+    }
+    for (const input of [
+      null,
+      { messageId: "" },
+      { messageId: "x".repeat(513) },
+      { messageId: "message-1", extra: true },
+    ]) {
+      await expect(graph.invoke("microsoft365.mail.get", input)).rejects.toBeDefined();
     }
     for (const input of [
       { start: "not-a-date", end: "2026-07-16T00:00:00Z" },

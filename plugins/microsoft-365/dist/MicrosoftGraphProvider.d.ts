@@ -19,6 +19,16 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly idempotent: true;
     readonly openWorld: true;
 }, {
+    readonly name: "microsoft365.mail.get";
+    readonly description: "Read one Microsoft 365 message body through the fixed messages endpoint.";
+    readonly input: Schema.Struct<{
+        readonly messageId: Schema.String;
+    }>;
+    readonly readOnly: true;
+    readonly destructive: false;
+    readonly idempotent: true;
+    readonly openWorld: true;
+}, {
     readonly name: "microsoft365.mail.draft.create";
     readonly description: "Create one unsent plain-text Microsoft 365 mail draft through a fixed endpoint.";
     readonly input: Schema.Struct<{
@@ -124,6 +134,16 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly input: Schema.Struct<{
             readonly query: Schema.optionalKey<Schema.String>;
             readonly limit: Schema.optionalKey<Schema.Int>;
+        }>;
+        readonly readOnly: true;
+        readonly destructive: false;
+        readonly idempotent: true;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.mail.get";
+        readonly description: "Read one Microsoft 365 message body through the fixed messages endpoint.";
+        readonly input: Schema.Struct<{
+            readonly messageId: Schema.String;
         }>;
         readonly readOnly: true;
         readonly destructive: false;

@@ -11,7 +11,7 @@
     {
       "id": "mail.read",
       "displayName": "Read mail",
-      "description": "Search message metadata. No send, edit, move, or delete access.",
+      "description": "Search message previews and read message content. No send, edit, move, or delete access.",
       "access": "default"
     },
     {
@@ -49,7 +49,14 @@
     {
       "name": "microsoft365.mail.search",
       "displayName": "Search mail",
-      "description": "Search recent Microsoft 365 mail with a bounded read-only query.",
+      "description": "Search recent Microsoft 365 mail with bounded read-only previews.",
+      "capabilities": ["mail.read"],
+      "effect": "read"
+    },
+    {
+      "name": "microsoft365.mail.get",
+      "displayName": "Read mail message",
+      "description": "Read one Microsoft 365 mail message with a bounded body.",
       "capabilities": ["mail.read"],
       "effect": "read"
     },

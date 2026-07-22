@@ -49,6 +49,11 @@ const MailSearchInput = Schema.Struct({
         description: "Maximum number of messages (1-25).",
     })),
 });
+const MailGetInput = Schema.Struct({
+    messageId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+        description: "Exact Microsoft 365 message identifier.",
+    }),
+});
 const CalendarEventsInput = Schema.Struct({
     start: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(64)).annotate({
         description: "Inclusive ISO 8601 start timestamp.",
@@ -131,6 +136,7 @@ const ChatMessageSendInput = Schema.Struct({
     body: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_CHAT_BODY_CHARS)).annotate({ description: "Plain-text chat message whose encoded request is at most 28 KB." }),
 });
 const decodeMailSearchInput = Schema.decodeUnknownPromise(MailSearchInput);
+const decodeMailGetInput = Schema.decodeUnknownPromise(MailGetInput);
 const decodeCalendarEventsInput = Schema.decodeUnknownPromise(CalendarEventsInput);
 const decodeMailDraftCreateInput = Schema.decodeUnknownPromise(MailDraftCreateInput);
 const decodeCalendarEventCreateInput = Schema.decodeUnknownPromise(CalendarEventCreateInput);
@@ -143,6 +149,15 @@ export const MICROSOFT_GRAPH_TOOLS = [
         name: "microsoft365.mail.search",
         description: "Search Microsoft 365 mail through the fixed read-only messages endpoint with bounded input and output.",
         input: MailSearchInput,
+        readOnly: true,
+        destructive: false,
+        idempotent: true,
+        openWorld: true,
+    },
+    {
+        name: "microsoft365.mail.get",
+        description: "Read one Microsoft 365 message body through the fixed messages endpoint.",
+        input: MailGetInput,
         readOnly: true,
         destructive: false,
         idempotent: true,
@@ -392,34 +407,57 @@ async function readJson(response, maximumBytes) {
         throw new Error("Microsoft returned invalid JSON.");
     }
 }
+function mailFields(item) {
+    const from = item.from === null || item.from === undefined ? null : asRecord(item.from);
+    const emailAddress = from === null || from.emailAddress === null || from.emailAddress === undefined
+        ? null
+        : asRecord(from.emailAddress);
+    return {
+        id: boundedString(item.id, 512),
+        subject: boundedOptionalString(item.subject, 1_000),
+        from: emailAddress === null
+            ? null
+            : {
+                name: boundedOptionalString(emailAddress.name, 512),
+                address: boundedOptionalString(emailAddress.address, 320),
+            },
+        receivedDateTime: boundedString(item.receivedDateTime, 64),
+        isRead: typeof item.isRead === "boolean"
+            ? item.isRead
+            : (() => {
+                throw new Error("Microsoft Graph returned an invalid mail response.");
+            })(),
+    };
+}
 function mailResult(value, limit) {
     if (!Array.isArray(value.value) || value.value.length > limit) {
         throw new Error("Microsoft Graph returned an invalid mail response.");
     }
     const messages = value.value.map((raw) => {
         const item = asRecord(raw);
-        const from = item.from === null || item.from === undefined ? null : asRecord(item.from);
-        const emailAddress = from === null || from.emailAddress === null || from.emailAddress === undefined
-            ? null
-            : asRecord(from.emailAddress);
         return {
-            id: boundedString(item.id, 512),
-            subject: boundedOptionalString(item.subject, 1_000),
-            from: emailAddress === null
-                ? null
-                : {
-                    name: boundedOptionalString(emailAddress.name, 512),
-                    address: boundedOptionalString(emailAddress.address, 320),
-                },
-            receivedDateTime: boundedString(item.receivedDateTime, 64),
-            isRead: typeof item.isRead === "boolean"
-                ? item.isRead
-                : (() => {
-                    throw new Error("Microsoft Graph returned an invalid mail response.");
-                })(),
+            ...mailFields(item),
+            preview: boundedOptionalString(item.bodyPreview, 255),
         };
     });
     return { messages, hasMore: typeof value["@odata.nextLink"] === "string" };
+}
+function mailBodyResult(value) {
+    const body = asRecord(value.body);
+    const contentType = boundedString(body.contentType, 16);
+    if (contentType !== "text" && contentType !== "html") {
+        throw new Error("Microsoft Graph returned an invalid mail body type.");
+    }
+    if (typeof body.content !== "string") {
+        throw new Error("Microsoft Graph returned an invalid mail response.");
+    }
+    return {
+        ...mailFields(value),
+        body: {
+            contentType,
+            content: body.content.slice(0, MAX_BODY_CHARS),
+        },
+    };
 }
 function graphDateTime(value) {
     const item = asRecord(value);
@@ -1031,7 +1069,10 @@ export class MicrosoftGraphProvider {
         }
     }
     async #graph(path, accessToken, options = {}) {
-        const headers = { authorization: `Bearer ${accessToken}` };
+        const headers = {
+            ...options.headers,
+            authorization: `Bearer ${accessToken}`,
+        };
         if (options.body !== undefined)
             headers["content-type"] = "application/json";
         const { response, json } = await this.#request(`${GRAPH_API_ROOT}${path}`, {
@@ -1087,7 +1128,7 @@ export class MicrosoftGraphProvider {
             const query = values.query?.trim() ?? "";
             const limit = values.limit ?? 10;
             const params = new URLSearchParams({
-                $select: "id,subject,from,receivedDateTime,isRead",
+                $select: "id,subject,from,receivedDateTime,isRead,bodyPreview",
                 $top: String(limit),
             });
             if (query) {
@@ -1100,6 +1141,22 @@ export class MicrosoftGraphProvider {
             });
             this.#assertInvocationCurrent(generation);
             return mailResult(result, limit);
+        }
+        if (toolName === "microsoft365.mail.get") {
+            this.#requireCapability(access, "mail.read");
+            const values = await decodeMailGetInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const params = new URLSearchParams({
+                $select: "id,subject,from,receivedDateTime,isRead,body",
+            });
+            const result = await this.#graph(`/me/messages/${encodeURIComponent(values.messageId)}?${params.toString()}`, access.value, {
+                headers: { Prefer: 'outlook.body-content-type="text"' },
+                signal: context?.signal,
+            });
+            this.#assertInvocationCurrent(generation);
+            return mailBodyResult(result);
         }
         if (toolName === "microsoft365.mail.draft.create") {
             this.#requireCapability(access, "mail.draft.create");
