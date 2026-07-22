@@ -6,14 +6,14 @@ and chat send are separate opt-in capabilities.
 
 ## Capability and authorization surface
 
-| Capability          | Access  | Delegated scope       | Fixed actions                               |
-| ------------------- | ------- | --------------------- | ------------------------------------------- |
-| `mail.read`         | Default | `Mail.Read`           | Search projected message metadata           |
-| `mail.draft.create` | Opt-in  | `Mail.ReadWrite`      | Create an unsent plain-text draft           |
-| `calendar.read`     | Default | `Calendars.Read`      | Read a bounded calendar view                |
-| `calendar.write`    | Opt-in  | `Calendars.ReadWrite` | Create or edit an event                     |
-| `chat.read`         | Opt-in  | `Chat.Read`           | List chats and read bounded message history |
-| `chat.write`        | Opt-in  | `Chat.ReadWrite`      | Send plain text to an existing chat         |
+| Capability          | Access  | Delegated scope       | Fixed actions                                   |
+| ------------------- | ------- | --------------------- | ----------------------------------------------- |
+| `mail.read`         | Default | `Mail.Read`           | Search previews and read bounded message bodies |
+| `mail.draft.create` | Opt-in  | `Mail.ReadWrite`      | Create an unsent plain-text draft               |
+| `calendar.read`     | Default | `Calendars.Read`      | Read a bounded calendar view                    |
+| `calendar.write`    | Opt-in  | `Calendars.ReadWrite` | Create or edit an event                         |
+| `chat.read`         | Opt-in  | `Chat.Read`           | List chats and read bounded message history     |
+| `chat.write`        | Opt-in  | `Chat.ReadWrite`      | Send plain text to an existing chat             |
 
 The provider never requests `Mail.Send`, application permissions, `.default`, or a client secret.
 It exposes no generic Graph request, raw URL, arbitrary OData, mail send/delete, event delete,

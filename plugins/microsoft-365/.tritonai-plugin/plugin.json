@@ -5,7 +5,7 @@
   "id": "microsoft-365",
   "name": "Microsoft 365",
   "description": "Read mail, calendars, and chats, and opt in to narrowly scoped Microsoft Graph writes.",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "provider": "microsoft-graph",
   "capabilities": [
     {
