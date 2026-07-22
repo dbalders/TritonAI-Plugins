@@ -98,14 +98,6 @@ jobs:
                 description: "Automation is allowed to attempt a pull request.",
               },
             ];
-            const retiredLabels = [
-              "enhancement",
-              "good first issue",
-              "help wanted",
-              "invalid",
-              "wontfix",
-            ];
-
             for (const label of managedLabels) {
               try {
                 const { data: existing } = await github.rest.issues.getLabel({
@@ -143,20 +135,6 @@ jobs:
                   if (createError.status !== 422) {
                     throw createError;
                   }
-                }
-              }
-            }
-
-            for (const name of retiredLabels) {
-              try {
-                await github.rest.issues.deleteLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  name,
-                });
-              } catch (error) {
-                if (error.status !== 404) {
-                  throw error;
                 }
               }
             }
