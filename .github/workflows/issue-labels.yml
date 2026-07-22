@@ -16,7 +16,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: issue-labels-${{ github.repository }}
+  group: issue-labels-${{ github.repository }}-${{ github.event.issue.number || 'sync' }}
   cancel-in-progress: true
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Ensure managed issue labels exist
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const managedLabels = [
@@ -139,7 +139,18 @@ jobs:
                     description: label.description,
                   });
                 } catch (createError) {
-                  if (createError.status !== 422) {
+                  const errors = Array.isArray(createError.response?.data?.errors)
+                    ? createError.response.data.errors
+                    : [];
+                  const labelAlreadyExists =
+                    createError.status === 422 &&
+                    errors.some(
+                      (entry) =>
+                        typeof entry === "object" &&
+                        entry !== null &&
+                        entry.code === "already_exists",
+                    );
+                  if (!labelAlreadyExists) {
                     throw createError;
                   }
 
