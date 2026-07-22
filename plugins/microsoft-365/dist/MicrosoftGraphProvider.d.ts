@@ -20,7 +20,7 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly openWorld: true;
 }, {
     readonly name: "microsoft365.mail.get";
-    readonly description: "Read one Microsoft 365 message body through the fixed messages endpoint.";
+    readonly description: "Read one exact Microsoft 365 mail message through the fixed messages endpoint.";
     readonly input: Schema.Struct<{
         readonly messageId: Schema.String;
     }>;
@@ -30,17 +30,44 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly openWorld: true;
 }, {
     readonly name: "microsoft365.mail.draft.create";
-    readonly description: "Create one unsent plain-text Microsoft 365 mail draft through a fixed endpoint.";
+    readonly description: "Create one unsent Microsoft 365 mail draft with a plain-text body and optional file attachments through a fixed endpoint.";
     readonly input: Schema.Struct<{
         readonly to: Schema.$Array<Schema.String>;
         readonly cc: Schema.optionalKey<Schema.$Array<Schema.String>>;
         readonly bcc: Schema.optionalKey<Schema.$Array<Schema.String>>;
         readonly subject: Schema.String;
         readonly body: Schema.String;
+        readonly attachments: Schema.optionalKey<Schema.$Array<Schema.Struct<{
+            readonly name: Schema.String;
+            readonly contentBytes: Schema.String;
+            readonly contentType: Schema.optionalKey<Schema.String>;
+        }>>>;
     }>;
     readonly readOnly: false;
     readonly destructive: false;
     readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "microsoft365.mail.attachments.list";
+    readonly description: "List attachments on one exact Microsoft 365 mail message.";
+    readonly input: Schema.Struct<{
+        readonly messageId: Schema.String;
+        readonly limit: Schema.optionalKey<Schema.Int>;
+    }>;
+    readonly readOnly: true;
+    readonly destructive: false;
+    readonly idempotent: true;
+    readonly openWorld: true;
+}, {
+    readonly name: "microsoft365.mail.attachment.get";
+    readonly description: "Read one exact attachment from one exact Microsoft 365 mail message, including file bytes or an expanded attached item, within a 5 MB response.";
+    readonly input: Schema.Struct<{
+        readonly messageId: Schema.String;
+        readonly attachmentId: Schema.String;
+    }>;
+    readonly readOnly: true;
+    readonly destructive: false;
+    readonly idempotent: true;
     readonly openWorld: true;
 }, {
     readonly name: "microsoft365.calendar.events";
@@ -71,6 +98,28 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly readOnly: false;
     readonly destructive: false;
     readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "microsoft365.calendar.event.attachments.list";
+    readonly description: "List attachments on one exact Microsoft 365 calendar event.";
+    readonly input: Schema.Struct<{
+        readonly eventId: Schema.String;
+        readonly limit: Schema.optionalKey<Schema.Int>;
+    }>;
+    readonly readOnly: true;
+    readonly destructive: false;
+    readonly idempotent: true;
+    readonly openWorld: true;
+}, {
+    readonly name: "microsoft365.calendar.event.attachment.get";
+    readonly description: "Read one exact attachment from one exact Microsoft 365 calendar event, including file bytes or an expanded attached item, within a 5 MB response.";
+    readonly input: Schema.Struct<{
+        readonly eventId: Schema.String;
+        readonly attachmentId: Schema.String;
+    }>;
+    readonly readOnly: true;
+    readonly destructive: false;
+    readonly idempotent: true;
     readonly openWorld: true;
 }, {
     readonly name: "microsoft365.calendar.event.update";
@@ -141,7 +190,7 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.mail.get";
-        readonly description: "Read one Microsoft 365 message body through the fixed messages endpoint.";
+        readonly description: "Read one exact Microsoft 365 mail message through the fixed messages endpoint.";
         readonly input: Schema.Struct<{
             readonly messageId: Schema.String;
         }>;
@@ -151,17 +200,44 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.mail.draft.create";
-        readonly description: "Create one unsent plain-text Microsoft 365 mail draft through a fixed endpoint.";
+        readonly description: "Create one unsent Microsoft 365 mail draft with a plain-text body and optional file attachments through a fixed endpoint.";
         readonly input: Schema.Struct<{
             readonly to: Schema.$Array<Schema.String>;
             readonly cc: Schema.optionalKey<Schema.$Array<Schema.String>>;
             readonly bcc: Schema.optionalKey<Schema.$Array<Schema.String>>;
             readonly subject: Schema.String;
             readonly body: Schema.String;
+            readonly attachments: Schema.optionalKey<Schema.$Array<Schema.Struct<{
+                readonly name: Schema.String;
+                readonly contentBytes: Schema.String;
+                readonly contentType: Schema.optionalKey<Schema.String>;
+            }>>>;
         }>;
         readonly readOnly: false;
         readonly destructive: false;
         readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.mail.attachments.list";
+        readonly description: "List attachments on one exact Microsoft 365 mail message.";
+        readonly input: Schema.Struct<{
+            readonly messageId: Schema.String;
+            readonly limit: Schema.optionalKey<Schema.Int>;
+        }>;
+        readonly readOnly: true;
+        readonly destructive: false;
+        readonly idempotent: true;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.mail.attachment.get";
+        readonly description: "Read one exact attachment from one exact Microsoft 365 mail message, including file bytes or an expanded attached item, within a 5 MB response.";
+        readonly input: Schema.Struct<{
+            readonly messageId: Schema.String;
+            readonly attachmentId: Schema.String;
+        }>;
+        readonly readOnly: true;
+        readonly destructive: false;
+        readonly idempotent: true;
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.calendar.events";
@@ -192,6 +268,28 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly readOnly: false;
         readonly destructive: false;
         readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.calendar.event.attachments.list";
+        readonly description: "List attachments on one exact Microsoft 365 calendar event.";
+        readonly input: Schema.Struct<{
+            readonly eventId: Schema.String;
+            readonly limit: Schema.optionalKey<Schema.Int>;
+        }>;
+        readonly readOnly: true;
+        readonly destructive: false;
+        readonly idempotent: true;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.calendar.event.attachment.get";
+        readonly description: "Read one exact attachment from one exact Microsoft 365 calendar event, including file bytes or an expanded attached item, within a 5 MB response.";
+        readonly input: Schema.Struct<{
+            readonly eventId: Schema.String;
+            readonly attachmentId: Schema.String;
+        }>;
+        readonly readOnly: true;
+        readonly destructive: false;
+        readonly idempotent: true;
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.calendar.event.update";

@@ -6,14 +6,14 @@ and chat send are separate opt-in capabilities.
 
 ## Capability and authorization surface
 
-| Capability          | Access  | Delegated scope       | Fixed actions                                   |
-| ------------------- | ------- | --------------------- | ----------------------------------------------- |
-| `mail.read`         | Default | `Mail.Read`           | Search previews and read bounded message bodies |
-| `mail.draft.create` | Opt-in  | `Mail.ReadWrite`      | Create an unsent plain-text draft               |
-| `calendar.read`     | Default | `Calendars.Read`      | Read a bounded calendar view                    |
-| `calendar.write`    | Opt-in  | `Calendars.ReadWrite` | Create or edit an event                         |
-| `chat.read`         | Opt-in  | `Chat.Read`           | List chats and read bounded message history     |
-| `chat.write`        | Opt-in  | `Chat.ReadWrite`      | Send plain text to an existing chat             |
+| Capability          | Access  | Delegated scope       | Fixed actions                                |
+| ------------------- | ------- | --------------------- | -------------------------------------------- |
+| `mail.read`         | Default | `Mail.Read`           | Search and read messages and attachments     |
+| `mail.draft.create` | Opt-in  | `Mail.ReadWrite`      | Create an unsent draft with file attachments |
+| `calendar.read`     | Default | `Calendars.Read`      | Read calendar events and attachments         |
+| `calendar.write`    | Opt-in  | `Calendars.ReadWrite` | Create or edit an event                      |
+| `chat.read`         | Opt-in  | `Chat.Read`           | List chats and read bounded message history  |
+| `chat.write`        | Opt-in  | `Chat.ReadWrite`      | Send plain text to an existing chat          |
 
 The provider never requests `Mail.Send`, application permissions, `.default`, or a client secret.
 It exposes no generic Graph request, raw URL, arbitrary OData, mail send/delete, event delete,
@@ -25,16 +25,27 @@ than introducing a new `ChatMessage.Send` approval. The capability and provider 
 the fixed send-to-existing-chat action; the additional delegated authority has no generic endpoint
 or tool through which it can be exercised.
 
-The fixed endpoints follow the Microsoft Graph contracts for [creating a draft message](https://learn.microsoft.com/en-us/graph/api/user-post-messages?view=graph-rest-1.0),
+The fixed endpoints follow the Microsoft Graph contracts for [reading a message](https://learn.microsoft.com/en-us/graph/api/message-get?view=graph-rest-1.0),
+[creating a draft message](https://learn.microsoft.com/en-us/graph/api/user-post-messages?view=graph-rest-1.0),
+[reading message attachments](https://learn.microsoft.com/en-us/graph/api/message-list-attachments?view=graph-rest-1.0),
 [creating an event](https://learn.microsoft.com/en-us/graph/api/calendar-post-events?view=graph-rest-1.0),
+[reading event attachments](https://learn.microsoft.com/en-us/graph/api/event-list-attachments?view=graph-rest-1.0),
 [updating an event](https://learn.microsoft.com/en-us/graph/api/event-update?view=graph-rest-1.0),
 [listing chats](https://learn.microsoft.com/en-us/graph/api/chat-list?view=graph-rest-1.0),
 [listing chat messages](https://learn.microsoft.com/en-us/graph/api/chat-list-messages?view=graph-rest-1.0),
 and [sending to an existing chat](https://learn.microsoft.com/en-us/graph/api/chat-post-messages?view=graph-rest-1.0).
 
 Inputs, result counts, date ranges, response bytes, strings, OAuth scopes, and request duration are
-bounded. Pagination links are never followed or returned. Results are projected into explicit
-shapes rather than returning arbitrary Graph payloads. All writes use plain text.
+bounded. Pagination links are not followed by the provider. Draft bodies and chat messages use plain
+text; draft file contents use base64 as required by Microsoft Graph.
+
+Mail search requests only identification fields, previews, and attachment presence. Tool result
+fields remain at the top level for compatibility, and the unmodified Graph result is included under
+`graphResponse`. This includes the full message body returned by Graph for a single-message read.
+
+Attachment list tools request metadata only so file bytes cannot make the list unusable. The matching
+single-attachment tool returns Graph's file `contentBytes` or expands an attached Outlook item, up to
+a 5 MB JSON response. Larger attachment transfer requires a separate streaming/download surface.
 
 ## Secret and lifecycle behavior
 
