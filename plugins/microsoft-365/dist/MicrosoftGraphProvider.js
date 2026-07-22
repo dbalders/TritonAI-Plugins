@@ -32,9 +32,12 @@ const CAPABILITY_NAMES = new Set(Object.keys(CAPABILITY_SCOPES));
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const IDENTITY_RESPONSE_BYTES = 64 * 1024;
 const GRAPH_RESPONSE_BYTES = 1024 * 1024;
+const GRAPH_LARGE_RESPONSE_BYTES = 5 * 1024 * 1024;
 const MAX_TOKEN_CHARS = 16_384;
 const MAX_CALENDAR_RANGE_MS = 31 * 86_400_000;
 const MAX_BODY_CHARS = 50_000;
+const MAX_DRAFT_ATTACHMENT_BASE64_CHARS = 3_999_996;
+const MAX_DRAFT_REQUEST_BYTES = 4 * 1024 * 1024;
 const MAX_CHAT_BODY_CHARS = 20_000;
 const MAX_CHAT_REQUEST_BYTES = 28 * 1024;
 const ACCESS_TOKEN_SKEW_MS = 60_000;
@@ -49,6 +52,11 @@ const MailSearchInput = Schema.Struct({
         description: "Maximum number of messages (1-25).",
     })),
 });
+const MailGetInput = Schema.Struct({
+    messageId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+        description: "Exact Microsoft 365 message identifier.",
+    }),
+});
 const CalendarEventsInput = Schema.Struct({
     start: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(64)).annotate({
         description: "Inclusive ISO 8601 start timestamp.",
@@ -57,9 +65,57 @@ const CalendarEventsInput = Schema.Struct({
         description: "Exclusive ISO 8601 end timestamp, no more than 31 days after start.",
     })),
 });
+const CalendarEventGetInput = Schema.Struct({
+    eventId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+        description: "Exact Microsoft 365 event identifier.",
+    }),
+});
+const AttachmentLimit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })).annotate({
+    description: "Maximum number of attachments (1-50).",
+});
+const MailAttachmentListInput = Schema.Struct({
+    messageId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+        description: "Exact Microsoft 365 message identifier.",
+    }),
+    limit: Schema.optionalKey(AttachmentLimit),
+});
+const MailAttachmentGetInput = Schema.Struct({
+    messageId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+        description: "Exact Microsoft 365 message identifier.",
+    }),
+    attachmentId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+        description: "Exact Microsoft 365 attachment identifier.",
+    }),
+});
+const CalendarAttachmentListInput = Schema.Struct({
+    eventId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+        description: "Exact Microsoft 365 event identifier.",
+    }),
+    limit: Schema.optionalKey(AttachmentLimit),
+});
+const CalendarAttachmentGetInput = Schema.Struct({
+    eventId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+        description: "Exact Microsoft 365 event identifier.",
+    }),
+    attachmentId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+        description: "Exact Microsoft 365 attachment identifier.",
+    }),
+});
 const EmailAddress = Schema.String.check(Schema.isMinLength(3), Schema.isMaxLength(320), Schema.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/u)).annotate({ description: "A single email address." });
 const RecipientList = Schema.Array(EmailAddress).check(Schema.isMinLength(1), Schema.isMaxLength(25));
 const OptionalRecipientList = Schema.Array(EmailAddress).check(Schema.isMaxLength(25));
+const DraftFileAttachment = Schema.Struct({
+    name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255)).annotate({
+        description: "Attachment file name.",
+    }),
+    contentBytes: Schema.String.check(Schema.isMaxLength(MAX_DRAFT_ATTACHMENT_BASE64_CHARS), Schema.isPattern(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u)).annotate({
+        description: "Base64-encoded file content for an attachment smaller than 3 MB.",
+    }),
+    contentType: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255)).annotate({
+        description: "Optional MIME content type.",
+    })),
+});
+const DraftFileAttachmentList = Schema.Array(DraftFileAttachment).check(Schema.isMaxLength(25));
 const MailDraftCreateInput = Schema.Struct({
     to: RecipientList.annotate({ description: "Primary recipients (1-25)." }),
     cc: Schema.optionalKey(OptionalRecipientList.annotate({ description: "CC recipients (0-25)." })),
@@ -70,6 +126,9 @@ const MailDraftCreateInput = Schema.Struct({
     body: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_BODY_CHARS)).annotate({
         description: "Plain-text draft body.",
     }),
+    attachments: Schema.optionalKey(DraftFileAttachmentList.annotate({
+        description: "Optional file attachments included with the unsent draft.",
+    })),
 });
 const Attendee = Schema.Struct({
     address: EmailAddress,
@@ -131,7 +190,13 @@ const ChatMessageSendInput = Schema.Struct({
     body: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_CHAT_BODY_CHARS)).annotate({ description: "Plain-text chat message whose encoded request is at most 28 KB." }),
 });
 const decodeMailSearchInput = Schema.decodeUnknownPromise(MailSearchInput);
+const decodeMailGetInput = Schema.decodeUnknownPromise(MailGetInput);
+const decodeMailAttachmentListInput = Schema.decodeUnknownPromise(MailAttachmentListInput);
+const decodeMailAttachmentGetInput = Schema.decodeUnknownPromise(MailAttachmentGetInput);
 const decodeCalendarEventsInput = Schema.decodeUnknownPromise(CalendarEventsInput);
+const decodeCalendarEventGetInput = Schema.decodeUnknownPromise(CalendarEventGetInput);
+const decodeCalendarAttachmentListInput = Schema.decodeUnknownPromise(CalendarAttachmentListInput);
+const decodeCalendarAttachmentGetInput = Schema.decodeUnknownPromise(CalendarAttachmentGetInput);
 const decodeMailDraftCreateInput = Schema.decodeUnknownPromise(MailDraftCreateInput);
 const decodeCalendarEventCreateInput = Schema.decodeUnknownPromise(CalendarEventCreateInput);
 const decodeCalendarEventUpdateInput = Schema.decodeUnknownPromise(CalendarEventUpdateInput);
@@ -149,12 +214,39 @@ export const MICROSOFT_GRAPH_TOOLS = [
         openWorld: true,
     },
     {
+        name: "microsoft365.mail.get",
+        description: "Read one exact Microsoft 365 mail message through the fixed messages endpoint.",
+        input: MailGetInput,
+        readOnly: true,
+        destructive: false,
+        idempotent: true,
+        openWorld: true,
+    },
+    {
         name: "microsoft365.mail.draft.create",
-        description: "Create one unsent plain-text Microsoft 365 mail draft through a fixed endpoint.",
+        description: "Create one unsent Microsoft 365 mail draft with a plain-text body and optional file attachments through a fixed endpoint.",
         input: MailDraftCreateInput,
         readOnly: false,
         destructive: false,
         idempotent: false,
+        openWorld: true,
+    },
+    {
+        name: "microsoft365.mail.attachments.list",
+        description: "List attachments on one exact Microsoft 365 mail message.",
+        input: MailAttachmentListInput,
+        readOnly: true,
+        destructive: false,
+        idempotent: true,
+        openWorld: true,
+    },
+    {
+        name: "microsoft365.mail.attachment.get",
+        description: "Read one exact attachment from one exact Microsoft 365 mail message, including file bytes or an expanded attached item, within a 5 MB response.",
+        input: MailAttachmentGetInput,
+        readOnly: true,
+        destructive: false,
+        idempotent: true,
         openWorld: true,
     },
     {
@@ -167,12 +259,39 @@ export const MICROSOFT_GRAPH_TOOLS = [
         openWorld: true,
     },
     {
+        name: "microsoft365.calendar.event.get",
+        description: "Read one exact Microsoft 365 calendar event through the fixed events endpoint.",
+        input: CalendarEventGetInput,
+        readOnly: true,
+        destructive: false,
+        idempotent: true,
+        openWorld: true,
+    },
+    {
         name: "microsoft365.calendar.event.create",
         description: "Create one Microsoft 365 calendar event through the fixed events endpoint.",
         input: CalendarEventCreateInput,
         readOnly: false,
         destructive: false,
         idempotent: false,
+        openWorld: true,
+    },
+    {
+        name: "microsoft365.calendar.event.attachments.list",
+        description: "List attachments on one exact Microsoft 365 calendar event.",
+        input: CalendarAttachmentListInput,
+        readOnly: true,
+        destructive: false,
+        idempotent: true,
+        openWorld: true,
+    },
+    {
+        name: "microsoft365.calendar.event.attachment.get",
+        description: "Read one exact attachment from one exact Microsoft 365 calendar event, including file bytes or an expanded attached item, within a 5 MB response.",
+        input: CalendarAttachmentGetInput,
+        readOnly: true,
+        destructive: false,
+        idempotent: true,
         openWorld: true,
     },
     {
@@ -392,34 +511,95 @@ async function readJson(response, maximumBytes) {
         throw new Error("Microsoft returned invalid JSON.");
     }
 }
-function mailResult(value, limit) {
-    if (!Array.isArray(value.value) || value.value.length > limit) {
-        throw new Error("Microsoft Graph returned an invalid mail response.");
+function collectionResult(value, maximumItems) {
+    if (!Array.isArray(value.value) || value.value.length > maximumItems) {
+        throw new Error("Microsoft Graph returned an invalid collection response.");
     }
-    const messages = value.value.map((raw) => {
-        const item = asRecord(raw);
-        const from = item.from === null || item.from === undefined ? null : asRecord(item.from);
-        const emailAddress = from === null || from.emailAddress === null || from.emailAddress === undefined
+    for (const item of value.value)
+        validateGraphResource(item);
+    return value;
+}
+function compatibleResult(legacy, graphResponse) {
+    return { ...legacy, graphResponse };
+}
+function graphEmailAddress(value) {
+    const item = asRecord(value);
+    return {
+        name: boundedOptionalString(item.name, 512),
+        address: boundedString(item.address, 320),
+    };
+}
+function graphRecipients(value) {
+    if (!Array.isArray(value) || value.length > 50) {
+        throw new Error("Microsoft Graph returned an invalid recipient response.");
+    }
+    return value.map((raw) => graphEmailAddress(asRecord(raw).emailAddress));
+}
+function mailFields(item) {
+    const from = item.from === null || item.from === undefined ? null : asRecord(item.from);
+    const emailAddress = from === null || from.emailAddress === null || from.emailAddress === undefined
+        ? null
+        : asRecord(from.emailAddress);
+    return {
+        id: boundedString(item.id, 512),
+        subject: boundedOptionalString(item.subject, 1_000),
+        from: emailAddress === null
             ? null
-            : asRecord(from.emailAddress);
+            : {
+                name: boundedOptionalString(emailAddress.name, 512),
+                address: boundedOptionalString(emailAddress.address, 320),
+            },
+        receivedDateTime: boundedString(item.receivedDateTime, 64),
+        isRead: typeof item.isRead === "boolean"
+            ? item.isRead
+            : (() => {
+                throw new Error("Microsoft Graph returned an invalid mail response.");
+            })(),
+    };
+}
+function mailSearchResult(value, limit) {
+    const graphResponse = collectionResult(value, limit);
+    const messages = graphResponse.value.map((raw) => {
+        const item = asRecord(raw);
         return {
-            id: boundedString(item.id, 512),
-            subject: boundedOptionalString(item.subject, 1_000),
-            from: emailAddress === null
-                ? null
-                : {
-                    name: boundedOptionalString(emailAddress.name, 512),
-                    address: boundedOptionalString(emailAddress.address, 320),
-                },
-            receivedDateTime: boundedString(item.receivedDateTime, 64),
-            isRead: typeof item.isRead === "boolean"
-                ? item.isRead
+            ...mailFields(item),
+            preview: boundedOptionalString(item.bodyPreview, 255),
+            hasAttachments: typeof item.hasAttachments === "boolean"
+                ? item.hasAttachments
                 : (() => {
                     throw new Error("Microsoft Graph returned an invalid mail response.");
                 })(),
         };
     });
-    return { messages, hasMore: typeof value["@odata.nextLink"] === "string" };
+    return compatibleResult({ messages, hasMore: typeof graphResponse["@odata.nextLink"] === "string" }, graphResponse);
+}
+function mailGetResult(value) {
+    const body = asRecord(value.body);
+    const contentType = boundedString(body.contentType, 16);
+    if (contentType !== "text" && contentType !== "html") {
+        throw new Error("Microsoft Graph returned an invalid mail body type.");
+    }
+    if (typeof body.content !== "string") {
+        throw new Error("Microsoft Graph returned an invalid mail response.");
+    }
+    return compatibleResult({
+        ...mailFields(value),
+        body: { contentType, content: body.content.slice(0, MAX_BODY_CHARS) },
+    }, value);
+}
+function mailDraftResult(value) {
+    if (value.isDraft !== true) {
+        throw new Error("Microsoft Graph did not return an unsent mail draft.");
+    }
+    return compatibleResult({
+        id: boundedString(value.id, 512),
+        subject: boundedOptionalString(value.subject, 998),
+        to: graphRecipients(value.toRecipients),
+        cc: graphRecipients(value.ccRecipients),
+        bcc: graphRecipients(value.bccRecipients),
+        isDraft: true,
+        webLink: boundedOptionalString(value.webLink, 2_048),
+    }, value);
 }
 function graphDateTime(value) {
     const item = asRecord(value);
@@ -429,10 +609,8 @@ function graphDateTime(value) {
     };
 }
 function calendarResult(value) {
-    if (!Array.isArray(value.value) || value.value.length > 50) {
-        throw new Error("Microsoft Graph returned an invalid calendar response.");
-    }
-    const events = value.value.map((raw) => {
+    const graphResponse = collectionResult(value, 50);
+    const events = graphResponse.value.map((raw) => {
         const item = asRecord(raw);
         const location = item.location === null || item.location === undefined ? null : asRecord(item.location);
         const organizer = item.organizer === null || item.organizer === undefined ? null : asRecord(item.organizer);
@@ -453,34 +631,7 @@ function calendarResult(value) {
                 },
         };
     });
-    return { events, hasMore: typeof value["@odata.nextLink"] === "string" };
-}
-function graphEmailAddress(value) {
-    const item = asRecord(value);
-    return {
-        name: boundedOptionalString(item.name, 512),
-        address: boundedString(item.address, 320),
-    };
-}
-function graphRecipients(value) {
-    if (!Array.isArray(value) || value.length > 50) {
-        throw new Error("Microsoft Graph returned an invalid recipient response.");
-    }
-    return value.map((raw) => graphEmailAddress(asRecord(raw).emailAddress));
-}
-function mailDraftResult(value) {
-    if (value.isDraft !== true) {
-        throw new Error("Microsoft Graph did not return an unsent mail draft.");
-    }
-    return {
-        id: boundedString(value.id, 512),
-        subject: boundedOptionalString(value.subject, 998),
-        to: graphRecipients(value.toRecipients),
-        cc: graphRecipients(value.ccRecipients),
-        bcc: graphRecipients(value.bccRecipients),
-        isDraft: true,
-        webLink: boundedOptionalString(value.webLink, 2_048),
-    };
+    return compatibleResult({ events, hasMore: typeof graphResponse["@odata.nextLink"] === "string" }, graphResponse);
 }
 function graphAttendees(value) {
     if (!Array.isArray(value) || value.length > 500) {
@@ -496,7 +647,7 @@ function graphAttendees(value) {
 }
 function eventResult(value) {
     const location = value.location === null || value.location === undefined ? null : asRecord(value.location);
-    return {
+    return compatibleResult({
         id: boundedString(value.id, 512),
         subject: boundedOptionalString(value.subject, 1_000),
         start: graphDateTime(value.start),
@@ -504,28 +655,24 @@ function eventResult(value) {
         location: location === null ? null : boundedOptionalString(location.displayName, 1_000),
         attendees: graphAttendees(value.attendees),
         webLink: boundedOptionalString(value.webLink, 2_048),
-    };
+    }, value);
 }
 function chatsResult(value, limit) {
-    if (!Array.isArray(value.value) || value.value.length > limit) {
-        throw new Error("Microsoft Graph returned an invalid chat response.");
-    }
-    return {
-        chats: value.value.map((raw) => {
-            const item = asRecord(raw);
-            return {
-                id: boundedString(item.id, 512),
-                topic: boundedOptionalString(item.topic, 1_000),
-                chatType: boundedString(item.chatType, 64),
-                createdDateTime: boundedOptionalString(item.createdDateTime, 64),
-                lastUpdatedDateTime: boundedOptionalString(item.lastUpdatedDateTime, 64),
-                webUrl: boundedOptionalString(item.webUrl, 2_048),
-            };
-        }),
-        hasMore: typeof value["@odata.nextLink"] === "string",
-    };
+    const graphResponse = collectionResult(value, limit);
+    const chats = graphResponse.value.map((raw) => {
+        const item = asRecord(raw);
+        return {
+            id: boundedString(item.id, 512),
+            topic: boundedOptionalString(item.topic, 1_000),
+            chatType: boundedString(item.chatType, 64),
+            createdDateTime: boundedOptionalString(item.createdDateTime, 64),
+            lastUpdatedDateTime: boundedOptionalString(item.lastUpdatedDateTime, 64),
+            webUrl: boundedOptionalString(item.webUrl, 2_048),
+        };
+    });
+    return compatibleResult({ chats, hasMore: typeof graphResponse["@odata.nextLink"] === "string" }, graphResponse);
 }
-function chatMessageResult(value) {
+function projectChatMessage(value) {
     const from = value.from === null || value.from === undefined ? null : asRecord(value.from);
     const user = from?.user === null || from?.user === undefined ? null : asRecord(from.user);
     const body = asRecord(value.body);
@@ -551,13 +698,15 @@ function chatMessageResult(value) {
     };
 }
 function chatMessagesResult(value, limit) {
-    if (!Array.isArray(value.value) || value.value.length > limit) {
-        throw new Error("Microsoft Graph returned an invalid chat-message response.");
-    }
-    return {
-        messages: value.value.map((raw) => chatMessageResult(asRecord(raw))),
-        hasMore: typeof value["@odata.nextLink"] === "string",
-    };
+    const graphResponse = collectionResult(value, limit);
+    const messages = graphResponse.value.map((raw) => projectChatMessage(asRecord(raw)));
+    return compatibleResult({ messages, hasMore: typeof graphResponse["@odata.nextLink"] === "string" }, graphResponse);
+}
+function chatMessageResult(value) {
+    return compatibleResult(projectChatMessage(value), value);
+}
+function validateGraphResource(value) {
+    boundedString(asRecord(value).id, 512);
 }
 function recipients(addresses) {
     return addresses.map((address) => ({ emailAddress: { address } }));
@@ -1039,7 +1188,7 @@ export class MicrosoftGraphProvider {
             headers,
             ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
             signal: options.signal ?? null,
-        }, GRAPH_RESPONSE_BYTES, (received) => {
+        }, options.maximumResponseBytes ?? GRAPH_RESPONSE_BYTES, (received) => {
             if (received.status === 401 && this.#accessToken?.value === accessToken) {
                 this.#accessToken = null;
             }
@@ -1087,7 +1236,7 @@ export class MicrosoftGraphProvider {
             const query = values.query?.trim() ?? "";
             const limit = values.limit ?? 10;
             const params = new URLSearchParams({
-                $select: "id,subject,from,receivedDateTime,isRead",
+                $select: "id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments",
                 $top: String(limit),
             });
             if (query) {
@@ -1099,7 +1248,49 @@ export class MicrosoftGraphProvider {
                 signal: context?.signal,
             });
             this.#assertInvocationCurrent(generation);
-            return mailResult(result, limit);
+            return mailSearchResult(result, limit);
+        }
+        if (toolName === "microsoft365.mail.get") {
+            this.#requireCapability(access, "mail.read");
+            const values = await decodeMailGetInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const result = await this.#graph(`/me/messages/${encodeURIComponent(values.messageId)}`, access.value, {
+                signal: context?.signal,
+                maximumResponseBytes: GRAPH_LARGE_RESPONSE_BYTES,
+            });
+            this.#assertInvocationCurrent(generation);
+            return mailGetResult(result);
+        }
+        if (toolName === "microsoft365.mail.attachments.list") {
+            this.#requireCapability(access, "mail.read");
+            const values = await decodeMailAttachmentListInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const limit = values.limit ?? 25;
+            const params = new URLSearchParams({
+                $top: String(limit),
+                $select: "id,name,contentType,size,isInline,lastModifiedDateTime",
+            });
+            const result = await this.#graph(`/me/messages/${encodeURIComponent(values.messageId)}/attachments?${params.toString()}`, access.value, { signal: context?.signal });
+            this.#assertInvocationCurrent(generation);
+            return collectionResult(result, limit);
+        }
+        if (toolName === "microsoft365.mail.attachment.get") {
+            this.#requireCapability(access, "mail.read");
+            const values = await decodeMailAttachmentGetInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const result = await this.#graph(`/me/messages/${encodeURIComponent(values.messageId)}/attachments/${encodeURIComponent(values.attachmentId)}?$expand=microsoft.graph.itemattachment/item`, access.value, {
+                signal: context?.signal,
+                maximumResponseBytes: GRAPH_LARGE_RESPONSE_BYTES,
+            });
+            this.#assertInvocationCurrent(generation);
+            validateGraphResource(result);
+            return result;
         }
         if (toolName === "microsoft365.mail.draft.create") {
             this.#requireCapability(access, "mail.draft.create");
@@ -1107,15 +1298,31 @@ export class MicrosoftGraphProvider {
                 errors: "all",
                 onExcessProperty: "error",
             });
+            const body = {
+                subject: values.subject,
+                body: { contentType: "text", content: values.body },
+                toRecipients: recipients(values.to),
+                ccRecipients: recipients(values.cc ?? []),
+                bccRecipients: recipients(values.bcc ?? []),
+                ...(values.attachments === undefined
+                    ? {}
+                    : {
+                        attachments: values.attachments.map((attachment) => ({
+                            "@odata.type": "#microsoft.graph.fileAttachment",
+                            name: attachment.name,
+                            contentBytes: attachment.contentBytes,
+                            ...(attachment.contentType === undefined
+                                ? {}
+                                : { contentType: attachment.contentType }),
+                        })),
+                    }),
+            };
+            if (encoder.encode(JSON.stringify(body)).byteLength > MAX_DRAFT_REQUEST_BYTES) {
+                throw new IntegrationProviderPublicError("Mail draft is too large; its encoded request must be at most 4 MB.");
+            }
             const result = await this.#graph("/me/messages", access.value, {
                 method: "POST",
-                body: {
-                    subject: values.subject,
-                    body: { contentType: "text", content: values.body },
-                    toRecipients: recipients(values.to),
-                    ccRecipients: recipients(values.cc ?? []),
-                    bccRecipients: recipients(values.bcc ?? []),
-                },
+                body,
                 signal: context?.signal,
             });
             this.#assertInvocationCurrent(generation);
@@ -1132,15 +1339,57 @@ export class MicrosoftGraphProvider {
             const params = new URLSearchParams({
                 startDateTime: start,
                 endDateTime: end,
-                $select: "id,subject,start,end,location,organizer",
                 $top: "50",
                 $orderby: "start/dateTime",
+                $select: "id,subject,start,end,location,organizer,bodyPreview,hasAttachments",
             });
             const result = await this.#graph(`/me/calendarView?${params.toString()}`, access.value, {
                 signal: context?.signal,
             });
             this.#assertInvocationCurrent(generation);
             return calendarResult(result);
+        }
+        if (toolName === "microsoft365.calendar.event.get") {
+            this.#requireCapability(access, "calendar.read");
+            const values = await decodeCalendarEventGetInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const result = await this.#graph(`/me/events/${encodeURIComponent(values.eventId)}`, access.value, {
+                signal: context?.signal,
+                maximumResponseBytes: GRAPH_LARGE_RESPONSE_BYTES,
+            });
+            this.#assertInvocationCurrent(generation);
+            return eventResult(result);
+        }
+        if (toolName === "microsoft365.calendar.event.attachments.list") {
+            this.#requireCapability(access, "calendar.read");
+            const values = await decodeCalendarAttachmentListInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const limit = values.limit ?? 25;
+            const params = new URLSearchParams({
+                $top: String(limit),
+                $select: "id,name,contentType,size,isInline,lastModifiedDateTime",
+            });
+            const result = await this.#graph(`/me/events/${encodeURIComponent(values.eventId)}/attachments?${params.toString()}`, access.value, { signal: context?.signal });
+            this.#assertInvocationCurrent(generation);
+            return collectionResult(result, limit);
+        }
+        if (toolName === "microsoft365.calendar.event.attachment.get") {
+            this.#requireCapability(access, "calendar.read");
+            const values = await decodeCalendarAttachmentGetInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const result = await this.#graph(`/me/events/${encodeURIComponent(values.eventId)}/attachments/${encodeURIComponent(values.attachmentId)}?$expand=microsoft.graph.itemattachment/item`, access.value, {
+                signal: context?.signal,
+                maximumResponseBytes: GRAPH_LARGE_RESPONSE_BYTES,
+            });
+            this.#assertInvocationCurrent(generation);
+            validateGraphResource(result);
+            return result;
         }
         if (toolName === "microsoft365.calendar.event.create") {
             this.#requireCapability(access, "calendar.write");

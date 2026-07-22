@@ -5,13 +5,13 @@
   "id": "microsoft-365",
   "name": "Microsoft 365",
   "description": "Read mail, calendars, and chats, and opt in to narrowly scoped Microsoft Graph writes.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "provider": "microsoft-graph",
   "capabilities": [
     {
       "id": "mail.read",
       "displayName": "Read mail",
-      "description": "Search message metadata. No send, edit, move, or delete access.",
+      "description": "Search and read mail. No send, edit, move, or delete access.",
       "access": "default"
     },
     {
@@ -54,11 +54,32 @@
       "effect": "read"
     },
     {
+      "name": "microsoft365.mail.get",
+      "displayName": "Read mail message",
+      "description": "Read one Microsoft 365 mail message.",
+      "capabilities": ["mail.read"],
+      "effect": "read"
+    },
+    {
       "name": "microsoft365.mail.draft.create",
       "displayName": "Create mail draft",
-      "description": "Create one unsent, plain-text Microsoft 365 mail draft.",
+      "description": "Create one unsent Microsoft 365 mail draft with a plain-text body and optional file attachments.",
       "capabilities": ["mail.draft.create"],
       "effect": "write"
+    },
+    {
+      "name": "microsoft365.mail.attachments.list",
+      "displayName": "List mail attachments",
+      "description": "List attachments on one Microsoft 365 mail message.",
+      "capabilities": ["mail.read"],
+      "effect": "read"
+    },
+    {
+      "name": "microsoft365.mail.attachment.get",
+      "displayName": "Read mail attachment",
+      "description": "Read one attachment from one Microsoft 365 mail message within a 5 MB response.",
+      "capabilities": ["mail.read"],
+      "effect": "read"
     },
     {
       "name": "microsoft365.calendar.events",
@@ -68,11 +89,32 @@
       "effect": "read"
     },
     {
+      "name": "microsoft365.calendar.event.get",
+      "displayName": "Read calendar event",
+      "description": "Read one Microsoft 365 calendar event.",
+      "capabilities": ["calendar.read"],
+      "effect": "read"
+    },
+    {
       "name": "microsoft365.calendar.event.create",
       "displayName": "Create calendar event",
       "description": "Create one Microsoft 365 calendar event.",
       "capabilities": ["calendar.write"],
       "effect": "write"
+    },
+    {
+      "name": "microsoft365.calendar.event.attachments.list",
+      "displayName": "List event attachments",
+      "description": "List attachments on one Microsoft 365 calendar event.",
+      "capabilities": ["calendar.read"],
+      "effect": "read"
+    },
+    {
+      "name": "microsoft365.calendar.event.attachment.get",
+      "displayName": "Read event attachment",
+      "description": "Read one attachment from one Microsoft 365 calendar event within a 5 MB response.",
+      "capabilities": ["calendar.read"],
+      "effect": "read"
     },
     {
       "name": "microsoft365.calendar.event.update",
