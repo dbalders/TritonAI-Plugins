@@ -62,6 +62,7 @@ const harnessPackage = JSON.parse(await Fs.readFile(Path.join(harness, "package.
 
 for (const fragment of [
   "beginCommit(): Promise<AbortSignal>",
+  "beginCommit?(): Promise<AbortSignal>",
   "status(context?: IntegrationInvocationContext)",
   "prepare?(context: IntegrationLifecycleContext)",
   "context?: IntegrationLifecycleContext",
@@ -70,6 +71,7 @@ for (const fragment of [
   "readonly sourceRoot?: string",
   "readonly bundledFiles?: Readonly<Record<string, string | Uint8Array>>",
   "close?(): Promise<void>",
+  '"authorization_url"',
 ]) {
   assert(registry.includes(fragment), `Harness provider contract drifted: missing ${fragment}`);
 }
