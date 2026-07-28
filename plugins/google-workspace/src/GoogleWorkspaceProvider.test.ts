@@ -133,6 +133,7 @@ interface OAuthFixtureOptions {
   readonly revokeStatus?: number;
   readonly api?: (url: string, init?: RequestInit) => Promise<Response> | Response;
   readonly requestTimeoutMs?: number;
+  readonly beforeAuthorizationCodeTokenResponse?: () => Promise<void>;
 }
 
 function oauthFixture(options: OAuthFixtureOptions = {}) {
@@ -168,6 +169,7 @@ function oauthFixture(options: OAuthFixtureOptions = {}) {
           ...options.refreshOverrides,
         });
       }
+      await options.beforeAuthorizationCodeTokenResponse?.();
       return jsonResponse(
         {
           access_token: "fixture-access-initial",
@@ -652,6 +654,38 @@ describe("GoogleWorkspaceProvider authorization", () => {
     }
   });
 
+  it("finishes an admitted token exchange when the flow deadline passes in flight", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    let releaseToken!: () => void;
+    const tokenGate = new Promise<void>((resolve) => {
+      releaseToken = resolve;
+    });
+    const fixture = oauthFixture({
+      beforeAuthorizationCodeTokenResponse: () => tokenGate,
+    });
+    try {
+      const { flow, authorizationUrl } = await fixture.begin();
+      const callback = callbackUrl(authorizationUrl, {
+        state: authorizationUrl.searchParams.get("state")!,
+        code: "fixture-code",
+      });
+      expect((await globalThis.fetch(callback)).status).toBe(200);
+      const result = fixture.provider.poll(flow.flowId, lifecycle());
+      await vi.waitFor(() =>
+        expect(fixture.calls.some(({ url }) => url === "https://oauth2.googleapis.com/token")).toBe(
+          true,
+        ),
+      );
+      vi.setSystemTime(Date.now() + 6 * 60_000);
+      releaseToken();
+      await expect(result).resolves.toMatchObject({ state: "connected" });
+    } finally {
+      releaseToken();
+      vi.useRealTimers();
+      await fixture.provider.close();
+    }
+  });
+
   it("supersedes an incremental flow when a later request is already authorized", async () => {
     const fixture = oauthFixture();
     try {
@@ -911,6 +945,40 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
       expect(urls[0]).toContain("/drive/v3/files/file_id-safe?");
       expect(urls[1]).toContain("/gmail/v1/users/me/messages/message_id-safe?");
       expect(urls.every((url) => !url.includes("access_token"))).toBe(true);
+    } finally {
+      await fixture.provider.close();
+    }
+  });
+
+  it("decodes bounded Gmail text using the declared MIME charset", async () => {
+    const fixture = oauthFixture({
+      api: (url) => {
+        if (!url.includes("/gmail/v1/users/me/messages/")) {
+          return jsonResponse({ error: true }, 500);
+        }
+        return jsonResponse({
+          id: "message-latin1",
+          threadId: "thread-latin1",
+          payload: {
+            mimeType: "text/plain",
+            headers: [
+              { name: "Subject", value: "Charset" },
+              { name: "Content-Type", value: "text/plain; charset=iso-8859-1" },
+            ],
+            body: { data: Buffer.from([0x4f, 0x6c, 0xe1]).toString("base64url"), size: 3 },
+          },
+        });
+      },
+    });
+    try {
+      await fixture.complete(["identity.read", "mail.read"]);
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.mail.message.get",
+          { messageId: "message-latin1" },
+          invocation(),
+        ),
+      ).resolves.toMatchObject({ body: { text: "Olá" } });
     } finally {
       await fixture.provider.close();
     }

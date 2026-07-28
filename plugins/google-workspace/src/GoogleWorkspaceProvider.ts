@@ -974,12 +974,31 @@ function gmailHeaderMap(value: unknown): Readonly<Record<string, string>> {
   return result;
 }
 
-function decodeGmailText(value: unknown): string {
+function gmailTextEncoding(value: unknown): string {
+  if (value === undefined) return "utf-8";
+  if (!Array.isArray(value) || value.length > 200) {
+    throw new Error("Gmail headers are invalid.");
+  }
+  for (const raw of value) {
+    const header = asRecord(raw, "Gmail header");
+    const name = boundedString(header.name, 128, "Gmail header").toLowerCase();
+    if (name !== "content-type") continue;
+    const contentType = boundedString(header.value, 16_384, "Gmail header");
+    const charset = /(?:^|;)\s*charset\s*=\s*"?([A-Za-z0-9._-]{1,40})"?/iu.exec(contentType)?.[1];
+    return charset?.toLowerCase() ?? "utf-8";
+  }
+  return "utf-8";
+}
+
+function decodeGmailText(value: unknown, headers: unknown): string {
   if (typeof value !== "string" || value.length > 2 * 1024 * 1024) {
     throw new Error("Gmail body data is invalid.");
   }
   try {
-    return decoder.decode(Buffer.from(value, "base64url")).slice(0, MAX_BODY_CHARS);
+    const encoding = gmailTextEncoding(headers);
+    return new TextDecoder(encoding)
+      .decode(Buffer.from(value, "base64url"))
+      .slice(0, MAX_BODY_CHARS);
   } catch {
     throw new Error("Gmail body data is invalid.");
   }
@@ -1017,7 +1036,7 @@ function projectGmailMessage(value: unknown) {
         size,
       });
     } else if (body.data !== undefined && (mimeType === "text/plain" || mimeType === "text/html")) {
-      const content = decodeGmailText(body.data);
+      const content = decodeGmailText(body.data, part.headers);
       (mimeType === "text/plain" ? text : html).push(content);
     }
     if (part.parts !== undefined) {
@@ -1532,6 +1551,7 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
       }
       flow.consumed = true;
       flow.callback = { kind: "code", code };
+      clearTimeout(flow.timer);
       this.#writeCallbackPage(response, 200, "Google Workspace sign-in received.");
     } else {
       const errorCode =
@@ -1881,8 +1901,7 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
         this.#closed ||
         this.#disconnecting ||
         flow.generation !== this.#generation ||
-        this.#pending.get(flowId) !== flow ||
-        flow.expiresAt <= Date.now()
+        this.#pending.get(flowId) !== flow
       ) {
         throw new Error("Google sign-in was superseded.");
       }
