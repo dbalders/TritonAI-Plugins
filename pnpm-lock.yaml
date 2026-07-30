@@ -12,8 +12,8 @@ importers:
         specifier: 24.12.4
         version: 24.12.4
       effect:
-        specifier: 4.0.0-beta.78
-        version: 4.0.0-beta.78
+        specifier: 4.0.0-beta.102
+        version: 4.0.0-beta.102
       typescript:
         specifier: ~6.0.3
         version: 6.0.3
@@ -25,16 +25,16 @@ importers:
         version: 2.9.0
 
   plugins/google-workspace:
-    dependencies:
+    devDependencies:
       effect:
-        specifier: 4.0.0-beta.78
-        version: 4.0.0-beta.78
+        specifier: 4.0.0-beta.102
+        version: 4.0.0-beta.102
 
   plugins/microsoft-365:
-    dependencies:
+    devDependencies:
       effect:
-        specifier: 4.0.0-beta.78
-        version: 4.0.0-beta.78
+        specifier: 4.0.0-beta.102
+        version: 4.0.0-beta.102
 
 packages:
 
@@ -682,8 +682,8 @@ packages:
   dom-accessibility-api@0.5.16:
     resolution: {integrity: sha512-X7BJ2yElsnOJ30pZF4uIIDfBEVgF4XEBxL9Bxhy6dnrm5hkzqmsWHGTiHqRiITNhMyFLyAiWndIJP7Z1NTteDg==}
 
-  effect@4.0.0-beta.78:
-    resolution: {integrity: sha512-j79Rl9QpHwMz/ZJWLNpZoiVj9N7zHqiLKN5EcYd/A8J1oqejILWQLfc4HPlvqHqKC8SK55LJ+X4gy4ONJ+JpfQ==}
+  effect@4.0.0-beta.102:
+    resolution: {integrity: sha512-z8Y+Q76Hh/kjLFZrXu8tGn6e+tDsg45R+UHhxd190pXxD53OGwf/G/zDxXTkse4HJ5mobNZfitLfUCp4fMvu6w==}
 
   es-module-lexer@2.3.1:
     resolution: {integrity: sha512-shc1dbU90Yl/xq1QrC7QRtfcwURZuVRfPhZbDoldJ1cn1gzDvBaBWlv0eFolj5+0znnPJz5TXLxsN77X/12KTA==}
@@ -1484,7 +1484,7 @@ snapshots:
 
   dom-accessibility-api@0.5.16: {}
 
-  effect@4.0.0-beta.78:
+  effect@4.0.0-beta.102:
     dependencies:
       '@standard-schema/spec': 1.1.0
       fast-check: 4.9.0

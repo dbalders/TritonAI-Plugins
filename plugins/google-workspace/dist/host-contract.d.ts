@@ -73,3 +73,7 @@ export interface IntegrationSecretStore {
     set(name: string, value: Uint8Array): Effect.Effect<void, unknown>;
     remove(name: string): Effect.Effect<void, unknown>;
 }
+export interface IntegrationProviderFactoryContext {
+    readonly secrets: IntegrationSecretStore;
+    readonly configuration: unknown;
+}

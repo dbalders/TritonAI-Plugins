@@ -28,15 +28,19 @@ every invocation.
 ## Google OAuth configuration
 
 Provide the native-client ID and Google-issued desktop client credential through the
-Harness-managed build configuration:
+single private Harness build input. It is keyed by selected package ID; Harness passes only this
+package's object to its synchronous `createIntegrationProvider({ secrets, configuration })`
+factory:
 
 ```text
-TRITONAI_GOOGLE_WORKSPACE_CLIENT_ID=123456789-example.apps.googleusercontent.com
-TRITONAI_GOOGLE_WORKSPACE_CLIENT_SECRET=<Google-issued desktop client credential>
+TRITONAI_PLUGIN_CONFIGURATION_JSON={"google-workspace":{"clientId":"123456789012-contractfixture.apps.googleusercontent.com","clientSecret":"<Google-issued desktop client credential>"}}
 ```
 
-Do not download or commit an OAuth credential JSON file, and never put either value in runtime
-settings or logs. Google issues a client credential for installed applications and requires it at
+The reviewed `dist/index.js` entrypoint exports the exact package `manifest` and the factory. The
+plugin accepts exactly `clientId` and `clientSecret` strings and rejects missing, extra, inherited,
+or malformed fields without echoing configuration values. Do not download or commit an OAuth
+credential JSON file, and never put either value in runtime settings, logs, or the public
+composition proof. Google issues a client credential for installed applications and requires it at
 the token endpoint for this client. It is embedded at build time alongside the client ID, is
 extractable from a distributed desktop binary, and is therefore not a confidential security
 boundary. PKCE, state, nonce, loopback-only callbacks, Google Cloud's Internal audience, and the

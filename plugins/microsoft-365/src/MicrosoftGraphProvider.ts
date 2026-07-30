@@ -63,7 +63,8 @@ export interface MicrosoftGraphConfiguration {
   readonly tenantId: string;
 }
 
-const ENTRA_IDENTIFIER = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+const ENTRA_IDENTIFIER =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 const MailSearchInput = Schema.Struct({
   query: Schema.optionalKey(
@@ -1519,6 +1520,15 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
     return json;
   }
 
+  async #beginInvocationCommit(
+    context: IntegrationInvocationContext | undefined,
+  ): Promise<AbortSignal> {
+    if (context?.writeApproved !== true || typeof context.beginCommit !== "function") {
+      throw new Error("Microsoft 365 writes require Harness commit admission.");
+    }
+    return context.beginCommit();
+  }
+
   async invoke(
     toolName: string,
     input: unknown,
@@ -1640,10 +1650,11 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
           "Mail draft is too large; its encoded request must be at most 4 MB.",
         );
       }
+      const commitSignal = await this.#beginInvocationCommit(context);
       const result = await this.#graph("/me/messages", access.value, {
         method: "POST",
         body,
-        signal: context?.signal,
+        signal: commitSignal,
       });
       this.#assertInvocationCurrent(generation);
       return mailDraftResult(result);
@@ -1732,10 +1743,12 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         errors: "all",
         onExcessProperty: "error",
       });
+      const body = eventBody(values);
+      const commitSignal = await this.#beginInvocationCommit(context);
       const result = await this.#graph("/me/events", access.value, {
         method: "POST",
-        body: eventBody(values),
-        signal: context?.signal,
+        body,
+        signal: commitSignal,
       });
       this.#assertInvocationCurrent(generation);
       return eventResult(result);
@@ -1771,10 +1784,11 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         ...(values.location === undefined ? {} : { location: { displayName: values.location } }),
         ...(values.attendees === undefined ? {} : { attendees: attendees(values.attendees) }),
       };
+      const commitSignal = await this.#beginInvocationCommit(context);
       const result = await this.#graph(
         `/me/events/${encodeURIComponent(values.eventId)}`,
         access.value,
-        { method: "PATCH", body, signal: context?.signal },
+        { method: "PATCH", body, signal: commitSignal },
       );
       this.#assertInvocationCurrent(generation);
       return eventResult(result);
@@ -1824,13 +1838,14 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
           "Chat message is too large; its encoded request must be at most 28 KB.",
         );
       }
+      const commitSignal = await this.#beginInvocationCommit(context);
       const result = await this.#graph(
         `/chats/${encodeURIComponent(values.chatId)}/messages`,
         access.value,
         {
           method: "POST",
           body,
-          signal: context?.signal,
+          signal: commitSignal,
         },
       );
       this.#assertInvocationCurrent(generation);

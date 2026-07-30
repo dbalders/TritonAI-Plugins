@@ -8,6 +8,8 @@ import type * as Schema from "effect/Schema";
  */
 export interface IntegrationInvocationContext {
     readonly signal: AbortSignal;
+    readonly writeApproved?: boolean;
+    beginCommit?(): Promise<AbortSignal>;
 }
 export interface IntegrationLifecycleContext extends IntegrationInvocationContext {
     beginCommit(): Promise<AbortSignal>;
@@ -66,4 +68,8 @@ export interface IntegrationSecretStore {
     get(name: string): Effect.Effect<Option.Option<Uint8Array>, unknown>;
     set(name: string, value: Uint8Array): Effect.Effect<void, unknown>;
     remove(name: string): Effect.Effect<void, unknown>;
+}
+export interface IntegrationProviderFactoryContext {
+    readonly secrets: IntegrationSecretStore;
+    readonly configuration: unknown;
 }

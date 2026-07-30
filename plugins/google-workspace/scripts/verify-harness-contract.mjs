@@ -5,6 +5,10 @@ import { spawnSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+
+import { assertProviderRuntimeDependencies } from "../../../scripts/provider-runtime-dependencies.mjs";
 import { REVIEWED_HARNESS_COMMIT } from "../../../scripts/reviewed-harness.mjs";
 
 const packageRoot = Path.resolve(import.meta.dirname, "..");
@@ -14,6 +18,13 @@ const expectedHarnessCommit = process.env.TRITONAI_HARNESS_COMMIT;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function isPromiseLike(value) {
+  return (
+    ((typeof value === "object" && value !== null) || typeof value === "function") &&
+    typeof value.then === "function"
+  );
 }
 
 function git(args, cwd) {
@@ -49,10 +60,12 @@ assert(
 const manifest = JSON.parse(
   await Fs.readFile(Path.join(packageRoot, ".tritonai-plugin", "plugin.json"), "utf8"),
 );
+const packageJson = JSON.parse(await Fs.readFile(Path.join(packageRoot, "package.json"), "utf8"));
 const manifestModule = await import(
   pathToFileURL(Path.join(harness, "apps/server/src/integrations/manifest.ts")).href
 );
 const validatedManifest = manifestModule.validateIntegrationManifest(manifest);
+assertProviderRuntimeDependencies(validatedManifest.id, packageJson, validatedManifest);
 
 const providerModule = await import(pathToFileURL(Path.join(packageRoot, "dist/index.js")).href);
 assert(
@@ -60,12 +73,24 @@ assert(
   "Compiled provider manifest differs from the exact Harness-validated manifest.",
 );
 assert(
-  providerModule.GOOGLE_WORKSPACE_PROVIDER_ID === validatedManifest.provider,
-  "Compiled provider ID differs from the manifest provider ID.",
+  typeof providerModule.createIntegrationProvider === "function",
+  "Compiled provider factory is missing.",
 );
+const provider = providerModule.createIntegrationProvider({
+  secrets: {
+    get: () => Effect.succeed(Option.none()),
+    set: () => Effect.void,
+    remove: () => Effect.void,
+  },
+  configuration: {
+    clientId: "123456789012-contractfixture.apps.googleusercontent.com",
+    clientSecret: "ContractFixtureCredential_123",
+  },
+});
+assert(!isPromiseLike(provider), "Compiled provider factory must return synchronously.");
 assert(
-  typeof providerModule.GoogleWorkspaceProvider === "function",
-  "Compiled provider constructor is missing.",
+  provider !== null && typeof provider === "object" && provider.id === validatedManifest.provider,
+  "Compiled provider factory output differs from the manifest provider.",
 );
 assert(
   Array.isArray(providerModule.GOOGLE_WORKSPACE_TOOLS),
@@ -82,8 +107,8 @@ for (const tool of providerModule.GOOGLE_WORKSPACE_TOOLS) {
   assert(
     manifestTool !== undefined &&
       typeof tool.description === "string" &&
-      typeof tool.input === "object" &&
-      tool.input !== null &&
+      ((typeof tool.input === "object" && tool.input !== null) ||
+        typeof tool.input === "function") &&
       tool.readOnly === (manifestTool.effect !== "write") &&
       typeof tool.destructive === "boolean" &&
       typeof tool.idempotent === "boolean" &&
@@ -98,7 +123,7 @@ try {
   const consumerProbe = Path.join(probeDirectory, "package-consumer.ts");
   const harnessRegistry = Path.join(harness, "apps/server/src/integrations/IntegrationRegistry.ts");
   const harnessSecrets = Path.join(harness, "apps/server/src/auth/ServerSecretStore.ts");
-  const providerTypes = Path.join(packageRoot, "dist/index.d.ts");
+  const providerTypes = Path.join(packageRoot, "dist/index.js");
   const compiler = Path.join(repositoryRoot, "node_modules/.bin/tsc");
   const compilerOptions = [
     "--noEmit",
@@ -117,9 +142,9 @@ try {
   await Fs.writeFile(
     consumerProbe,
     [
-      `import type { GoogleWorkspaceProvider, IntegrationProvider } from ${JSON.stringify(providerTypes)};`,
-      "declare const provider: GoogleWorkspaceProvider;",
-      "const packageConsumer: IntegrationProvider = provider;",
+      `import { createIntegrationProvider, type IntegrationProvider, type IntegrationProviderFactoryContext } from ${JSON.stringify(providerTypes)};`,
+      "declare const context: IntegrationProviderFactoryContext;",
+      "const packageConsumer: IntegrationProvider = createIntegrationProvider(context);",
       "void packageConsumer;",
       "",
     ].join("\n"),
@@ -137,11 +162,14 @@ try {
     [
       `import type { IntegrationProvider as HarnessProvider } from ${JSON.stringify(harnessRegistry)};`,
       `import type * as HarnessSecretStore from ${JSON.stringify(harnessSecrets)};`,
-      `import type { GoogleWorkspaceProvider, IntegrationSecretStore as PluginSecretStore } from ${JSON.stringify(providerTypes)};`,
-      "declare const provider: GoogleWorkspaceProvider;",
+      `import { createIntegrationProvider, type IntegrationProviderFactoryContext, type IntegrationSecretStore as PluginSecretStore } from ${JSON.stringify(providerTypes)};`,
       "declare const secrets: HarnessSecretStore.ServerSecretStore['Service'];",
-      "const providerCompatibility: HarnessProvider = provider;",
       "const secretCompatibility: PluginSecretStore = secrets;",
+      "const factoryContext: IntegrationProviderFactoryContext = {",
+      "  secrets: secretCompatibility,",
+      "  configuration: {},",
+      "};",
+      "const providerCompatibility: HarnessProvider = createIntegrationProvider(factoryContext);",
       "void providerCompatibility;",
       "void secretCompatibility;",
       "",

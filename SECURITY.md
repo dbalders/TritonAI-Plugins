@@ -26,8 +26,14 @@ deployed combination; there is no independent runtime update channel.
   private user data in source, tests, fixtures, logs, skills, tool results, or browser state.
 - Accept only the Harness-injected package-scoped secret-store facade; do not construct or escape a
   global credential namespace.
+- Export the exact validated `manifest` and, when a provider is declared, a synchronous
+  `createIntegrationProvider({ secrets, configuration })` factory from `dist/index.js`. Treat
+  configuration as opaque to Harness, validate an exact package-owned shape, and never disclose
+  values in failures.
 - Keep provider status observational. Credential and other irreversible mutations must use the
   Harness lifecycle and commit-admission contract.
+- Require `writeApproved === true` and `beginCommit()` admission immediately before every write.
+  Providers with write tools must retain `connect` and `disconnect` recovery behavior.
 - Decode tool inputs through executable schemas and return bounded, explicitly projected results.
 - Treat every external redirect, URL, pagination token, and server-provided continuation as
   untrusted unless the plugin contract explicitly validates and permits it.
