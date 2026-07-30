@@ -1356,6 +1356,84 @@ describe("MicrosoftGraphProvider tools", () => {
     expect(graphCalls).toBe(0);
   });
 
+  it("does not write to Graph when disconnect revokes access during commit admission", async () => {
+    const writeCases = [
+      {
+        capability: "mail.draft.create",
+        toolName: "microsoft365.mail.draft.create",
+        input: {
+          to: ["person@example.edu"],
+          subject: "Review",
+          body: "Please review this draft.",
+        },
+      },
+      {
+        capability: "calendar.write",
+        toolName: "microsoft365.calendar.event.create",
+        input: {
+          subject: "Planning",
+          start: "2026-07-20T09:00:00-07:00",
+          end: "2026-07-20T10:00:00-07:00",
+        },
+      },
+      {
+        capability: "calendar.write",
+        toolName: "microsoft365.calendar.event.update",
+        input: { eventId: "event-1", subject: "Updated planning" },
+      },
+      {
+        capability: "chat.write",
+        toolName: "microsoft365.chat.message.send",
+        input: { chatId: "chat-1", body: "Hello" },
+      },
+    ] as const;
+
+    for (const writeCase of writeCases) {
+      const secrets = memorySecrets();
+      let graphCalls = 0;
+      const fetchImplementation = (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+        if (url.endsWith("/token")) {
+          return jsonResponse(
+            tokenBody("offline_access Mail.ReadWrite Calendars.ReadWrite Chat.ReadWrite"),
+          );
+        }
+        graphCalls += 1;
+        return jsonResponse({ id: "unexpected-write" }, 201);
+      }) as typeof fetch;
+      const graph = provider(secrets.service, fetchImplementation);
+      await authorize(graph, [writeCase.capability]);
+
+      let markAdmissionStarted!: () => void;
+      let releaseAdmission!: () => void;
+      const admissionStarted = new Promise<void>((resolve) => {
+        markAdmissionStarted = resolve;
+      });
+      const admissionGate = new Promise<void>((resolve) => {
+        releaseAdmission = resolve;
+      });
+      const controller = new AbortController();
+      const context: IntegrationInvocationContext = {
+        signal: controller.signal,
+        writeApproved: true,
+        beginCommit: vi.fn(async () => {
+          markAdmissionStarted();
+          await admissionGate;
+          return controller.signal;
+        }),
+      };
+
+      const pendingWrite = graph.invoke(writeCase.toolName, writeCase.input, context);
+      await admissionStarted;
+      await graph.disconnect(lifecycle());
+      releaseAdmission();
+
+      await expect(pendingWrite).rejects.toThrow(/revoked/u);
+      expect(graphCalls).toBe(0);
+    }
+  });
+
   it("creates and edits calendar events only through fixed event endpoints", async () => {
     const secrets = memorySecrets();
     const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];

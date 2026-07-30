@@ -1327,6 +1327,7 @@ export class MicrosoftGraphProvider {
                 throw new IntegrationProviderPublicError("Mail draft is too large; its encoded request must be at most 4 MB.");
             }
             const commitSignal = await this.#beginInvocationCommit(context);
+            this.#assertInvocationCurrent(generation);
             const result = await this.#graph("/me/messages", access.value, {
                 method: "POST",
                 body,
@@ -1406,6 +1407,7 @@ export class MicrosoftGraphProvider {
             });
             const body = eventBody(values);
             const commitSignal = await this.#beginInvocationCommit(context);
+            this.#assertInvocationCurrent(generation);
             const result = await this.#graph("/me/events", access.value, {
                 method: "POST",
                 body,
@@ -1440,6 +1442,7 @@ export class MicrosoftGraphProvider {
                 ...(values.attendees === undefined ? {} : { attendees: attendees(values.attendees) }),
             };
             const commitSignal = await this.#beginInvocationCommit(context);
+            this.#assertInvocationCurrent(generation);
             const result = await this.#graph(`/me/events/${encodeURIComponent(values.eventId)}`, access.value, { method: "PATCH", body, signal: commitSignal });
             this.#assertInvocationCurrent(generation);
             return eventResult(result);
@@ -1484,6 +1487,7 @@ export class MicrosoftGraphProvider {
                 throw new IntegrationProviderPublicError("Chat message is too large; its encoded request must be at most 28 KB.");
             }
             const commitSignal = await this.#beginInvocationCommit(context);
+            this.#assertInvocationCurrent(generation);
             const result = await this.#graph(`/chats/${encodeURIComponent(values.chatId)}/messages`, access.value, {
                 method: "POST",
                 body,

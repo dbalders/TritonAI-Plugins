@@ -70,6 +70,7 @@ const GOOGLE_CLIENT_ID = /^\d{6,30}-[a-z0-9]{8,128}\.apps\.googleusercontent\.co
 const GOOGLE_CLIENT_SECRET = /^[A-Za-z0-9_-]{16,256}$/u;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const FLOW_LIFETIME_MS = 5 * 60_000;
+const FLOW_CALLBACK_CLAIM_MS = 60_000;
 const FLOW_POLL_SECONDS = 2;
 const CURSOR_LIFETIME_MS = 15 * 60_000;
 const ACCESS_TOKEN_SKEW_MS = 60_000;
@@ -523,7 +524,8 @@ interface PendingFlow {
   readonly expiresAt: number;
   readonly generation: number;
   readonly server: NodeHttp.Server;
-  readonly timer: NodeJS.Timeout;
+  timer: NodeJS.Timeout;
+  callbackExpiresAt: number | null;
   callback: AuthorizationCodeResult | AuthorizationErrorResult | null;
   consumed: boolean;
   closePromise: Promise<void> | null;
@@ -995,10 +997,28 @@ function decodeGmailText(value: unknown, headers: unknown): string {
     throw new Error("Gmail body data is invalid.");
   }
   try {
+    const match = /^([A-Za-z0-9_-]*)(={0,2})$/u.exec(value);
+    const unpadded = match?.[1];
+    const padding = match?.[2] ?? "";
+    if (
+      unpadded === undefined ||
+      unpadded.length % 4 === 1 ||
+      (padding.length > 0 && value.length % 4 !== 0)
+    ) {
+      throw new Error("Gmail body data is invalid.");
+    }
+    const bytes = Buffer.from(unpadded, "base64url");
+    if (bytes.toString("base64url") !== unpadded) {
+      throw new Error("Gmail body data is invalid.");
+    }
     const encoding = gmailTextEncoding(headers);
-    return new TextDecoder(encoding)
-      .decode(Buffer.from(value, "base64url"))
-      .slice(0, MAX_BODY_CHARS);
+    let textDecoder: TextDecoder;
+    try {
+      textDecoder = new TextDecoder(encoding);
+    } catch {
+      textDecoder = new TextDecoder("utf-8");
+    }
+    return textDecoder.decode(bytes).slice(0, MAX_BODY_CHARS);
   } catch {
     throw new Error("Gmail body data is invalid.");
   }
@@ -1551,7 +1571,15 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
       }
       flow.consumed = true;
       flow.callback = { kind: "code", code };
+      flow.callbackExpiresAt = Date.now() + FLOW_CALLBACK_CLAIM_MS;
       clearTimeout(flow.timer);
+      flow.timer = setTimeout(() => {
+        if (this.#pending.get(flow.flowId) === flow && !this.#polling.has(flow.flowId)) {
+          this.#pending.delete(flow.flowId);
+          void this.#closeFlowListener(flow, true);
+        }
+      }, FLOW_CALLBACK_CLAIM_MS);
+      flow.timer.unref();
       this.#writeCallbackPage(response, 200, "Google Workspace sign-in received.");
     } else {
       const errorCode =
@@ -1568,7 +1596,13 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
   async #startFlowListener(
     input: Omit<
       PendingFlow,
-      "server" | "timer" | "redirectUri" | "callback" | "consumed" | "closePromise"
+      | "server"
+      | "timer"
+      | "redirectUri"
+      | "callbackExpiresAt"
+      | "callback"
+      | "consumed"
+      | "closePromise"
     >,
     signal?: AbortSignal,
   ): Promise<PendingFlow> {
@@ -1617,6 +1651,7 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
       server,
       timer,
       redirectUri: `http://127.0.0.1:${address.port}${CALLBACK_PATH}`,
+      callbackExpiresAt: null,
       callback: null,
       consumed: false,
       closePromise: null,
@@ -1672,7 +1707,10 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
         };
       }
       const expired = [...this.#pending.values()].filter(
-        (flow) => flow.expiresAt <= Date.now() && !this.#polling.has(flow.flowId),
+        (flow) =>
+          (flow.callback?.kind === "code"
+            ? flow.callbackExpiresAt !== null && flow.callbackExpiresAt <= Date.now()
+            : flow.expiresAt <= Date.now()) && !this.#polling.has(flow.flowId),
       );
       await Promise.all(expired.map((flow) => this.#removeFlow(flow.flowId)));
       if (!credential) {
@@ -1835,7 +1873,11 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
         "Google Workspace sign-in is already being checked.",
       );
     }
-    if (flow.expiresAt <= Date.now()) {
+    if (
+      flow.callback?.kind === "code"
+        ? flow.callbackExpiresAt !== null && flow.callbackExpiresAt <= Date.now()
+        : flow.expiresAt <= Date.now()
+    ) {
       await this.#removeFlow(flowId);
       return {
         state: "expired",
@@ -2000,6 +2042,14 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
       throw error;
     } finally {
       this.#polling.delete(flowId);
+      if (
+        flow.callback?.kind === "code" &&
+        flow.callbackExpiresAt !== null &&
+        flow.callbackExpiresAt <= Date.now() &&
+        this.#pending.get(flowId) === flow
+      ) {
+        await this.#removeFlow(flowId);
+      }
     }
   }
 

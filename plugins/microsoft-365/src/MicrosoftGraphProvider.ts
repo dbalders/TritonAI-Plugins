@@ -1651,6 +1651,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         );
       }
       const commitSignal = await this.#beginInvocationCommit(context);
+      this.#assertInvocationCurrent(generation);
       const result = await this.#graph("/me/messages", access.value, {
         method: "POST",
         body,
@@ -1745,6 +1746,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
       });
       const body = eventBody(values);
       const commitSignal = await this.#beginInvocationCommit(context);
+      this.#assertInvocationCurrent(generation);
       const result = await this.#graph("/me/events", access.value, {
         method: "POST",
         body,
@@ -1785,6 +1787,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         ...(values.attendees === undefined ? {} : { attendees: attendees(values.attendees) }),
       };
       const commitSignal = await this.#beginInvocationCommit(context);
+      this.#assertInvocationCurrent(generation);
       const result = await this.#graph(
         `/me/events/${encodeURIComponent(values.eventId)}`,
         access.value,
@@ -1839,6 +1842,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         );
       }
       const commitSignal = await this.#beginInvocationCommit(context);
+      this.#assertInvocationCurrent(generation);
       const result = await this.#graph(
         `/chats/${encodeURIComponent(values.chatId)}/messages`,
         access.value,

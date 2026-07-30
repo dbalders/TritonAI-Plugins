@@ -109,7 +109,7 @@ function signIdToken(
       iat: now,
       nonce,
       sub: "google-subject-1",
-      email: "dbalderston@ucsd.edu",
+      email: "fixture-user@ucsd.edu",
       email_verified: true,
       hd: "ucsd.edu",
       ...claims,
@@ -484,14 +484,14 @@ describe("GoogleWorkspaceProvider authorization", () => {
       expect(persisted).not.toContain("fixture-authorization-code");
       expect(await fixture.provider.status()).toMatchObject({
         state: "connected",
-        accountLabel: "dbalderston@ucsd.edu",
+        accountLabel: "fixture-user@ucsd.edu",
         grantedCapabilities: ["identity.read", "mail.read"],
       });
       await expect(
         fixture.provider.invoke("googleworkspace.identity.get", {}, invocation()),
       ).resolves.toEqual({
         subject: "google-subject-1",
-        email: "dbalderston@ucsd.edu",
+        email: "fixture-user@ucsd.edu",
         hostedDomain: "ucsd.edu",
       });
     } finally {
@@ -580,7 +580,7 @@ describe("GoogleWorkspaceProvider authorization", () => {
         "mail.read",
         "calendar.read",
       ]);
-      expect(authorizationUrl.searchParams.get("login_hint")).toBe("dbalderston@ucsd.edu");
+      expect(authorizationUrl.searchParams.get("login_hint")).toBe("fixture-user@ucsd.edu");
       await globalThis.fetch(
         callbackUrl(authorizationUrl, {
           state: authorizationUrl.searchParams.get("state")!,
@@ -592,7 +592,7 @@ describe("GoogleWorkspaceProvider authorization", () => {
       });
       await expect(fixture.provider.status()).resolves.toMatchObject({
         state: "connected",
-        accountLabel: "dbalderston@ucsd.edu",
+        accountLabel: "fixture-user@ucsd.edu",
         grantedCapabilities: ["identity.read", "mail.read"],
       });
     } finally {
@@ -631,7 +631,7 @@ describe("GoogleWorkspaceProvider authorization", () => {
     }
   });
 
-  it("expires flows, supersedes concurrent flows, and closes replay listeners", async () => {
+  it("expires flows without callbacks and supersedes concurrent flows", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const fixture = oauthFixture();
     try {
@@ -640,14 +640,54 @@ describe("GoogleWorkspaceProvider authorization", () => {
       await expect(fixture.provider.poll(older.flow.flowId, lifecycle())).rejects.toThrow(
         /not found/u,
       );
-      const state = newer.authorizationUrl.searchParams.get("state")!;
-      const callback = callbackUrl(newer.authorizationUrl, { state, code: "fixture-code" });
-      expect((await globalThis.fetch(callback)).status).toBe(200);
-      await expect(globalThis.fetch(callback)).rejects.toBeDefined();
       vi.setSystemTime(Date.now() + 6 * 60_000);
       await expect(fixture.provider.poll(newer.flow.flowId, lifecycle())).resolves.toMatchObject({
         state: "expired",
       });
+    } finally {
+      vi.useRealTimers();
+      await fixture.provider.close();
+    }
+  });
+
+  it("claims a captured OAuth callback after the flow deadline and status pruning", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const fixture = oauthFixture();
+    try {
+      const { flow, authorizationUrl } = await fixture.begin();
+      vi.setSystemTime(Date.now() + 299_000);
+      const callback = callbackUrl(authorizationUrl, {
+        state: authorizationUrl.searchParams.get("state")!,
+        code: "fixture-code",
+      });
+      expect((await globalThis.fetch(callback)).status).toBe(200);
+      await expect(globalThis.fetch(callback)).rejects.toBeDefined();
+
+      vi.setSystemTime(Date.now() + 2_000);
+      await expect(fixture.provider.status()).resolves.toMatchObject({ state: "connecting" });
+      await expect(fixture.provider.poll(flow.flowId, lifecycle())).resolves.toMatchObject({
+        state: "connected",
+      });
+    } finally {
+      vi.useRealTimers();
+      await fixture.provider.close();
+    }
+  });
+
+  it("expires a captured OAuth callback when its bounded claim window is not used", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const fixture = oauthFixture();
+    try {
+      const { flow, authorizationUrl } = await fixture.begin();
+      const callback = callbackUrl(authorizationUrl, {
+        state: authorizationUrl.searchParams.get("state")!,
+        code: "fixture-code",
+      });
+      expect((await globalThis.fetch(callback)).status).toBe(200);
+
+      vi.setSystemTime(Date.now() + 61_000);
+      await expect(fixture.provider.status()).resolves.toMatchObject({ state: "not_connected" });
+      await expect(fixture.provider.poll(flow.flowId, lifecycle())).rejects.toThrow(/not found/u);
     } finally {
       vi.useRealTimers();
       await fixture.provider.close();
@@ -984,6 +1024,51 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
     }
   });
 
+  it("falls back to lenient UTF-8 for unknown-8bit Gmail text but rejects malformed base64", async () => {
+    const fixture = oauthFixture({
+      api: (url) => {
+        if (!url.includes("/gmail/v1/users/me/messages/")) {
+          return jsonResponse({ error: true }, 500);
+        }
+        const malformed = url.includes("/messages/message-malformed");
+        return jsonResponse({
+          id: malformed ? "message-malformed" : "message-unknown-8bit",
+          threadId: "thread-charset",
+          payload: {
+            mimeType: "text/plain",
+            headers: [
+              { name: "Subject", value: "Charset" },
+              { name: "Content-Type", value: "text/plain; charset=unknown-8bit" },
+            ],
+            body: {
+              data: malformed ? "%%%not-base64%%%" : Buffer.from("Olá").toString("base64url"),
+              size: malformed ? 16 : 4,
+            },
+          },
+        });
+      },
+    });
+    try {
+      await fixture.complete(["identity.read", "mail.read"]);
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.mail.message.get",
+          { messageId: "message-unknown-8bit" },
+          invocation(),
+        ),
+      ).resolves.toMatchObject({ body: { text: "Olá" } });
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.mail.message.get",
+          { messageId: "message-malformed" },
+          invocation(),
+        ),
+      ).rejects.toThrow(/Gmail body data is invalid/u);
+    } finally {
+      await fixture.provider.close();
+    }
+  });
+
   it("creates only an unsent plain-text Gmail draft after invocation-time approval", async () => {
     const apiCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
     const events: string[] = [];
@@ -1049,8 +1134,8 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
       summary: "Planning",
       start: { dateTime: "2026-07-28T16:00:00.000Z" },
       end: { dateTime: "2026-07-28T17:00:00.000Z" },
-      organizer: { email: "dbalderston@ucsd.edu", self: true },
-      creator: { email: "dbalderston@ucsd.edu", self: true },
+      organizer: { email: "fixture-user@ucsd.edu", self: true },
+      creator: { email: "fixture-user@ucsd.edu", self: true },
     };
     const fixture = oauthFixture({
       api: (url, init) => {
