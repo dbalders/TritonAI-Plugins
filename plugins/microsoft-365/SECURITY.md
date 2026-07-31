@@ -3,7 +3,14 @@
 This package mixes default reads with explicit opt-in capabilities. Every Graph action must remain
 bound to its dedicated manifest capability, fixed endpoint, executable input schema, projected
 output, and truthful read/write metadata. Write tools must remain `readOnly: false` and manifest
-`effect: "write"` so Harness approval is authoritative.
+`effect: "write"` so Harness approval is authoritative. Each write requires
+`writeApproved === true` and successful `beginCommit()` admission immediately before the fixed
+Graph mutation. The provider must retain `connect` and `disconnect` recovery behavior.
+
+The compiled entrypoint must export the exact package `manifest` and synchronous
+`createIntegrationProvider({ secrets, configuration })` factory. Accept only the package-scoped
+secret store and an exact plain-object configuration containing `clientId` and `tenantId` strings.
+Reject malformed configuration without including its values in errors or logs.
 
 Do not add a generic request, raw URL, arbitrary OData, `.default`, client secret, application
 permission, mail send/delete, event delete, invitation response, chat creation, or message

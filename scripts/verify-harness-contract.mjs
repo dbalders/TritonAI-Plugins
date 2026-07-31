@@ -4,7 +4,13 @@ import { spawnSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 
+import * as YAML from "yaml";
+
 import { discoverPluginDirectories } from "./plugin-directories.mjs";
+import {
+  assertProviderRuntimeDependencies,
+  PROVIDER_EFFECT_PEER_RANGE,
+} from "./provider-runtime-dependencies.mjs";
 import { REVIEWED_HARNESS_COMMIT } from "./reviewed-harness.mjs";
 
 const harnessRoot = process.env.TRITONAI_HARNESS_ROOT;
@@ -58,10 +64,17 @@ const secret = await Fs.readFile(
   Path.join(harness, "apps/server/src/integrations/IntegrationSecretStore.ts"),
   "utf8",
 );
-const harnessPackage = JSON.parse(await Fs.readFile(Path.join(harness, "package.json"), "utf8"));
+const productionBuiltins = await Fs.readFile(
+  Path.join(harness, "apps/server/src/integrations/productionBuiltins.ts"),
+  "utf8",
+);
+const harnessWorkspace = YAML.parse(
+  await Fs.readFile(Path.join(harness, "pnpm-workspace.yaml"), "utf8"),
+);
 
 for (const fragment of [
   "beginCommit(): Promise<AbortSignal>",
+  "beginCommit?(): Promise<AbortSignal>",
   "status(context?: IntegrationInvocationContext)",
   "prepare?(context: IntegrationLifecycleContext)",
   "context?: IntegrationLifecycleContext",
@@ -70,6 +83,7 @@ for (const fragment of [
   "readonly sourceRoot?: string",
   "readonly bundledFiles?: Readonly<Record<string, string | Uint8Array>>",
   "close?(): Promise<void>",
+  '"authorization_url"',
 ]) {
   assert(registry.includes(fragment), `Harness provider contract drifted: missing ${fragment}`);
 }
@@ -82,13 +96,28 @@ for (const fragment of [
   assert(tool.includes(fragment), `Harness tool contract drifted: missing ${fragment}`);
 }
 assert(secret.includes("integration-${integrationId}--"), "Harness secret namespace drifted.");
-assert(
-  harnessPackage.workspaces?.catalog?.effect === "4.0.0-beta.78",
-  "Harness Effect pin drifted.",
-);
+for (const fragment of [
+  "readonly createIntegrationProvider?:",
+  "loaded.createIntegrationProvider({",
+  "provider factory must be synchronous",
+  "created.id !== packageManifest.provider",
+]) {
+  assert(
+    productionBuiltins.includes(fragment),
+    `Harness provider factory contract drifted: missing ${fragment}`,
+  );
+}
+assert(harnessWorkspace.catalog?.effect === "4.0.0-beta.102", "Harness Effect pin drifted.");
 
 const manifestModule = await import(
   pathToFileURL(Path.join(harness, "apps/server/src/integrations/manifest.ts")).href
+);
+const hostRuntimeModule = await import(
+  pathToFileURL(Path.join(harness, "packages/shared/src/pluginHostRuntime.ts")).href
+);
+assert(
+  hostRuntimeModule.EFFECT_HOST_PEER_RANGE === PROVIDER_EFFECT_PEER_RANGE,
+  "Plugins and Harness disagree on the canonical Effect peer contract.",
 );
 const frameworkProbe = {
   apiVersion: "tritonai.harness/v2",
@@ -126,13 +155,34 @@ for (const directory of await discoverPluginDirectories(pluginsRoot)) {
   const packageJson = JSON.parse(await Fs.readFile(Path.join(packageRoot, "package.json"), "utf8"));
   const harnessValidated = manifestModule.validateIntegrationManifest(manifest);
   assert(harnessValidated.id === directory, `${directory}: exact Harness rejected the plugin id.`);
-  if (harnessValidated.tools.length > 0) {
+  assertProviderRuntimeDependencies(directory, packageJson, harnessValidated);
+  if (harnessValidated.provider !== undefined) {
+    assert(
+      isDeepStrictEqual(
+        hostRuntimeModule.resolvePluginHostRuntimeDependencies(
+          packageJson,
+          harnessWorkspace.catalog.effect,
+        ),
+        [
+          {
+            name: "effect",
+            version: harnessWorkspace.catalog.effect,
+            declaration: "peer",
+          },
+        ],
+      ),
+      `${directory}: exact Harness rejected the provider runtime contract.`,
+    );
     const providerModule = await import(
       pathToFileURL(Path.join(packageRoot, "dist", "index.js")).href
     );
     assert(
       isDeepStrictEqual(providerModule.manifest, harnessValidated),
       `${directory}: compiled provider must export its exact validated manifest as manifest.`,
+    );
+    assert(
+      typeof providerModule.createIntegrationProvider === "function",
+      `${directory}: compiled provider must export createIntegrationProvider.`,
     );
     const contract = spawnSync(
       "pnpm",

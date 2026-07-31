@@ -27,34 +27,33 @@ function isPromiseLike(value) {
   );
 }
 
+function git(args, cwd) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  assert(result.status === 0, result.stderr || `git ${args.join(" ")} failed.`);
+  return result.stdout;
+}
+
 assert(
   typeof harnessRoot === "string" && harnessRoot.length > 0,
   "TRITONAI_HARNESS_ROOT must identify the exact reviewed Harness checkout.",
 );
 assert(
   /^[a-f0-9]{40}$/u.test(expectedHarnessCommit ?? ""),
-  "TRITONAI_HARNESS_COMMIT must be the full reviewed Harness commit SHA.",
+  "TRITONAI_HARNESS_COMMIT must be the full reviewed Harness base commit SHA.",
 );
 assert(
   expectedHarnessCommit === REVIEWED_HARNESS_COMMIT,
-  `TRITONAI_HARNESS_COMMIT must match the repository-reviewed Harness commit ${REVIEWED_HARNESS_COMMIT}.`,
+  `TRITONAI_HARNESS_COMMIT must match the repository-reviewed Harness base ${REVIEWED_HARNESS_COMMIT}.`,
 );
 const harness = Path.resolve(harnessRoot);
-const git = spawnSync("git", ["rev-parse", "HEAD"], { cwd: harness, encoding: "utf8" });
-assert(git.status === 0, `Harness checkout is unavailable at ${harness}.`);
-const actualHead = git.stdout.trim();
-assert(/^[a-f0-9]{40}$/u.test(actualHead), "Harness HEAD must be a full commit SHA.");
+const actualHead = git(["rev-parse", "HEAD"], harness).trim();
 assert(
   actualHead === REVIEWED_HARNESS_COMMIT,
-  `Harness checkout is at ${actualHead}, expected ${REVIEWED_HARNESS_COMMIT}.`,
+  `Harness checkout is at ${actualHead}, expected base ${REVIEWED_HARNESS_COMMIT}.`,
 );
-const harnessStatus = spawnSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
-  cwd: harness,
-  encoding: "utf8",
-});
-assert(harnessStatus.status === 0, "Could not verify the Harness working-tree state.");
+const harnessStatus = git(["status", "--porcelain=v1", "--untracked-files=all"], harness).trim();
 assert(
-  harnessStatus.stdout.trim() === "",
+  harnessStatus === "",
   "Harness worktree must be clean so the provider contract uses only reviewed contents.",
 );
 
@@ -84,8 +83,8 @@ const provider = providerModule.createIntegrationProvider({
     remove: () => Effect.void,
   },
   configuration: {
-    clientId: "11111111-1111-4111-8111-111111111111",
-    tenantId: "22222222-2222-4222-8222-222222222222",
+    clientId: "123456789012-contractfixture.apps.googleusercontent.com",
+    clientSecret: "ContractFixtureCredential_123",
   },
 });
 assert(!isPromiseLike(provider), "Compiled provider factory must return synchronously.");
@@ -94,16 +93,16 @@ assert(
   "Compiled provider factory output differs from the manifest provider.",
 );
 assert(
-  Array.isArray(providerModule.MICROSOFT_GRAPH_TOOLS),
+  Array.isArray(providerModule.GOOGLE_WORKSPACE_TOOLS),
   "Compiled tool definitions are missing.",
 );
 const declaredToolNames = validatedManifest.tools.map(({ name }) => name).toSorted();
-const exportedToolNames = providerModule.MICROSOFT_GRAPH_TOOLS.map(({ name }) => name).toSorted();
+const exportedToolNames = providerModule.GOOGLE_WORKSPACE_TOOLS.map(({ name }) => name).toSorted();
 assert(
   isDeepStrictEqual(exportedToolNames, declaredToolNames),
   "Compiled provider tool set differs from the manifest tool set.",
 );
-for (const tool of providerModule.MICROSOFT_GRAPH_TOOLS) {
+for (const tool of providerModule.GOOGLE_WORKSPACE_TOOLS) {
   const manifestTool = validatedManifest.tools.find(({ name }) => name === tool.name);
   assert(
     manifestTool !== undefined &&
@@ -118,7 +117,7 @@ for (const tool of providerModule.MICROSOFT_GRAPH_TOOLS) {
   );
 }
 
-const probeDirectory = await Fs.mkdtemp(Path.join(Os.tmpdir(), "tritonai-graph-contract-"));
+const probeDirectory = await Fs.mkdtemp(Path.join(Os.tmpdir(), "tritonai-google-contract-"));
 try {
   const probe = Path.join(probeDirectory, "provider-contract.ts");
   const consumerProbe = Path.join(probeDirectory, "package-consumer.ts");
@@ -188,4 +187,4 @@ try {
   await Fs.rm(probeDirectory, { recursive: true, force: true });
 }
 
-console.log(`Microsoft 365 provider contract passed at Harness ${actualHead}`);
+console.log(`Google Workspace provider contract passed at Harness ${actualHead}`);

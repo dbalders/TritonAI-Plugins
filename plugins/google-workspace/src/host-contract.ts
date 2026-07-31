@@ -3,9 +3,8 @@ import type * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
 
 /**
- * Narrow structural boundary for the current TritonAI Harness v2 contract.
- * Harness build composition proves this assignment against IntegrationRegistry.ts
- * when it pins and bundles this source package.
+ * Narrow structural boundary for the TritonAI Harness v2 provider contract.
+ * The package contract check proves this shape against the exact reviewed Harness.
  */
 export interface IntegrationInvocationContext {
   readonly signal: AbortSignal;
@@ -18,20 +17,29 @@ export interface IntegrationLifecycleContext extends IntegrationInvocationContex
 }
 
 export interface IntegrationConnectionSubmission {
+  readonly kind: "api_key";
   readonly flowId: string;
   readonly value: string;
 }
 
-export interface IntegrationDeviceCodeConnectResult {
-  readonly kind: "device_code";
+export interface IntegrationAuthorizationUrlConnectResult {
+  readonly kind: "authorization_url";
   readonly flowId: string;
-  readonly verificationUri: string;
-  readonly verificationUriComplete: string | null;
-  readonly userCode: string;
+  readonly authorizationUrl: string;
   readonly message: string;
   readonly expiresAt: string;
   readonly intervalSeconds: number;
 }
+
+export interface IntegrationConnectedConnectResult {
+  readonly kind: "connected";
+  readonly flowId: string;
+  readonly message: string;
+}
+
+export type IntegrationConnectResult =
+  | IntegrationAuthorizationUrlConnectResult
+  | IntegrationConnectedConnectResult;
 
 export interface IntegrationProviderPollResult {
   readonly state: "pending" | "connected" | "expired" | "failed";
@@ -74,7 +82,7 @@ export interface IntegrationProvider {
     capabilities: ReadonlyArray<string>,
     context?: IntegrationLifecycleContext,
     submission?: IntegrationConnectionSubmission,
-  ): Promise<IntegrationDeviceCodeConnectResult>;
+  ): Promise<IntegrationConnectResult>;
   poll?(
     flowId: string,
     context?: IntegrationLifecycleContext,

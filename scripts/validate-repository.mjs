@@ -1,8 +1,11 @@
 import * as Fs from "node:fs/promises";
 import * as Path from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { pathToFileURL } from "node:url";
 
 import { validateManifestV2 } from "./manifest-v2.mjs";
 import { discoverPluginDirectories } from "./plugin-directories.mjs";
+import { assertProviderRuntimeDependencies } from "./provider-runtime-dependencies.mjs";
 import { parseSkillFrontmatter } from "./skill-frontmatter.mjs";
 
 const root = Path.resolve(import.meta.dirname, "..");
@@ -75,7 +78,8 @@ for (const directory of entries) {
     ),
     `${directory}: package file allowlist is unsafe.`,
   );
-  if (manifest.tools.length > 0) {
+  assertProviderRuntimeDependencies(directory, packageJson, manifest);
+  if (manifest.provider !== undefined) {
     assert(
       packageJson.files.includes("dist") &&
         packageJson.exports?.["."]?.types === "./dist/index.d.ts" &&
@@ -92,6 +96,17 @@ for (const directory of entries) {
       const entry = await Fs.stat(Path.join(packageRoot, artifact)).catch(() => undefined);
       assert(entry?.isFile(), `${directory}: reviewed provider artifact is missing ${artifact}.`);
     }
+    const providerModule = await import(
+      pathToFileURL(Path.join(packageRoot, "dist", "index.js")).href
+    );
+    assert(
+      isDeepStrictEqual(providerModule.manifest, manifest),
+      `${directory}: compiled provider must export its exact manifest as manifest.`,
+    );
+    assert(
+      typeof providerModule.createIntegrationProvider === "function",
+      `${directory}: compiled provider must export createIntegrationProvider.`,
+    );
   } else {
     const hasSource = await Fs.stat(Path.join(packageRoot, "src")).then(
       (entry) => entry.isDirectory(),

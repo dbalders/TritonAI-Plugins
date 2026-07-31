@@ -2,7 +2,7 @@
 
 ## Source layout
 
-Each direct child of `plugins/` is one versioned Harness package. A package contains its strict v1
+Each direct child of `plugins/` is one versioned Harness package. A package contains its strict v2
 manifest, Codex skills, optional provider source and tests, compiled distribution files when needed,
 and package security documentation. The root framework permits zero plugins so its initial commit
 and infrastructure can be reviewed independently.
@@ -21,16 +21,21 @@ deterministic build consumer and schema validation.
 
 ```text
 immutable TritonAI-Plugins ref
-  -> Harness-owned package selection and source inclusion
+  -> exact signed package composition and digest allowlist
   -> strict manifest, skill, provider, and package validation
-  -> package-scoped secrets and deployment configuration injection
+  -> reviewed dist/index.js entrypoint inclusion
+  -> package-scoped secrets and opaque private build configuration
+  -> synchronous package-owned provider construction
   -> immutable in-process catalog
   -> user enable/disable and capability controls
 ```
 
-The Harness descriptor constructs an `IntegrationPackage` containing the validated manifest,
-optional provider instance, and source root or deterministic bundled files. The complete catalog
-exists before registry startup. Runtime registration is a non-goal.
+Every provider entrypoint exports the exact validated `manifest` and a synchronous
+`createIntegrationProvider({ secrets, configuration })` factory. Harness deep-compares that
+manifest with the composed package and passes only the package-scoped secret-store facade and the
+package's opaque configuration object. The plugin owns the configuration schema, validation, and
+provider construction. The complete catalog exists before registry startup; runtime registration
+remains a non-goal.
 
 ## Contract and versioning
 
@@ -38,12 +43,14 @@ Manifest `apiVersion` and `manifestVersion` select the one current package contr
 semantic version tracks plugin behavior and assets. Breaking provider ABI or trust-boundary changes
 require a new Harness contract version or a jointly reviewed source change and contract proof.
 
-Harness owns the final structural assignment and static catalog adapter. Generic registry,
-lifecycle, secret-store, RPC, MCP, and installer changes remain in Harness, not in individual
-plugins.
+Harness owns exact composition and digest validation plus the generic registry, lifecycle,
+secret-store, RPC, MCP, and installer boundaries. Plugins own their provider implementation,
+construction, configuration validation, and provider-specific recovery behavior. Providers that
+declare write tools implement `connect` and `disconnect`; each write invocation requires
+`writeApproved` and `beginCommit()` admission immediately before its fixed mutation.
 
 Every provider PR must expose its exact validated manifest from the compiled module and define a
-`contract:harness` script that proves its provider export and exact tool set are structurally
-assignable to the Harness checkout named by `TRITONAI_HARNESS_ROOT` at the exact
-`TRITONAI_HARNESS_COMMIT`. It must also include focused
-Harness-owned composition tests for any lifecycle extension it needs.
+`contract:harness` script that proves its synchronous factory, provider export, and exact tool set
+are structurally assignable to the Harness checkout named by `TRITONAI_HARNESS_ROOT` at the exact
+`TRITONAI_HARNESS_COMMIT`. Composition proofs continue to pin the exact source identity, selected
+packages, and distribution digests.

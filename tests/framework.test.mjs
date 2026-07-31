@@ -9,6 +9,11 @@ import {
   assertSourceMetadataUnchanged,
   assertStaticSourceUnchanged,
 } from "../scripts/package-artifact.mjs";
+import {
+  assertProviderRuntimeDependencies,
+  PROVIDER_EFFECT_DEV_VERSION,
+  PROVIDER_EFFECT_PEER_RANGE,
+} from "../scripts/provider-runtime-dependencies.mjs";
 import { parseSkillFrontmatter } from "../scripts/skill-frontmatter.mjs";
 
 const manifest = {
@@ -131,6 +136,97 @@ test("rejects mismatched providers and tools and unknown capabilities", () => {
   const invalidAccess = structuredClone(manifest);
   invalidAccess.capabilities[0].access = "always";
   assert.throws(() => validateManifestV2(invalidAccess), /capability/u);
+});
+
+const providerPackage = {
+  devDependencies: { effect: PROVIDER_EFFECT_DEV_VERSION },
+  peerDependencies: { effect: PROVIDER_EFFECT_PEER_RANGE },
+};
+const providerManifest = { provider: "fixture-provider" };
+
+test("requires provider packages to use the host Effect runtime", () => {
+  assert.doesNotThrow(() =>
+    assertProviderRuntimeDependencies("fixture-reader", providerPackage, providerManifest),
+  );
+  assert.doesNotThrow(() => assertProviderRuntimeDependencies("skill-only", {}, {}));
+});
+
+test("rejects runtime dependencies in providerless packages", () => {
+  for (const packageJson of [
+    { dependencies: {} },
+    { peerDependencies: { effect: PROVIDER_EFFECT_PEER_RANGE } },
+    { optionalDependencies: { effect: PROVIDER_EFFECT_DEV_VERSION } },
+    { bundledDependencies: [] },
+    { bundleDependencies: ["effect"] },
+  ]) {
+    assert.throws(
+      () => assertProviderRuntimeDependencies("skill-only", packageJson, {}),
+      /providerless packages must omit runtime dependencies/u,
+    );
+  }
+});
+
+test("rejects production dependencies in provider packages", () => {
+  assert.throws(
+    () =>
+      assertProviderRuntimeDependencies(
+        "fixture-reader",
+        { ...providerPackage, dependencies: {} },
+        providerManifest,
+      ),
+    /omit production dependencies/u,
+  );
+  assert.throws(
+    () =>
+      assertProviderRuntimeDependencies(
+        "fixture-reader",
+        { ...providerPackage, dependencies: { effect: PROVIDER_EFFECT_DEV_VERSION } },
+        providerManifest,
+      ),
+    /omit production dependencies/u,
+  );
+});
+
+test("rejects optional and bundled dependencies in provider packages", () => {
+  for (const packageJson of [
+    { ...providerPackage, optionalDependencies: {} },
+    { ...providerPackage, bundledDependencies: [] },
+    { ...providerPackage, bundleDependencies: ["effect"] },
+  ]) {
+    assert.throws(
+      () => assertProviderRuntimeDependencies("fixture-reader", packageJson, providerManifest),
+      /omit (optional|bundled) runtime dependencies/u,
+    );
+  }
+});
+
+test("rejects provider Effect peer and development version drift", () => {
+  for (const peerDependencies of [
+    {},
+    { effect: PROVIDER_EFFECT_PEER_RANGE, extra: "1.0.0" },
+    { effect: PROVIDER_EFFECT_DEV_VERSION },
+  ]) {
+    assert.throws(
+      () =>
+        assertProviderRuntimeDependencies(
+          "fixture-reader",
+          { ...providerPackage, peerDependencies },
+          providerManifest,
+        ),
+      /peerDependenc/iu,
+    );
+  }
+  for (const devDependencies of [{}, { effect: "4.0.0-beta.78" }]) {
+    assert.throws(
+      () =>
+        assertProviderRuntimeDependencies(
+          "fixture-reader",
+          { ...providerPackage, devDependencies },
+          providerManifest,
+        ),
+      /package-local development effect/u,
+    );
+  }
 });
 
 test("parses bounded YAML skill frontmatter", () => {

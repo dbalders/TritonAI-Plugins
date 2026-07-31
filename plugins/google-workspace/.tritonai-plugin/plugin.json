@@ -1,0 +1,193 @@
+{
+  "apiVersion": "tritonai.harness/v2",
+  "kind": "IntegrationPlugin",
+  "manifestVersion": 2,
+  "id": "google-workspace",
+  "name": "Google Workspace",
+  "description": "Use UC San Diego Google Drive, Gmail, and Calendar through fixed, bounded tools.",
+  "version": "1.0.0",
+  "provider": "google-workspace",
+  "capabilities": [
+    {
+      "id": "identity.read",
+      "displayName": "Read signed-in identity",
+      "description": "Read the connected Google account identity and hosted domain.",
+      "access": "default"
+    },
+    {
+      "id": "drive.read",
+      "displayName": "Read Drive files",
+      "description": "Search and read accessible Drive metadata and bounded file content. Cannot create, edit, move, share, or delete files.",
+      "access": "default"
+    },
+    {
+      "id": "mail.read",
+      "displayName": "Read Gmail",
+      "description": "Search and read messages, threads, labels, and bounded attachments. Cannot send, delete, move, archive, mark, or label messages.",
+      "access": "default"
+    },
+    {
+      "id": "mail.draft.create",
+      "displayName": "Create Gmail drafts",
+      "description": "Create unsent plain-text drafts. Cannot send mail or add attachments.",
+      "access": "opt-in"
+    },
+    {
+      "id": "calendar.read",
+      "displayName": "Read calendars",
+      "description": "List calendars and read bounded event ranges and exact event details.",
+      "access": "default"
+    },
+    {
+      "id": "calendar.write",
+      "displayName": "Create and edit events",
+      "description": "Create or narrowly edit events without sending invitations. Cannot delete, respond to invitations, change ownership, or manage calendar access.",
+      "access": "opt-in"
+    }
+  ],
+  "tools": [
+    {
+      "name": "googleworkspace.identity.get",
+      "displayName": "Read Google identity",
+      "description": "Read the connected UC San Diego Google account identity and hosted domain.",
+      "capabilities": ["identity.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.drive.search",
+      "displayName": "Search Google Drive",
+      "description": "Search accessible Drive items using bounded structured filters.",
+      "capabilities": ["drive.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.drive.item.get",
+      "displayName": "Read Drive item",
+      "description": "Read metadata for one exact accessible Drive item.",
+      "capabilities": ["drive.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.drive.content.get",
+      "displayName": "Read Drive content",
+      "description": "Download or export bounded content for one exact accessible Drive item.",
+      "capabilities": ["drive.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.docs.get",
+      "displayName": "Read Google Doc",
+      "description": "Read one exact Google Docs document through the fixed Docs endpoint.",
+      "capabilities": ["drive.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.sheets.get",
+      "displayName": "Read Google Sheet",
+      "description": "Read one exact Google Sheets spreadsheet or bounded A1 range.",
+      "capabilities": ["drive.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.slides.get",
+      "displayName": "Read Google Slides",
+      "description": "Read one exact Google Slides presentation through the fixed Slides endpoint.",
+      "capabilities": ["drive.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.mail.search",
+      "displayName": "Search Gmail",
+      "description": "Search Gmail messages using bounded structured filters.",
+      "capabilities": ["mail.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.mail.message.get",
+      "displayName": "Read Gmail message",
+      "description": "Read one exact Gmail message with bounded body and attachment metadata.",
+      "capabilities": ["mail.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.mail.thread.get",
+      "displayName": "Read Gmail thread",
+      "description": "Read one exact Gmail thread with bounded messages and bodies.",
+      "capabilities": ["mail.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.mail.labels.list",
+      "displayName": "List Gmail labels",
+      "description": "List bounded Gmail label metadata.",
+      "capabilities": ["mail.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.mail.attachment.get",
+      "displayName": "Read Gmail attachment",
+      "description": "Read one exact Gmail attachment within a five-megabyte response ceiling.",
+      "capabilities": ["mail.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.mail.draft.create",
+      "displayName": "Create Gmail draft",
+      "description": "Create one unsent plain-text Gmail draft without attachments.",
+      "capabilities": ["mail.draft.create"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.calendar.list",
+      "displayName": "List Google calendars",
+      "description": "List bounded metadata for calendars available to the connected account.",
+      "capabilities": ["calendar.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.calendar.events.list",
+      "displayName": "List calendar events",
+      "description": "List events from one calendar in a bounded timestamp range.",
+      "capabilities": ["calendar.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.calendar.event.get",
+      "displayName": "Read calendar event",
+      "description": "Read one exact Google Calendar event, including meeting and attachment metadata when available.",
+      "capabilities": ["calendar.read"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.calendar.event.create",
+      "displayName": "Create calendar event",
+      "description": "Create one event without attendees, invitations, or conference provisioning.",
+      "capabilities": ["calendar.write"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.calendar.event.update",
+      "displayName": "Edit calendar event",
+      "description": "Narrowly edit one event without deleting it or changing attendees, ownership, responses, or calendar access.",
+      "capabilities": ["calendar.write"],
+      "effect": "write"
+    }
+  ],
+  "skills": [
+    {
+      "name": "google-drive",
+      "description": "Search or read UC San Diego Google Drive, Docs, Sheets, or Slides through TritonAI Harness. Use when the user asks to find or inspect Workspace files without changing them.",
+      "capabilities": ["drive.read"]
+    },
+    {
+      "name": "gmail",
+      "description": "Search or read UC San Diego Gmail, or create an unsent plain-text draft through TritonAI Harness. Use when the user asks to inspect mail or prepare a draft without sending it.",
+      "capabilities": ["mail.read", "mail.draft.create"]
+    },
+    {
+      "name": "google-calendar",
+      "description": "Read, create, or narrowly edit UC San Diego Google Calendar events through TritonAI Harness. Use when the user asks about their schedule or requests an event change.",
+      "capabilities": ["calendar.read", "calendar.write"]
+    }
+  ]
+}

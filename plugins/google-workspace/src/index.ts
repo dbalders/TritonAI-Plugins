@@ -1,15 +1,17 @@
 export {
-  MICROSOFT_GRAPH_PROVIDER_ID,
-  MICROSOFT_GRAPH_SECRET_SUFFIX,
-  MICROSOFT_GRAPH_TOOLS,
-  MicrosoftGraphProvider,
-} from "./MicrosoftGraphProvider.js";
-export type { MicrosoftGraphConfiguration } from "./MicrosoftGraphProvider.js";
-import { MicrosoftGraphProvider } from "./MicrosoftGraphProvider.js";
+  GOOGLE_WORKSPACE_PROVIDER_ID,
+  GOOGLE_WORKSPACE_SECRET_SUFFIX,
+  GOOGLE_WORKSPACE_TOOLS,
+  GoogleWorkspaceProvider,
+} from "./GoogleWorkspaceProvider.js";
+export type { GoogleWorkspaceConfiguration } from "./GoogleWorkspaceProvider.js";
+import { GoogleWorkspaceProvider } from "./GoogleWorkspaceProvider.js";
 import type { IntegrationProvider, IntegrationProviderFactoryContext } from "./host-contract.js";
 export type {
+  IntegrationAuthorizationUrlConnectResult,
+  IntegrationConnectedConnectResult,
+  IntegrationConnectResult,
   IntegrationConnectionSubmission,
-  IntegrationDeviceCodeConnectResult,
   IntegrationInvocationContext,
   IntegrationLifecycleContext,
   IntegrationProvider,
@@ -24,7 +26,7 @@ export { default as manifest } from "../.tritonai-plugin/plugin.json" with { typ
 
 function configuration(value: unknown): {
   readonly clientId: string;
-  readonly tenantId: string;
+  readonly clientSecret: string;
 } {
   if (
     !value ||
@@ -32,24 +34,24 @@ function configuration(value: unknown): {
     Array.isArray(value) ||
     ![Object.prototype, null].includes(Object.getPrototypeOf(value))
   ) {
-    throw new Error("Microsoft 365 configuration must be a plain object.");
+    throw new Error("Google Workspace configuration must be a plain object.");
   }
   const record = value as Record<string, unknown>;
   if (
-    Object.keys(record).toSorted().join(",") !== "clientId,tenantId" ||
+    Object.keys(record).toSorted().join(",") !== "clientId,clientSecret" ||
     typeof record.clientId !== "string" ||
-    typeof record.tenantId !== "string"
+    typeof record.clientSecret !== "string"
   ) {
     throw new Error(
-      "Microsoft 365 configuration must contain exactly clientId and tenantId strings.",
+      "Google Workspace configuration must contain exactly clientId and clientSecret strings.",
     );
   }
-  return { clientId: record.clientId, tenantId: record.tenantId };
+  return { clientId: record.clientId, clientSecret: record.clientSecret };
 }
 
 export function createIntegrationProvider({
   secrets,
   configuration: input,
 }: IntegrationProviderFactoryContext): IntegrationProvider {
-  return new MicrosoftGraphProvider(secrets, configuration(input));
+  return new GoogleWorkspaceProvider(secrets, configuration(input));
 }

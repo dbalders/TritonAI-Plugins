@@ -43,7 +43,7 @@ const MAX_CHAT_REQUEST_BYTES = 28 * 1024;
 const ACCESS_TOKEN_SKEW_MS = 60_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
-const ENTRA_IDENTIFIER = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+const ENTRA_IDENTIFIER = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const MailSearchInput = Schema.Struct({
     query: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(200)).annotate({
         description: "Optional mail search text (maximum 200 characters).",
@@ -1216,6 +1216,12 @@ export class MicrosoftGraphProvider {
         }
         return json;
     }
+    async #beginInvocationCommit(context) {
+        if (context?.writeApproved !== true || typeof context.beginCommit !== "function") {
+            throw new Error("Microsoft 365 writes require Harness commit admission.");
+        }
+        return context.beginCommit();
+    }
     async invoke(toolName, input, context) {
         if (this.#closed || this.#disconnecting || this.#uncertainCredentialState) {
             throw new Error("Microsoft 365 is unavailable.");
@@ -1320,10 +1326,12 @@ export class MicrosoftGraphProvider {
             if (encoder.encode(JSON.stringify(body)).byteLength > MAX_DRAFT_REQUEST_BYTES) {
                 throw new IntegrationProviderPublicError("Mail draft is too large; its encoded request must be at most 4 MB.");
             }
+            const commitSignal = await this.#beginInvocationCommit(context);
+            this.#assertInvocationCurrent(generation);
             const result = await this.#graph("/me/messages", access.value, {
                 method: "POST",
                 body,
-                signal: context?.signal,
+                signal: commitSignal,
             });
             this.#assertInvocationCurrent(generation);
             return mailDraftResult(result);
@@ -1397,10 +1405,13 @@ export class MicrosoftGraphProvider {
                 errors: "all",
                 onExcessProperty: "error",
             });
+            const body = eventBody(values);
+            const commitSignal = await this.#beginInvocationCommit(context);
+            this.#assertInvocationCurrent(generation);
             const result = await this.#graph("/me/events", access.value, {
                 method: "POST",
-                body: eventBody(values),
-                signal: context?.signal,
+                body,
+                signal: commitSignal,
             });
             this.#assertInvocationCurrent(generation);
             return eventResult(result);
@@ -1430,7 +1441,9 @@ export class MicrosoftGraphProvider {
                 ...(values.location === undefined ? {} : { location: { displayName: values.location } }),
                 ...(values.attendees === undefined ? {} : { attendees: attendees(values.attendees) }),
             };
-            const result = await this.#graph(`/me/events/${encodeURIComponent(values.eventId)}`, access.value, { method: "PATCH", body, signal: context?.signal });
+            const commitSignal = await this.#beginInvocationCommit(context);
+            this.#assertInvocationCurrent(generation);
+            const result = await this.#graph(`/me/events/${encodeURIComponent(values.eventId)}`, access.value, { method: "PATCH", body, signal: commitSignal });
             this.#assertInvocationCurrent(generation);
             return eventResult(result);
         }
@@ -1473,10 +1486,12 @@ export class MicrosoftGraphProvider {
             if (encoder.encode(JSON.stringify(body)).byteLength > MAX_CHAT_REQUEST_BYTES) {
                 throw new IntegrationProviderPublicError("Chat message is too large; its encoded request must be at most 28 KB.");
             }
+            const commitSignal = await this.#beginInvocationCommit(context);
+            this.#assertInvocationCurrent(generation);
             const result = await this.#graph(`/chats/${encodeURIComponent(values.chatId)}/messages`, access.value, {
                 method: "POST",
                 body,
-                signal: context?.signal,
+                signal: commitSignal,
             });
             this.#assertInvocationCurrent(generation);
             return chatMessageResult(result);

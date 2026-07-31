@@ -3,7 +3,11 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import type { IntegrationLifecycleContext, IntegrationSecretStore } from "./host-contract.ts";
+import type {
+  IntegrationInvocationContext,
+  IntegrationLifecycleContext,
+  IntegrationSecretStore,
+} from "./host-contract.ts";
 import {
   MICROSOFT_GRAPH_SECRET_SUFFIX,
   MICROSOFT_GRAPH_TOOLS,
@@ -103,6 +107,12 @@ function lifecycle(events: string[] = []): IntegrationLifecycleContext & {
       return controller.signal;
     }),
   };
+}
+
+function invocation(events: string[] = []): IntegrationInvocationContext & {
+  readonly beginCommit: ReturnType<typeof vi.fn>;
+} {
+  return { ...lifecycle(events), writeApproved: true };
 }
 
 function jsonResponse(body: unknown, status = 200, headers: HeadersInit = {}): Response {
@@ -1272,19 +1282,23 @@ describe("MicrosoftGraphProvider tools", () => {
     await authorize(graph, ["mail.draft.create"]);
 
     await expect(
-      graph.invoke("microsoft365.mail.draft.create", {
-        to: ["person@example.edu"],
-        subject: "Review",
-        body: "Please review this draft.",
-        attachments: [
-          {
-            name: "review.txt",
-            contentBytes: "cmV2aWV3",
-            contentType: "text/plain",
-          },
-          { name: "empty.txt", contentBytes: "" },
-        ],
-      }),
+      graph.invoke(
+        "microsoft365.mail.draft.create",
+        {
+          to: ["person@example.edu"],
+          subject: "Review",
+          body: "Please review this draft.",
+          attachments: [
+            {
+              name: "review.txt",
+              contentBytes: "cmV2aWV3",
+              contentType: "text/plain",
+            },
+            { name: "empty.txt", contentBytes: "" },
+          ],
+        },
+        invocation(),
+      ),
     ).resolves.toMatchObject({
       id: "draft-1",
       isDraft: true,
@@ -1319,6 +1333,107 @@ describe("MicrosoftGraphProvider tools", () => {
     });
   });
 
+  it("requires Harness commit admission before a valid external write", async () => {
+    const secrets = memorySecrets();
+    let graphCalls = 0;
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      graphCalls += 1;
+      return jsonResponse({ id: "draft-1", isDraft: true }, 201);
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.draft.create"]);
+
+    await expect(
+      graph.invoke("microsoft365.mail.draft.create", {
+        to: ["person@example.edu"],
+        subject: "Review",
+        body: "Please review this draft.",
+      }),
+    ).rejects.toThrow(/commit admission/u);
+    expect(graphCalls).toBe(0);
+  });
+
+  it("does not write to Graph when disconnect revokes access during commit admission", async () => {
+    const writeCases = [
+      {
+        capability: "mail.draft.create",
+        toolName: "microsoft365.mail.draft.create",
+        input: {
+          to: ["person@example.edu"],
+          subject: "Review",
+          body: "Please review this draft.",
+        },
+      },
+      {
+        capability: "calendar.write",
+        toolName: "microsoft365.calendar.event.create",
+        input: {
+          subject: "Planning",
+          start: "2026-07-20T09:00:00-07:00",
+          end: "2026-07-20T10:00:00-07:00",
+        },
+      },
+      {
+        capability: "calendar.write",
+        toolName: "microsoft365.calendar.event.update",
+        input: { eventId: "event-1", subject: "Updated planning" },
+      },
+      {
+        capability: "chat.write",
+        toolName: "microsoft365.chat.message.send",
+        input: { chatId: "chat-1", body: "Hello" },
+      },
+    ] as const;
+
+    for (const writeCase of writeCases) {
+      const secrets = memorySecrets();
+      let graphCalls = 0;
+      const fetchImplementation = (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+        if (url.endsWith("/token")) {
+          return jsonResponse(
+            tokenBody("offline_access Mail.ReadWrite Calendars.ReadWrite Chat.ReadWrite"),
+          );
+        }
+        graphCalls += 1;
+        return jsonResponse({ id: "unexpected-write" }, 201);
+      }) as typeof fetch;
+      const graph = provider(secrets.service, fetchImplementation);
+      await authorize(graph, [writeCase.capability]);
+
+      let markAdmissionStarted!: () => void;
+      let releaseAdmission!: () => void;
+      const admissionStarted = new Promise<void>((resolve) => {
+        markAdmissionStarted = resolve;
+      });
+      const admissionGate = new Promise<void>((resolve) => {
+        releaseAdmission = resolve;
+      });
+      const controller = new AbortController();
+      const context: IntegrationInvocationContext = {
+        signal: controller.signal,
+        writeApproved: true,
+        beginCommit: vi.fn(async () => {
+          markAdmissionStarted();
+          await admissionGate;
+          return controller.signal;
+        }),
+      };
+
+      const pendingWrite = graph.invoke(writeCase.toolName, writeCase.input, context);
+      await admissionStarted;
+      await graph.disconnect(lifecycle());
+      releaseAdmission();
+
+      await expect(pendingWrite).rejects.toThrow(/revoked/u);
+      expect(graphCalls).toBe(0);
+    }
+  });
+
   it("creates and edits calendar events only through fixed event endpoints", async () => {
     const secrets = memorySecrets();
     const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
@@ -1347,14 +1462,18 @@ describe("MicrosoftGraphProvider tools", () => {
     const graph = provider(secrets.service, fetchImplementation);
     await authorize(graph, ["calendar.write"]);
 
-    const created = await graph.invoke("microsoft365.calendar.event.create", {
-      subject: "Planning",
-      start: "2026-07-20T09:00:00-07:00",
-      end: "2026-07-20T10:00:00-07:00",
-      location: "Online",
-      body: "Agenda",
-      attendees: [{ address: "person@example.edu", name: "Person", type: "optional" }],
-    });
+    const created = await graph.invoke(
+      "microsoft365.calendar.event.create",
+      {
+        subject: "Planning",
+        start: "2026-07-20T09:00:00-07:00",
+        end: "2026-07-20T10:00:00-07:00",
+        location: "Online",
+        body: "Agenda",
+        attendees: [{ address: "person@example.edu", name: "Person", type: "optional" }],
+      },
+      invocation(),
+    );
     expect(created).toMatchObject({
       id: "event/id?fixture",
       subject: "Planning",
@@ -1366,11 +1485,15 @@ describe("MicrosoftGraphProvider tools", () => {
     });
     expect((created as { attendees: ReadonlyArray<unknown> }).attendees).toHaveLength(51);
     await expect(
-      graph.invoke("microsoft365.calendar.event.update", {
-        eventId: "event/id?fixture",
-        subject: "Updated planning",
-        location: "Room 1",
-      }),
+      graph.invoke(
+        "microsoft365.calendar.event.update",
+        {
+          eventId: "event/id?fixture",
+          subject: "Updated planning",
+          location: "Room 1",
+        },
+        invocation(),
+      ),
     ).resolves.toMatchObject({ id: "event/id?fixture" });
 
     expect(graphCalls.map(({ init }) => init?.method)).toEqual(["POST", "PATCH"]);
@@ -1458,10 +1581,14 @@ describe("MicrosoftGraphProvider tools", () => {
       },
     });
     await expect(
-      graph.invoke("microsoft365.chat.message.send", {
-        chatId: "chat/id?fixture",
-        body: "Hello",
-      }),
+      graph.invoke(
+        "microsoft365.chat.message.send",
+        {
+          chatId: "chat/id?fixture",
+          body: "Hello",
+        },
+        invocation(),
+      ),
     ).resolves.toMatchObject({
       id: "message-1",
       body: { contentType: "text" },
@@ -1792,11 +1919,15 @@ describe("MicrosoftGraphProvider tools", () => {
 
     await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(/invalid response/u);
     await expect(
-      graph.invoke("microsoft365.mail.draft.create", {
-        to: ["person@example.edu"],
-        subject: "Fixture",
-        body: "Fixture",
-      }),
+      graph.invoke(
+        "microsoft365.mail.draft.create",
+        {
+          to: ["person@example.edu"],
+          subject: "Fixture",
+          body: "Fixture",
+        },
+        invocation(),
+      ),
     ).rejects.toThrow(/invalid response/u);
   });
 

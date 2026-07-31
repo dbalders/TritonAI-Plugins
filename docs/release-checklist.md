@@ -20,10 +20,15 @@
 3. Verify the package contains only declared documentation, manifest, skills, and reviewed compiled
    output; source and tests must not ship, and `prepack` must not change the compiled bytes.
 4. Run all provider tests plus deterministic package dry-runs.
-5. Run the package's `contract:harness` proof for the provider export, exact tool set, and
-   secret-store facade against the exact supported Harness head.
-6. Prove the Harness-owned catalog descriptor, deployment configuration, and lifecycle composition.
-7. Complete secret scanning, structured review, and security validation for the full plugin diff.
+5. Run the package's `contract:harness` proof for the exact `manifest`, synchronous
+   `createIntegrationProvider` factory, provider export, exact tool set, and secret-store facade
+   against the exact supported Harness head.
+6. Prove the exact signed composition, source identity, and distribution digests; verify the private
+   build input is keyed exactly by selected package IDs and each plugin rejects malformed
+   configuration.
+7. For providers with write tools, prove `connect`/`disconnect` recovery and `writeApproved` plus
+   `beginCommit()` admission immediately before each remote mutation.
+8. Complete secret scanning, structured review, and security validation for the full plugin diff.
 
 Publication and release actions are manual owner decisions. Passing this checklist does not mean the
 repository is published, deployed, signed, bundled, or penetration-tested.

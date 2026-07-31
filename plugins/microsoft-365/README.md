@@ -49,6 +49,22 @@ Attachment list tools request metadata only so file bytes cannot make the list u
 single-attachment tool returns Graph's file `contentBytes` or expands an attached Outlook item, up to
 a 5 MB JSON response. Larger attachment transfer requires a separate streaming/download surface.
 
+## Provider entrypoint and configuration
+
+The reviewed `dist/index.js` entrypoint exports the exact package `manifest` and a synchronous
+`createIntegrationProvider({ secrets, configuration })` factory. Harness supplies only this
+package's secret-store facade and configuration slice. The plugin accepts exactly a `clientId` and
+`tenantId` string and rejects missing, extra, inherited, or malformed fields without echoing
+configuration values.
+
+The private Harness build input is one object keyed by selected package ID:
+
+```text
+TRITONAI_PLUGIN_CONFIGURATION_JSON={"microsoft-365":{"clientId":"11111111-1111-4111-8111-111111111111","tenantId":"22222222-2222-4222-8222-222222222222"}}
+```
+
+Do not put deployment configuration in runtime settings, logs, or the public composition proof.
+
 ## Secret and lifecycle behavior
 
 The provider receives the Harness package-scoped Effect secret store and uses only suffix `oauth`.
@@ -61,5 +77,6 @@ The provider never mutates credentials inside `invoke`. Immediately before invoc
 calls its generic `prepare()` lifecycle hook. The hook returns immediately when the in-memory access
 token remains usable or no stored connection exists; otherwise refresh-token exchange, rotation,
 and storage run through Harness commit admission. Harness capability availability is the authority
-for tool disclosure and invocation, and Harness obtains approval before every write unless the user
-accepts that exact tool for the current session.
+for tool disclosure and invocation. Every write invocation requires `writeApproved === true` and a
+successful `beginCommit()` immediately before the fixed Graph mutation. The provider implements
+`connect` and `disconnect` so Harness can recover or reset faulted write state.
