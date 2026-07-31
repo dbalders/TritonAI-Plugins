@@ -38,7 +38,7 @@ owns capability access policy, catalog, package-scoped secrets, lifecycle, skill
 write approval, and tool invocation. Provider packages prove structural conformance against a
 clean Harness checkout at the repository-owned commit in `scripts/reviewed-harness.mjs`, while the
 Harness build owns final composition. The current reviewed target is Harness PR #127 at
-`f4b5044e5e8698b4325bd1bb443999a4a9420c44`.
+`0154a34da4d11449f11e5e6454e2f1346507f67f`.
 
 A provider plugin must commit its reviewed `dist/` output and export its exact validated manifest as
 `manifest` plus its synchronous `createIntegrationProvider({ secrets, configuration })` factory.
