@@ -229,23 +229,38 @@ test("rejects provider Effect peer and development version drift", () => {
   }
 });
 
-test("rejects provider runtime dependency aliases", () => {
-  for (const packageJson of [
-    { ...providerPackage, dependencies: { effect: "npm:effect@4.0.0-beta.102" } },
-    {
-      ...providerPackage,
-      peerDependencies: { "effect-runtime": "npm:effect@>=4.0.0-beta.78 <4.0.0" },
-    },
-    {
-      ...providerPackage,
-      optionalDependencies: { "effect-runtime": "npm:effect@4.0.0-beta.102" },
-    },
-    { ...providerPackage, bundledDependencies: ["effect-runtime"] },
-    { ...providerPackage, bundleDependencies: ["effect-runtime"] },
+test("rejects aliased Effect declarations in every runtime dependency category", () => {
+  for (const [packageJson, expected] of [
+    [
+      { ...providerPackage, dependencies: { effect: "npm:effect@4.0.0-beta.102" } },
+      /omit production dependencies/u,
+    ],
+    [
+      {
+        ...providerPackage,
+        peerDependencies: { "effect-runtime": "npm:effect@>=4.0.0-beta.78 <4.0.0" },
+      },
+      /peerDependencies must contain exactly effect/u,
+    ],
+    [
+      {
+        ...providerPackage,
+        optionalDependencies: { "effect-runtime": "npm:effect@4.0.0-beta.102" },
+      },
+      /omit optional runtime dependencies/u,
+    ],
+    [
+      { ...providerPackage, bundledDependencies: ["effect-runtime"] },
+      /omit bundled runtime dependencies/u,
+    ],
+    [
+      { ...providerPackage, bundleDependencies: ["effect-runtime"] },
+      /omit bundled runtime dependencies/u,
+    ],
   ]) {
     assert.throws(
       () => assertProviderRuntimeDependencies("fixture-reader", packageJson, providerManifest),
-      /(production|peerDependenc|optional|bundled)/iu,
+      expected,
     );
   }
 });
