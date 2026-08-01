@@ -8,8 +8,8 @@ import { pathToFileURL } from "node:url";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
+import { assertTrustedHarnessCheckout } from "../../../scripts/harness-contract.mjs";
 import { assertProviderRuntimeDependencies } from "../../../scripts/provider-runtime-dependencies.mjs";
-import { REVIEWED_HARNESS_COMMIT } from "../../../scripts/reviewed-harness.mjs";
 
 const packageRoot = Path.resolve(import.meta.dirname, "..");
 const repositoryRoot = Path.resolve(packageRoot, "../..");
@@ -27,35 +27,7 @@ function isPromiseLike(value) {
   );
 }
 
-function git(args, cwd) {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-  assert(result.status === 0, result.stderr || `git ${args.join(" ")} failed.`);
-  return result.stdout;
-}
-
-assert(
-  typeof harnessRoot === "string" && harnessRoot.length > 0,
-  "TRITONAI_HARNESS_ROOT must identify the exact reviewed Harness checkout.",
-);
-assert(
-  /^[a-f0-9]{40}$/u.test(expectedHarnessCommit ?? ""),
-  "TRITONAI_HARNESS_COMMIT must be the full reviewed Harness base commit SHA.",
-);
-assert(
-  expectedHarnessCommit === REVIEWED_HARNESS_COMMIT,
-  `TRITONAI_HARNESS_COMMIT must match the repository-reviewed Harness base ${REVIEWED_HARNESS_COMMIT}.`,
-);
-const harness = Path.resolve(harnessRoot);
-const actualHead = git(["rev-parse", "HEAD"], harness).trim();
-assert(
-  actualHead === REVIEWED_HARNESS_COMMIT,
-  `Harness checkout is at ${actualHead}, expected base ${REVIEWED_HARNESS_COMMIT}.`,
-);
-const harnessStatus = git(["status", "--porcelain=v1", "--untracked-files=all"], harness).trim();
-assert(
-  harnessStatus === "",
-  "Harness worktree must be clean so the provider contract uses only reviewed contents.",
-);
+const { actualHead, harness } = assertTrustedHarnessCheckout(harnessRoot, expectedHarnessCommit);
 
 const manifest = JSON.parse(
   await Fs.readFile(Path.join(packageRoot, ".tritonai-plugin", "plugin.json"), "utf8"),

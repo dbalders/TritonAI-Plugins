@@ -7,8 +7,9 @@
 3. Confirm no marketplace, runtime-install, or unconsumed catalog semantics were added.
 4. Run `pnpm install --frozen-lockfile --ignore-scripts` in a clean dependency state.
 5. Run `pnpm readiness`.
-6. Update `scripts/reviewed-harness.mjs` to the reviewed Harness head, then run
-   `pnpm readiness:local` with both that exact clean worktree and matching commit SHA.
+6. Run `pnpm readiness:local` with a trusted, exact clean Harness worktree and its matching full
+   commit SHA; confirm the installed server runtime matches its catalog, lockfile, patch, and pnpm
+   realpath identity.
 7. Review dependency advisories, licenses, lifecycle scripts, and lockfile changes.
 8. Run structured review and the requested security review for the changed boundary.
 

@@ -49,8 +49,19 @@ construction, configuration validation, and provider-specific recovery behavior.
 declare write tools implement `connect` and `disconnect`; each write invocation requires
 `writeApproved` and `beginCommit()` admission immediately before its fixed mutation.
 
+Provider packages declare only the shared Effect peer range and keep beta.102 as their exact local
+development baseline. Contract verification derives the Harness server's Effect runtime from the
+workspace catalog, importer, package and snapshot keys, patch metadata, installed package version,
+and exact pnpm realpath. Compatible runtime updates inside the peer range do not change plugin
+identity; incompatible versions, additional production/private/optional/bundled dependencies, and
+dependency aliases fail closed for every provider plugin.
+
 Every provider PR must expose its exact validated manifest from the compiled module and define a
 `contract:harness` script that proves its synchronous factory, provider export, and exact tool set
 are structurally assignable to the Harness checkout named by `TRITONAI_HARNESS_ROOT` at the exact
 `TRITONAI_HARNESS_COMMIT`. Composition proofs continue to pin the exact source identity, selected
 packages, and distribution digests.
+
+The checkout path and commit are trusted maintainer inputs because verification imports code from
+that checkout. Exact-commit and clean-tree enforcement proves immutability for the verification run,
+not repository provenance or safety of caller-selected code.

@@ -229,6 +229,27 @@ test("rejects provider Effect peer and development version drift", () => {
   }
 });
 
+test("rejects provider runtime dependency aliases", () => {
+  for (const packageJson of [
+    { ...providerPackage, dependencies: { effect: "npm:effect@4.0.0-beta.102" } },
+    {
+      ...providerPackage,
+      peerDependencies: { "effect-runtime": "npm:effect@>=4.0.0-beta.78 <4.0.0" },
+    },
+    {
+      ...providerPackage,
+      optionalDependencies: { "effect-runtime": "npm:effect@4.0.0-beta.102" },
+    },
+    { ...providerPackage, bundledDependencies: ["effect-runtime"] },
+    { ...providerPackage, bundleDependencies: ["effect-runtime"] },
+  ]) {
+    assert.throws(
+      () => assertProviderRuntimeDependencies("fixture-reader", packageJson, providerManifest),
+      /(production|peerDependenc|optional|bundled)/iu,
+    );
+  }
+});
+
 test("parses bounded YAML skill frontmatter", () => {
   assert.deepEqual(
     parseSkillFrontmatter(

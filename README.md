@@ -36,9 +36,9 @@ See [architecture.md](docs/architecture.md), [release-checklist.md](docs/release
 Manifest `apiVersion` and `manifestVersion` identify the one current Harness contract. That contract
 owns capability access policy, catalog, package-scoped secrets, lifecycle, skill materialization,
 write approval, and tool invocation. Provider packages prove structural conformance against a
-clean Harness checkout at the repository-owned commit in `scripts/reviewed-harness.mjs`, while the
-Harness build owns final composition. The current reviewed target is Harness PR #127 at
-`0154a34da4d11449f11e5e6454e2f1346507f67f`.
+caller-selected trusted Harness checkout at one exact clean commit, while the Harness build owns
+final composition. Compatible Harness Effect updates inside the shared provider peer range do not
+change an immutable plugin package or require a plugin release solely to repeat a Harness SHA.
 
 A provider plugin must commit its reviewed `dist/` output and export its exact validated manifest as
 `manifest` plus its synchronous `createIntegrationProvider({ secrets, configuration })` factory.
@@ -49,21 +49,26 @@ and declared tool set against `TRITONAI_HARNESS_ROOT` at `TRITONAI_HARNESS_COMMI
 `readiness:local` runs it against that exact clean Harness checkout. Exact composition, source
 identity, and distribution digests remain build allowlists rather than runtime discovery.
 
+Contract verification imports and executes modules from `TRITONAI_HARNESS_ROOT`. The caller must
+therefore select a maintainer-reviewed, trusted TritonAI-Harness checkout. The full commit and clean
+worktree checks prove that one immutable input was used; they do not establish repository
+provenance or make an untrusted checkout safe.
+
 ## Local verification
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm readiness
-TRITONAI_HARNESS_ROOT=/path/to/pinned-harness \
-TRITONAI_HARNESS_COMMIT=<full-reviewed-commit-sha> \
+TRITONAI_HARNESS_ROOT=/path/to/trusted-clean-harness \
+TRITONAI_HARNESS_COMMIT=<full-trusted-commit-sha> \
 pnpm readiness:local
 ```
 
 `readiness` supports both an empty foundation and populated plugin workspaces. It checks formatting,
 lint, repository/package structure, workspace typechecks, plugin tests, and deterministic package
-contents. `readiness:local` additionally requires the expected Harness commit to match the
-repository-owned pin, checks a clean Harness worktree at that exact commit, and reports the commit
-used for the proof.
+contents. `readiness:local` additionally checks the caller-supplied trusted Harness worktree at the
+exact supplied commit, binds the server's installed Effect package to its catalog, lockfile patch,
+snapshot, and pnpm realpath identity, and reports the commit used for the proof.
 
 Publication, GitHub repository creation, tags, pushes, Harness composition, and releases remain
 explicit owner actions.
