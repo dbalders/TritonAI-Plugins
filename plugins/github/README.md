@@ -43,7 +43,7 @@ GitHub App installation permissions are the outer server-enforced ceiling. Harne
 
 The plugin cannot delete or merge, create repositories, push commits, create branches, change branch protection, manage collaborators, change repository settings, read or write secrets, mutate workflows, manage releases, or administer GitHub Apps. Pull requests can only be created between branches or refs that already exist.
 
-Repository creation is intentionally absent: GitHub's authenticated-user repository creation surface would require broad repository Administration write permission, which this plugin does not request.
+Repository creation is intentionally absent: GitHub's authenticated-user repository creation surface would require broad repository Administration write permission, which this plugin does not request. Repository creation therefore remains an unresolved part of [issue #6](https://github.com/dbalders/TritonAI-Plugins/issues/6); this v1 plugin does not complete that part of the objective.
 
 The file tool reads one exact file, rejects directories, and has a one-megabyte file ceiling. Lists accept at most 50 records per page and at most page 10. Requests time out, reject redirects, and cap response bytes. GitHub Enterprise Server is not supported.
 

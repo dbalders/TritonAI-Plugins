@@ -80,11 +80,19 @@ const FilePath = Schema.String.check(
   Schema.isMaxLength(1_024),
   Schema.isPattern(/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*\p{Cc})[^/]+(?:\/[^/]+)*$/u),
 ).annotate({ description: "Exact repository-relative file path; directories are not returned." });
-const Query = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
+const Query = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(256),
+  Schema.isPattern(/^(?!\s*$)[^:\p{Cc}]+$/u),
+).annotate({ description: "Bounded free-text search terms; qualifiers are not accepted." });
 const Title = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
 const Body = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_BODY_CHARS));
 const OptionalBody = Schema.String.check(Schema.isMaxLength(MAX_BODY_CHARS));
-const Label = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100));
+const Label = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(100),
+  Schema.isPattern(/^[^,\p{Cc}]+$/u),
+).annotate({ description: "Exact label name; commas are not accepted." });
 const Login = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100));
 const Labels = Schema.Array(Label).check(Schema.isMaxLength(20));
 const Assignees = Schema.Array(Login).check(Schema.isMaxLength(10));
@@ -698,6 +706,13 @@ export class GitHubProvider implements IntegrationProvider {
         grantedCapabilities: [],
         message: "GitHub credential state is uncertain. Disconnect to reset it.",
       };
+    if (context?.signal.aborted)
+      return {
+        state: "error",
+        accountLabel: null,
+        grantedCapabilities: [],
+        message: "The GitHub status check was cancelled.",
+      };
     const generation = this.#generation;
     const revision = this.#credentialRevision;
     try {
@@ -752,6 +767,13 @@ export class GitHubProvider implements IntegrationProvider {
             : "Connected through the TritonAI GitHub App. Repository access depends on app installations.",
       };
     } catch {
+      if (context?.signal.aborted)
+        return {
+          state: "error",
+          accountLabel: null,
+          grantedCapabilities: [],
+          message: "The GitHub status check was cancelled.",
+        };
       return {
         state: "error",
         accountLabel: null,
@@ -777,10 +799,7 @@ export class GitHubProvider implements IntegrationProvider {
     )
       throw new Error("Unsupported GitHub capability.");
     const generation = this.#generation;
-    const existing = await this.#readCredential(context?.signal);
-    const requested = [
-      ...new Set([...(existing?.grantedCapabilities ?? []), ...capabilities]),
-    ].toSorted();
+    const requested = [...new Set(capabilities)].toSorted();
     const { response, json: raw } = await this.#postAuth(
       DEVICE_CODE_URL,
       { client_id: this.#clientId },
@@ -1282,11 +1301,18 @@ export class GitHubProvider implements IntegrationProvider {
     }
     if (toolName === "github.issues.comment.create" || toolName === "github.pulls.comment.create") {
       const values = await this.#decode(CommentCreateInput, input);
-      return write(
-        `/repos/${encodeURIComponent(values.owner)}/${encodeURIComponent(values.repo)}/issues/${values.number}/comments`,
-        "POST",
-        { body: values.body },
-      );
+      const issuePath = `/repos/${encodeURIComponent(values.owner)}/${encodeURIComponent(values.repo)}/issues/${values.number}`;
+      const target = asRecord(await read(issuePath));
+      const targetsPullRequest = Object.hasOwn(target, "pull_request");
+      if (toolName === "github.issues.comment.create" && targetsPullRequest)
+        throw new IntegrationProviderPublicError(
+          "That number belongs to a pull request. Use the pull-request comment tool.",
+        );
+      if (toolName === "github.pulls.comment.create" && !targetsPullRequest)
+        throw new IntegrationProviderPublicError(
+          "That number belongs to an issue. Use the issue comment tool.",
+        );
+      return write(`${issuePath}/comments`, "POST", { body: values.body });
     }
     if (toolName === "github.pulls.list") {
       const values = await this.#decode(PullsListInput, input);

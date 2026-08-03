@@ -223,6 +223,46 @@ describe("GitHubProvider", () => {
     });
   });
 
+  it("reports an aborted status check as cancellation without blaming the credential", async () => {
+    const secrets = memorySecrets();
+    const mock = sequence([
+      json(deviceBody()),
+      json(tokenBody()),
+      json(userBody()),
+      json(installationsBody()),
+    ]);
+    const github = provider(secrets.service, mock.fetchImplementation);
+    await authorize(github);
+    const controller = new AbortController();
+    controller.abort();
+    expect(await github.status({ signal: controller.signal })).toMatchObject({
+      state: "error",
+      message: expect.stringMatching(/cancelled/u),
+    });
+    expect((await github.status()).state).toBe("connected");
+  });
+
+  it("drops previously granted opt-in capabilities when reconnecting more narrowly", async () => {
+    const secrets = memorySecrets();
+    const mock = sequence([
+      json(deviceBody()),
+      json(tokenBody()),
+      json(userBody()),
+      json(installationsBody()),
+      json(deviceBody()),
+      json(tokenBody()),
+      json(userBody()),
+      json(installationsBody()),
+    ]);
+    const github = provider(secrets.service, mock.fetchImplementation);
+    await authorize(github, lifecycle(), ["identity.read", "issues.write"]);
+    await authorize(github, lifecycle(), ["identity.read"]);
+    expect(await github.status()).toMatchObject({
+      state: "connected",
+      grantedCapabilities: ["identity.read"],
+    });
+  });
+
   it("rejects classic OAuth scope grants and never commits them", async () => {
     const secrets = memorySecrets();
     const mock = sequence([json(deviceBody()), json({ ...tokenBody(), scope: "repo" })]);
@@ -352,6 +392,109 @@ describe("GitHubProvider", () => {
         invocation(),
       ),
     ).rejects.toThrow(/pull-requests.write access is not enabled/u);
+    expect(mock.requests).toHaveLength(4);
+  });
+
+  it("keeps issue and pull-request comment capabilities bound to the target type", async () => {
+    const secrets = memorySecrets();
+    const mock = sequence([
+      json(deviceBody()),
+      json(tokenBody()),
+      json(userBody()),
+      json(installationsBody()),
+      json({ number: 1 }),
+      json({ number: 2, pull_request: { url: "https://api.github.test/pulls/2" } }),
+      json({ number: 3 }),
+      json({ id: 30, body: "issue comment" }),
+      json({ number: 4, pull_request: { url: "https://api.github.test/pulls/4" } }),
+      json({ id: 40, body: "pull comment" }),
+    ]);
+    const github = provider(secrets.service, mock.fetchImplementation);
+    await authorize(github, lifecycle(), ["identity.read", "issues.write", "pull-requests.write"]);
+
+    const mismatchedPullEvents: string[] = [];
+    await expect(
+      github.invoke(
+        "github.pulls.comment.create",
+        { owner: "octo", repo: "repo", number: 1, body: "wrong target" },
+        invocation(true, mismatchedPullEvents),
+      ),
+    ).rejects.toThrow(/belongs to an issue/u);
+    expect(mismatchedPullEvents).toEqual([]);
+
+    const mismatchedIssueEvents: string[] = [];
+    await expect(
+      github.invoke(
+        "github.issues.comment.create",
+        { owner: "octo", repo: "repo", number: 2, body: "wrong target" },
+        invocation(true, mismatchedIssueEvents),
+      ),
+    ).rejects.toThrow(/belongs to a pull request/u);
+    expect(mismatchedIssueEvents).toEqual([]);
+
+    const issueEvents: string[] = [];
+    await expect(
+      github.invoke(
+        "github.issues.comment.create",
+        { owner: "octo", repo: "repo", number: 3, body: "issue comment" },
+        invocation(true, issueEvents),
+      ),
+    ).resolves.toMatchObject({ id: 30 });
+    expect(issueEvents).toEqual(["beginCommit"]);
+
+    const pullEvents: string[] = [];
+    await expect(
+      github.invoke(
+        "github.pulls.comment.create",
+        { owner: "octo", repo: "repo", number: 4, body: "pull comment" },
+        invocation(true, pullEvents),
+      ),
+    ).resolves.toMatchObject({ id: 40 });
+    expect(pullEvents).toEqual(["beginCommit"]);
+    expect(mock.requests.slice(4).map(({ init }) => init?.method ?? "GET")).toEqual([
+      "GET",
+      "GET",
+      "GET",
+      "POST",
+      "GET",
+      "POST",
+    ]);
+  });
+
+  it("rejects search qualifiers and comma-bearing label filters before network access", async () => {
+    const secrets = memorySecrets();
+    const mock = sequence([
+      json(deviceBody()),
+      json(tokenBody()),
+      json(userBody()),
+      json(installationsBody()),
+    ]);
+    const github = provider(secrets.service, mock.fetchImplementation);
+    await authorize(github);
+    await expect(
+      github.invoke("github.repositories.search", { query: "org:another" }, invocation()),
+    ).rejects.toThrow();
+    await expect(
+      github.invoke(
+        "github.code.search",
+        { owner: "octo", repo: "repo", query: "repo:another/private" },
+        invocation(),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      github.invoke(
+        "github.issues.search",
+        { owner: "octo", repo: "repo", query: "is:private" },
+        invocation(),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      github.invoke(
+        "github.issues.list",
+        { owner: "octo", repo: "repo", labels: ["triage, urgent"] },
+        invocation(),
+      ),
+    ).rejects.toThrow();
     expect(mock.requests).toHaveLength(4);
   });
 
