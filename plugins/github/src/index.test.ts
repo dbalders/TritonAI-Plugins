@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { IntegrationSecretStore } from "./host-contract.ts";
@@ -25,6 +26,9 @@ describe("GitHub plugin factory", () => {
     expect(
       provider.tools.map(({ name, readOnly }) => ({ name, effect: readOnly ? "read" : "write" })),
     ).toEqual(manifest.tools.map(({ name, effect }) => ({ name, effect })));
+    expect(
+      provider.tools.map(({ input }) => Schema.toJsonSchemaDocument(input).schema.type),
+    ).toEqual(provider.tools.map(() => "object"));
   });
 
   it("accepts only an exact public clientId configuration without disclosing values", () => {

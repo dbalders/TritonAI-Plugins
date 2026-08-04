@@ -99,7 +99,7 @@ const Assignees = Schema.Array(Login).check(Schema.isMaxLength(10));
 
 const ownerRepo = { owner: Owner, repo: Repo } as const;
 const pagination = { limit: Schema.optionalKey(Limit), page: Schema.optionalKey(Page) } as const;
-const EmptyInput = Schema.Struct({});
+const EmptyInput = Schema.Record(Schema.String, Schema.Never);
 const InstallationsListInput = Schema.Struct(pagination);
 const RepositoriesListInput = Schema.Struct({ installationId: PositiveId, ...pagination });
 const RepositoryGetInput = Schema.Struct(ownerRepo);
