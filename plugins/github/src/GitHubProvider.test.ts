@@ -375,6 +375,48 @@ describe("GitHubProvider", () => {
     expect(mock.requests[4]?.init?.method).toBe("POST");
   });
 
+  it("does not let issue updates cross the pull-request capability boundary", async () => {
+    const secrets = memorySecrets();
+    const mock = sequence([
+      json(deviceBody()),
+      json(tokenBody()),
+      json(userBody()),
+      json(installationsBody()),
+      json({ number: 7, pull_request: { url: "https://api.github.test/pulls/7" } }),
+    ]);
+    const github = provider(secrets.service, mock.fetchImplementation);
+    await authorize(github, lifecycle(), ["identity.read", "issues.write"]);
+    const events: string[] = [];
+
+    await expect(
+      github.invoke(
+        "github.issues.update",
+        { owner: "octo-org", repo: "repo.one", number: 7, title: "Wrong boundary" },
+        invocation(true, events),
+      ),
+    ).rejects.toThrow(/belongs to a pull request/u);
+    expect(events).toEqual([]);
+    expect(mock.requests).toHaveLength(5);
+    expect(mock.requests[4]?.init?.method).toBe("GET");
+  });
+
+  it("reuses the verified account while the stored credential revision is unchanged", async () => {
+    const secrets = memorySecrets();
+    const mock = sequence([
+      json(deviceBody()),
+      json(tokenBody()),
+      json(userBody()),
+      json(installationsBody()),
+    ]);
+    const github = provider(secrets.service, mock.fetchImplementation);
+    await authorize(github);
+
+    await github.prepare(lifecycle());
+    await github.prepare(lifecycle());
+
+    expect(mock.requests).toHaveLength(4);
+  });
+
   it("requires an independently enabled write capability even when the token is connected", async () => {
     const secrets = memorySecrets();
     const mock = sequence([

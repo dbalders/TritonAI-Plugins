@@ -61,19 +61,17 @@ const PositiveId = Schema.Int.check(
 const IssueNumber = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }));
 const Limit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }));
 const Page = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 }));
+const REF_PATTERN =
+  /^(?!\/|.*(?:^|\/)\.\.(?:\/|$))(?!.*(?:~|\^|:|\?|\*|\[|\\))(?!.*\p{Cc})(?!.*\s)[^/]+(?:\/[^/]+)*$/u;
 const Ref = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(255),
-  Schema.isPattern(
-    /^(?!\/|.*(?:^|\/)\.\.(?:\/|$))(?!.*(?:~|\^|:|\?|\*|\[|\\))(?!.*\p{Cc})(?!.*\s)[^/]+(?:\/[^/]+)*$/u,
-  ),
+  Schema.isPattern(REF_PATTERN),
 ).annotate({ description: "Exact branch, tag, or commit ref without a refs/ prefix." });
 const ShaOrRef = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(255),
-  Schema.isPattern(
-    /^(?!\/|.*(?:^|\/)\.\.(?:\/|$))(?!.*(?:~|\^|:|\?|\*|\[|\\))(?!.*\p{Cc})(?!.*\s)[^/]+(?:\/[^/]+)*$/u,
-  ),
+  Schema.isPattern(REF_PATTERN),
 ).annotate({ description: "Exact commit SHA, branch, or tag." });
 const FilePath = Schema.String.check(
   Schema.isMinLength(1),
@@ -118,6 +116,7 @@ const IssuesListInput = Schema.Struct({
 });
 const IssuesSearchInput = Schema.Struct({ ...ownerRepo, query: Query, ...pagination });
 const NumberInput = Schema.Struct({ ...ownerRepo, number: IssueNumber });
+const NumberPageInput = Schema.Struct({ ...ownerRepo, number: IssueNumber, ...pagination });
 const IssueCreateInput = Schema.Struct({
   ...ownerRepo,
   title: Title,
@@ -182,6 +181,7 @@ const ActionsRunsListInput = Schema.Struct({
 const RunInput = Schema.Struct({ ...ownerRepo, runId: PositiveId });
 const JobsInput = Schema.Struct({ ...ownerRepo, runId: PositiveId, ...pagination });
 const CommitInput = Schema.Struct({ ...ownerRepo, ref: ShaOrRef, ...pagination });
+const CommitStatusInput = Schema.Struct({ ...ownerRepo, ref: ShaOrRef });
 
 type Decoder = Schema.Decoder<unknown>;
 const tool = (
@@ -238,7 +238,7 @@ export const GITHUB_TOOLS = [
   tool(
     "github.issues.comments.list",
     "List bounded conversation comments for one issue or pull request.",
-    Schema.Struct({ ...ownerRepo, number: IssueNumber, ...pagination }),
+    NumberPageInput,
   ),
   tool("github.issues.create", "Create one bounded issue.", IssueCreateInput, false),
   tool(
@@ -259,12 +259,12 @@ export const GITHUB_TOOLS = [
   tool(
     "github.pulls.reviews.list",
     "List bounded review metadata for one pull request.",
-    Schema.Struct({ ...ownerRepo, number: IssueNumber, ...pagination }),
+    NumberPageInput,
   ),
   tool(
     "github.pulls.review-comments.list",
     "List bounded inline review comments for one pull request.",
-    Schema.Struct({ ...ownerRepo, number: IssueNumber, ...pagination }),
+    NumberPageInput,
   ),
   tool(
     "github.pulls.create",
@@ -295,7 +295,7 @@ export const GITHUB_TOOLS = [
   tool(
     "github.commits.status.get",
     "Read the combined commit status for one exact ref.",
-    Schema.Struct({ ...ownerRepo, ref: ShaOrRef }),
+    CommitStatusInput,
   ),
 ] as const satisfies ReadonlyArray<IntegrationProviderTool>;
 
@@ -520,6 +520,11 @@ export class GitHubProvider implements IntegrationProvider {
   #access: Access | null = null;
   #generation = 0;
   #credentialRevision = 0;
+  #verifiedCredential: {
+    readonly revision: number;
+    readonly token: string;
+    readonly account: Account;
+  } | null = null;
   #closed = false;
   #disconnecting = false;
   #uncertainCredentialState = false;
@@ -640,6 +645,7 @@ export class GitHubProvider implements IntegrationProvider {
     if (!response.ok) {
       if (response.status === 401) {
         this.#access = null;
+        this.#verifiedCredential = null;
         throw new IntegrationProviderPublicError(
           "The GitHub session expired or was revoked. Reconnect GitHub.",
         );
@@ -944,6 +950,11 @@ export class GitHubProvider implements IntegrationProvider {
           throw new Error("GitHub sign-in was superseded before credential commit.");
         await this.#writeCredential(credential, signal);
         this.#credentialRevision += 1;
+        this.#verifiedCredential = {
+          revision: this.#credentialRevision,
+          token: grant.accessToken,
+          account,
+        };
         this.#generation += 1;
         this.#pending.clear();
         this.#access = {
@@ -973,6 +984,7 @@ export class GitHubProvider implements IntegrationProvider {
       const credential = await this.#readCredential(context?.signal);
       if (!credential) {
         this.#access = null;
+        this.#verifiedCredential = null;
         return;
       }
       const expiresAt =
@@ -980,9 +992,18 @@ export class GitHubProvider implements IntegrationProvider {
           ? null
           : Date.parse(credential.accessTokenExpiresAt);
       if (expiresAt === null || expiresAt - ACCESS_TOKEN_SKEW_MS > Date.now()) {
-        const account = await this.#verify(credential.accessToken, context?.signal);
+        const cached = this.#verifiedCredential;
+        const account =
+          cached?.revision === this.#credentialRevision && cached.token === credential.accessToken
+            ? cached.account
+            : await this.#verify(credential.accessToken, context?.signal);
         if (account.id !== credential.account.id)
           throw new Error("GitHub token identity changed unexpectedly.");
+        this.#verifiedCredential = {
+          revision: this.#credentialRevision,
+          token: credential.accessToken,
+          account,
+        };
         this.#access = {
           token: credential.accessToken,
           expiresAt,
@@ -1033,6 +1054,11 @@ export class GitHubProvider implements IntegrationProvider {
         };
         await this.#writeCredential(next, signal);
         this.#credentialRevision += 1;
+        this.#verifiedCredential = {
+          revision: this.#credentialRevision,
+          token: grant.accessToken,
+          account,
+        };
         this.#access = {
           token: grant.accessToken,
           expiresAt: grant.expiresAt,
@@ -1052,6 +1078,7 @@ export class GitHubProvider implements IntegrationProvider {
       this.#generation += 1;
       this.#pending.clear();
       this.#access = null;
+      this.#verifiedCredential = null;
       let admitted = false;
       try {
         const signal = await this.#beginCommit(context);
@@ -1249,10 +1276,7 @@ export class GitHubProvider implements IntegrationProvider {
       toolName === "github.pulls.review-comments.list" ||
       toolName === "github.pulls.reviews.list"
     ) {
-      const values = await this.#decode(
-        Schema.Struct({ ...ownerRepo, number: IssueNumber, ...pagination }),
-        input,
-      );
+      const values = await this.#decode(NumberPageInput, input);
       const p = page(values);
       const tail =
         toolName === "github.issues.comments.list"
@@ -1293,11 +1317,13 @@ export class GitHubProvider implements IntegrationProvider {
         throw new IntegrationProviderPublicError(
           "Issue update must include at least one changed field.",
         );
-      return write(
-        `/repos/${encodeURIComponent(values.owner)}/${encodeURIComponent(values.repo)}/issues/${values.number}`,
-        "PATCH",
-        body,
-      );
+      const issuePath = `/repos/${encodeURIComponent(values.owner)}/${encodeURIComponent(values.repo)}/issues/${values.number}`;
+      const target = asRecord(await read(issuePath));
+      if (Object.hasOwn(target, "pull_request"))
+        throw new IntegrationProviderPublicError(
+          "That number belongs to a pull request. Use a pull-request tool.",
+        );
+      return write(issuePath, "PATCH", body);
     }
     if (toolName === "github.issues.comment.create" || toolName === "github.pulls.comment.create") {
       const values = await this.#decode(CommentCreateInput, input);
@@ -1398,7 +1424,7 @@ export class GitHubProvider implements IntegrationProvider {
       );
     }
     if (toolName === "github.commits.status.get") {
-      const values = await this.#decode(Schema.Struct({ ...ownerRepo, ref: ShaOrRef }), input);
+      const values = await this.#decode(CommitStatusInput, input);
       return asRecord(
         await read(
           `/repos/${encodeURIComponent(values.owner)}/${encodeURIComponent(values.repo)}/commits/${encodeURIComponent(values.ref)}/status`,
@@ -1414,6 +1440,7 @@ export class GitHubProvider implements IntegrationProvider {
     this.#generation += 1;
     this.#pending.clear();
     this.#access = null;
+    this.#verifiedCredential = null;
     for (const controller of this.#controllers) controller.abort();
     await this.#credentialMutation;
   }

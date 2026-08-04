@@ -32,8 +32,9 @@ const PositiveId = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: Numb
 const IssueNumber = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }));
 const Limit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }));
 const Page = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 }));
-const Ref = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255), Schema.isPattern(/^(?!\/|.*(?:^|\/)\.\.(?:\/|$))(?!.*(?:~|\^|:|\?|\*|\[|\\))(?!.*\p{Cc})(?!.*\s)[^/]+(?:\/[^/]+)*$/u)).annotate({ description: "Exact branch, tag, or commit ref without a refs/ prefix." });
-const ShaOrRef = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255), Schema.isPattern(/^(?!\/|.*(?:^|\/)\.\.(?:\/|$))(?!.*(?:~|\^|:|\?|\*|\[|\\))(?!.*\p{Cc})(?!.*\s)[^/]+(?:\/[^/]+)*$/u)).annotate({ description: "Exact commit SHA, branch, or tag." });
+const REF_PATTERN = /^(?!\/|.*(?:^|\/)\.\.(?:\/|$))(?!.*(?:~|\^|:|\?|\*|\[|\\))(?!.*\p{Cc})(?!.*\s)[^/]+(?:\/[^/]+)*$/u;
+const Ref = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255), Schema.isPattern(REF_PATTERN)).annotate({ description: "Exact branch, tag, or commit ref without a refs/ prefix." });
+const ShaOrRef = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255), Schema.isPattern(REF_PATTERN)).annotate({ description: "Exact commit SHA, branch, or tag." });
 const FilePath = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_024), Schema.isPattern(/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*\p{Cc})[^/]+(?:\/[^/]+)*$/u)).annotate({ description: "Exact repository-relative file path; directories are not returned." });
 const Query = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256), Schema.isPattern(/^(?!\s*$)[^:\p{Cc}]+$/u)).annotate({ description: "Bounded free-text search terms; qualifiers are not accepted." });
 const Title = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
@@ -64,6 +65,7 @@ const IssuesListInput = Schema.Struct({
 });
 const IssuesSearchInput = Schema.Struct({ ...ownerRepo, query: Query, ...pagination });
 const NumberInput = Schema.Struct({ ...ownerRepo, number: IssueNumber });
+const NumberPageInput = Schema.Struct({ ...ownerRepo, number: IssueNumber, ...pagination });
 const IssueCreateInput = Schema.Struct({
     ...ownerRepo,
     title: Title,
@@ -126,6 +128,7 @@ const ActionsRunsListInput = Schema.Struct({
 const RunInput = Schema.Struct({ ...ownerRepo, runId: PositiveId });
 const JobsInput = Schema.Struct({ ...ownerRepo, runId: PositiveId, ...pagination });
 const CommitInput = Schema.Struct({ ...ownerRepo, ref: ShaOrRef, ...pagination });
+const CommitStatusInput = Schema.Struct({ ...ownerRepo, ref: ShaOrRef });
 const tool = (name, description, input, readOnly = true, destructive = false) => ({
     name,
     description,
@@ -146,14 +149,14 @@ export const GITHUB_TOOLS = [
     tool("github.issues.list", "List bounded issues and pull-request issue records in one repository.", IssuesListInput),
     tool("github.issues.search", "Search issues and pull requests in one exact repository.", IssuesSearchInput),
     tool("github.issues.get", "Read one exact issue or pull-request issue record.", NumberInput),
-    tool("github.issues.comments.list", "List bounded conversation comments for one issue or pull request.", Schema.Struct({ ...ownerRepo, number: IssueNumber, ...pagination })),
+    tool("github.issues.comments.list", "List bounded conversation comments for one issue or pull request.", NumberPageInput),
     tool("github.issues.create", "Create one bounded issue.", IssueCreateInput, false),
     tool("github.issues.update", "Narrowly update one issue without deleting it.", IssueUpdateInput, false, true),
     tool("github.issues.comment.create", "Add one bounded comment to an issue.", CommentCreateInput, false),
     tool("github.pulls.list", "List bounded pull requests in one repository.", PullsListInput),
     tool("github.pulls.get", "Read one exact pull request.", NumberInput),
-    tool("github.pulls.reviews.list", "List bounded review metadata for one pull request.", Schema.Struct({ ...ownerRepo, number: IssueNumber, ...pagination })),
-    tool("github.pulls.review-comments.list", "List bounded inline review comments for one pull request.", Schema.Struct({ ...ownerRepo, number: IssueNumber, ...pagination })),
+    tool("github.pulls.reviews.list", "List bounded review metadata for one pull request.", NumberPageInput),
+    tool("github.pulls.review-comments.list", "List bounded inline review comments for one pull request.", NumberPageInput),
     tool("github.pulls.create", "Create a pull request between existing refs; never writes git objects.", PullCreateInput, false),
     tool("github.pulls.comment.create", "Add one bounded conversation comment to a pull request.", CommentCreateInput, false),
     tool("github.pulls.review.create", "Submit one review without inline comments.", ReviewCreateInput, false),
@@ -161,7 +164,7 @@ export const GITHUB_TOOLS = [
     tool("github.actions.run.get", "Read one exact workflow run.", RunInput),
     tool("github.actions.jobs.list", "List bounded jobs and steps for one workflow run.", JobsInput),
     tool("github.commits.check-runs.list", "List bounded check runs for one exact commit ref.", CommitInput),
-    tool("github.commits.status.get", "Read the combined commit status for one exact ref.", Schema.Struct({ ...ownerRepo, ref: ShaOrRef })),
+    tool("github.commits.status.get", "Read the combined commit status for one exact ref.", CommitStatusInput),
 ];
 function asRecord(value, message = "GitHub returned an invalid response.") {
     if (!value || typeof value !== "object" || Array.isArray(value))
@@ -345,6 +348,7 @@ export class GitHubProvider {
     #access = null;
     #generation = 0;
     #credentialRevision = 0;
+    #verifiedCredential = null;
     #closed = false;
     #disconnecting = false;
     #uncertainCredentialState = false;
@@ -438,6 +442,7 @@ export class GitHubProvider {
         if (!response.ok) {
             if (response.status === 401) {
                 this.#access = null;
+                this.#verifiedCredential = null;
                 throw new IntegrationProviderPublicError("The GitHub session expired or was revoked. Reconnect GitHub.");
             }
             if (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0")
@@ -693,6 +698,11 @@ export class GitHubProvider {
                     throw new Error("GitHub sign-in was superseded before credential commit.");
                 await this.#writeCredential(credential, signal);
                 this.#credentialRevision += 1;
+                this.#verifiedCredential = {
+                    revision: this.#credentialRevision,
+                    token: grant.accessToken,
+                    account,
+                };
                 this.#generation += 1;
                 this.#pending.clear();
                 this.#access = {
@@ -724,15 +734,24 @@ export class GitHubProvider {
             const credential = await this.#readCredential(context?.signal);
             if (!credential) {
                 this.#access = null;
+                this.#verifiedCredential = null;
                 return;
             }
             const expiresAt = credential.accessTokenExpiresAt === null
                 ? null
                 : Date.parse(credential.accessTokenExpiresAt);
             if (expiresAt === null || expiresAt - ACCESS_TOKEN_SKEW_MS > Date.now()) {
-                const account = await this.#verify(credential.accessToken, context?.signal);
+                const cached = this.#verifiedCredential;
+                const account = cached?.revision === this.#credentialRevision && cached.token === credential.accessToken
+                    ? cached.account
+                    : await this.#verify(credential.accessToken, context?.signal);
                 if (account.id !== credential.account.id)
                     throw new Error("GitHub token identity changed unexpectedly.");
+                this.#verifiedCredential = {
+                    revision: this.#credentialRevision,
+                    token: credential.accessToken,
+                    account,
+                };
                 this.#access = {
                     token: credential.accessToken,
                     expiresAt,
@@ -773,6 +792,11 @@ export class GitHubProvider {
                 };
                 await this.#writeCredential(next, signal);
                 this.#credentialRevision += 1;
+                this.#verifiedCredential = {
+                    revision: this.#credentialRevision,
+                    token: grant.accessToken,
+                    account,
+                };
                 this.#access = {
                     token: grant.accessToken,
                     expiresAt: grant.expiresAt,
@@ -793,6 +817,7 @@ export class GitHubProvider {
             this.#generation += 1;
             this.#pending.clear();
             this.#access = null;
+            this.#verifiedCredential = null;
             let admitted = false;
             try {
                 const signal = await this.#beginCommit(context);
@@ -932,7 +957,7 @@ export class GitHubProvider {
         if (toolName === "github.issues.comments.list" ||
             toolName === "github.pulls.review-comments.list" ||
             toolName === "github.pulls.reviews.list") {
-            const values = await this.#decode(Schema.Struct({ ...ownerRepo, number: IssueNumber, ...pagination }), input);
+            const values = await this.#decode(NumberPageInput, input);
             const p = page(values);
             const tail = toolName === "github.issues.comments.list"
                 ? `issues/${values.number}/comments`
@@ -961,7 +986,11 @@ export class GitHubProvider {
             };
             if (Object.keys(body).length === 0)
                 throw new IntegrationProviderPublicError("Issue update must include at least one changed field.");
-            return write(`/repos/${encodeURIComponent(values.owner)}/${encodeURIComponent(values.repo)}/issues/${values.number}`, "PATCH", body);
+            const issuePath = `/repos/${encodeURIComponent(values.owner)}/${encodeURIComponent(values.repo)}/issues/${values.number}`;
+            const target = asRecord(await read(issuePath));
+            if (Object.hasOwn(target, "pull_request"))
+                throw new IntegrationProviderPublicError("That number belongs to a pull request. Use a pull-request tool.");
+            return write(issuePath, "PATCH", body);
         }
         if (toolName === "github.issues.comment.create" || toolName === "github.pulls.comment.create") {
             const values = await this.#decode(CommentCreateInput, input);
@@ -1019,7 +1048,7 @@ export class GitHubProvider {
             return collectionField(await read(`/repos/${encodeURIComponent(values.owner)}/${encodeURIComponent(values.repo)}/commits/${encodeURIComponent(values.ref)}/check-runs?${params({ per_page: p.limit, page: p.page })}`), "check_runs", p.limit);
         }
         if (toolName === "github.commits.status.get") {
-            const values = await this.#decode(Schema.Struct({ ...ownerRepo, ref: ShaOrRef }), input);
+            const values = await this.#decode(CommitStatusInput, input);
             return asRecord(await read(`/repos/${encodeURIComponent(values.owner)}/${encodeURIComponent(values.repo)}/commits/${encodeURIComponent(values.ref)}/status`));
         }
         throw new Error("Unsupported GitHub tool.");
@@ -1031,6 +1060,7 @@ export class GitHubProvider {
         this.#generation += 1;
         this.#pending.clear();
         this.#access = null;
+        this.#verifiedCredential = null;
         for (const controller of this.#controllers)
             controller.abort();
         await this.#credentialMutation;

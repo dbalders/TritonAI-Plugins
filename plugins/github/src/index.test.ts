@@ -24,8 +24,14 @@ describe("GitHub plugin factory", () => {
       manifest.tools.map(({ name }) => name).toSorted(),
     );
     expect(
-      provider.tools.map(({ name, readOnly }) => ({ name, effect: readOnly ? "read" : "write" })),
-    ).toEqual(manifest.tools.map(({ name, effect }) => ({ name, effect })));
+      provider.tools
+        .map(({ name, readOnly }) => ({ name, effect: readOnly ? "read" : "write" }))
+        .toSorted((a, b) => a.name.localeCompare(b.name)),
+    ).toEqual(
+      manifest.tools
+        .map(({ name, effect }) => ({ name, effect }))
+        .toSorted((a, b) => a.name.localeCompare(b.name)),
+    );
     expect(
       provider.tools.map(({ input }) => Schema.toJsonSchemaDocument(input).schema.type),
     ).toEqual(provider.tools.map(() => "object"));
