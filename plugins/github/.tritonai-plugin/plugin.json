@@ -254,6 +254,11 @@
       "capabilities": ["repository.read", "repository.write", "pull-requests.write"]
     },
     {
+      "name": "github-contributions",
+      "description": "Fork repositories, create branches, commit bounded file changes, and open pull requests through TritonAI provider tools for ordinary contribution flows.",
+      "capabilities": ["repository.read", "repository.write", "pull-requests.write"]
+    },
+    {
       "name": "github-actions",
       "description": "Inspect GitHub Actions runs, jobs, checks, and commit status through TritonAI provider tools for bounded CI triage.",
       "capabilities": ["repository.read"]

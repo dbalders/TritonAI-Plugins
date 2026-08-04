@@ -57,7 +57,7 @@ const Owner = Schema.String.check(
 const Repo = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(100),
-  Schema.isPattern(/^[A-Za-z0-9_.-]+$/u),
+  Schema.isPattern(/^(?!\.{1,2}$)[A-Za-z0-9_.-]+$/u),
 ).annotate({ description: "Exact GitHub repository name." });
 const PositiveId = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
@@ -66,7 +66,7 @@ const IssueNumber = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_1
 const Limit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }));
 const Page = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 }));
 const REF_PATTERN =
-  /^(?!\/|.*(?:^|\/)\.\.(?:\/|$))(?!.*(?:~|\^|:|\?|\*|\[|\\))(?!.*\p{Cc})(?!.*\s)[^/]+(?:\/[^/]+)*$/u;
+  /^(?!\/|.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*(?:~|\^|:|\?|\*|\[|\\))(?!.*\p{Cc})(?!.*\s)[^/]+(?:\/[^/]+)*$/u;
 const Ref = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(255),
@@ -78,7 +78,7 @@ const ShaOrRef = Schema.String.check(
   Schema.isPattern(REF_PATTERN),
 ).annotate({ description: "Exact commit SHA, branch, or tag." });
 const PULL_HEAD_PATTERN =
-  /^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,98}[A-Za-z0-9])?:)?(?!\/)(?!.*(?:^|[/:])\.\.(?:\/|$))(?!.*(?:~|\^|:|\?|\*|\[|\\))(?!.*\p{Cc})(?!.*\s)[^/]+(?:\/[^/]+)*$/u;
+  /^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,98}[A-Za-z0-9])?:)?(?!\/)(?!.*(?:^|[/:])\.{1,2}(?:\/|$))(?!.*(?:~|\^|:|\?|\*|\[|\\))(?!.*\p{Cc})(?!.*\s)[^/]+(?:\/[^/]+)*$/u;
 const PullHead = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(356),
@@ -87,7 +87,7 @@ const PullHead = Schema.String.check(
 const FilePath = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(1_024),
-  Schema.isPattern(/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*\p{Cc})[^/]+(?:\/[^/]+)*$/u),
+  Schema.isPattern(/^(?!\/)(?!.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*\p{Cc})[^/]+(?:\/[^/]+)*$/u),
 ).annotate({ description: "Exact repository-relative file path; directories are not returned." });
 const Query = Schema.String.check(
   Schema.isMinLength(1),

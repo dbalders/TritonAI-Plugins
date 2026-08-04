@@ -435,6 +435,30 @@ describe("GitHubProvider OAuth product", () => {
         invocation(),
       ),
     ).rejects.toThrow();
+    await expect(
+      github.invoke(
+        "github.branches.create",
+        { owner: "octo", repo: "repo", branch: ".", fromRef: "main" },
+        invocation(),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      github.invoke(
+        "github.contents.put",
+        {
+          owner: "octo",
+          repo: "repo",
+          path: "./README.md",
+          branch: "main",
+          message: "write",
+          content: "safe",
+        },
+        invocation(),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      github.invoke("github.repositories.fork", { owner: "octo", repo: "." }, invocation()),
+    ).rejects.toThrow();
     expect(mock.requests).toHaveLength(6);
   });
 
