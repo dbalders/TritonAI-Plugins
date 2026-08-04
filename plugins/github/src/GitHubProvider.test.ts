@@ -242,7 +242,7 @@ describe("GitHubProvider", () => {
     expect((await github.status()).state).toBe("connected");
   });
 
-  it("drops previously granted opt-in capabilities when reconnecting more narrowly", async () => {
+  it("drops previously granted write capabilities when reconnecting more narrowly", async () => {
     const secrets = memorySecrets();
     const mock = sequence([
       json(deviceBody()),

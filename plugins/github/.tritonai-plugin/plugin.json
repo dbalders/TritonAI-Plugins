@@ -4,7 +4,7 @@
   "manifestVersion": 2,
   "id": "github",
   "name": "GitHub",
-  "description": "Connect a GitHub App to read installed repositories and opt in to bounded issue and pull-request writes.",
+  "description": "Connect a GitHub App to read installed repositories and perform bounded issue and pull-request writes.",
   "version": "1.0.0",
   "provider": "github",
   "capabilities": [
