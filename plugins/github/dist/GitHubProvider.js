@@ -460,8 +460,10 @@ export class GitHubProvider {
         }, options.maximumBytes ?? API_RESPONSE_BYTES);
         if (!response.ok) {
             if (response.status === 401) {
-                this.#access = null;
-                this.#verifiedCredential = null;
+                if (this.#access?.token === token)
+                    this.#access = null;
+                if (this.#verifiedCredential?.token === token)
+                    this.#verifiedCredential = null;
                 throw new IntegrationProviderPublicError("The GitHub session expired or was revoked. Reconnect GitHub.");
             }
             if (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0")

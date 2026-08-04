@@ -551,6 +551,60 @@ describe("GitHubProvider OAuth product", () => {
     ).rejects.toThrow(/exceeded/u);
   });
 
+  it("preserves a newer OAuth session when a stale request receives 401", async () => {
+    const secrets = memorySecrets();
+    const firstToken = "gho_first_fixture";
+    const secondToken = "gho_second_fixture";
+    let deviceRequests = 0;
+    let tokenRequests = 0;
+    let userRequests = 0;
+    let resolveStale: ((response: Response) => void) | undefined;
+    const authorizations: string[] = [];
+    const staleResponse = new Promise<Response>((resolve) => {
+      resolveStale = resolve;
+    });
+    const fetchImplementation = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const url = String(input);
+        if (url.endsWith("/login/device/code")) {
+          deviceRequests += 1;
+          return json({ ...deviceBody(), device_code: `device-${deviceRequests}` });
+        }
+        if (url.endsWith("/login/oauth/access_token")) {
+          tokenRequests += 1;
+          return json({
+            ...tokenBody(),
+            access_token: tokenRequests === 1 ? firstToken : secondToken,
+          });
+        }
+        if (url === "https://api.github.com/user") {
+          const authorization = new Headers(init?.headers).get("authorization") ?? "";
+          authorizations.push(authorization);
+          userRequests += 1;
+          if (userRequests === 2) return staleResponse;
+          return json(userBody());
+        }
+        throw new Error(`unexpected fixture request: ${url}`);
+      },
+    ) as unknown as typeof fetch;
+    const github = provider(secrets.service, fetchImplementation);
+    await authorize(github);
+    const staleInvocation = github.invoke("github.identity.get", {}, invocation());
+    await vi.waitFor(() => expect(userRequests).toBe(2));
+    await authorize(github);
+    resolveStale?.(json({ message: "Bad credentials" }, 401));
+    await expect(staleInvocation).rejects.toThrow(/expired or was revoked/u);
+    await expect(github.invoke("github.identity.get", {}, invocation())).resolves.toMatchObject({
+      login: "octo-user",
+    });
+    expect(authorizations).toEqual([
+      `Bearer ${firstToken}`,
+      `Bearer ${firstToken}`,
+      `Bearer ${secondToken}`,
+      `Bearer ${secondToken}`,
+    ]);
+  });
+
   it("enters uncertain state if an issued token cannot be durably persisted", async () => {
     const secrets = memorySecrets({ failSetAfterWrite: true });
     const mock = sequence([json(deviceBody()), json(tokenBody()), json(userBody())]);

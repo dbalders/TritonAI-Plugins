@@ -684,8 +684,8 @@ export class GitHubProvider implements IntegrationProvider {
     );
     if (!response.ok) {
       if (response.status === 401) {
-        this.#access = null;
-        this.#verifiedCredential = null;
+        if (this.#access?.token === token) this.#access = null;
+        if (this.#verifiedCredential?.token === token) this.#verifiedCredential = null;
         throw new IntegrationProviderPublicError(
           "The GitHub session expired or was revoked. Reconnect GitHub.",
         );
