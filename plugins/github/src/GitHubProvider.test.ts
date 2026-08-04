@@ -10,9 +10,9 @@ import type {
   IntegrationSecretStore,
 } from "./host-contract.ts";
 
-const CONFIGURATION = { clientId: "Iv1.1234567890abcdef" } as const;
-const accessValue = ["ghu", "fixture", "access"].join("_");
-const refreshValue = ["ghr", "fixture", "refresh"].join("_");
+const CONFIGURATION = { clientId: "Ov23li1234567890abcd" } as const;
+const accessValue = ["gho", "fixture", "access"].join("_");
+const oauthScope = "repo, read:org, workflow";
 
 function memorySecrets(options: { failSetAfterWrite?: boolean; failRemove?: boolean } = {}) {
   const values = new Map<string, Uint8Array>();
@@ -66,21 +66,11 @@ function deviceBody() {
     interval: 5,
   };
 }
-function tokenBody(expiring = false) {
-  return {
-    access_token: accessValue,
-    token_type: "bearer",
-    scope: "",
-    ...(expiring
-      ? { expires_in: 28_800, refresh_token: refreshValue, refresh_token_expires_in: 15_897_600 }
-      : {}),
-  };
+function tokenBody() {
+  return { access_token: accessValue, token_type: "bearer", scope: oauthScope };
 }
 function userBody() {
   return { login: "octo-user", id: 42, name: "Octo User" };
-}
-function installationsBody() {
-  return { total_count: 0, installations: [] };
 }
 function provider(
   secrets: IntegrationSecretStore,
@@ -111,14 +101,15 @@ async function authorize(
   return flow;
 }
 
-describe("GitHubProvider", () => {
-  it("publishes executable strict schemas and truthful read/write metadata", async () => {
-    expect(GITHUB_TOOLS).toHaveLength(26);
+describe("GitHubProvider OAuth product", () => {
+  it("publishes strict schemas and truthful read/write metadata", async () => {
+    expect(GITHUB_TOOLS).toHaveLength(28);
     for (const definition of GITHUB_TOOLS) {
       expect(definition.openWorld).toBe(true);
       expect(definition.idempotent).toBe(definition.readOnly);
       expect(definition.input).toBeDefined();
     }
+    expect(GITHUB_TOOLS.some(({ name }) => name.includes("installation"))).toBe(false);
     const repositoryGet = GITHUB_TOOLS.find(({ name }) => name === "github.repositories.get")!;
     await expect(
       Schema.decodeUnknownPromise(repositoryGet.input)(
@@ -126,25 +117,32 @@ describe("GitHubProvider", () => {
         { errors: "all", onExcessProperty: "error" },
       ),
     ).rejects.toThrow();
-    const update = GITHUB_TOOLS.find(({ name }) => name === "github.issues.update")!;
-    expect(update.readOnly).toBe(false);
-    expect(update.destructive).toBe(true);
+    expect(GITHUB_TOOLS.find(({ name }) => name === "github.contents.put")).toMatchObject({
+      readOnly: false,
+      destructive: true,
+    });
   });
 
-  it("validates client IDs and bounded request timeouts", () => {
+  it("accepts OAuth App client IDs and bounded request timeouts", () => {
     const secrets = memorySecrets();
-    expect(() => new GitHubProvider(secrets.service, { clientId: "short" })).toThrow(
-      /valid public/u,
+    expect(() => new GitHubProvider(secrets.service, { clientId: "Iv1.1234567890abcdef" })).toThrow(
+      /OAuth App/u,
+    );
+    expect(() => new GitHubProvider(secrets.service, { clientId: "Iv23linqGnywexMxC0xQ" })).toThrow(
+      /OAuth App/u,
     );
     expect(() => provider(secrets.service, globalThis.fetch, 30_001)).toThrow(/bounded/u);
     expect(() => provider(secrets.service, globalThis.fetch, 1.5)).toThrow(/bounded/u);
   });
 
-  it("starts official clientId-only device flow without scopes or secrets", async () => {
+  it("requests the exact standard developer OAuth scopes without a client secret", async () => {
     const secrets = memorySecrets();
     const mock = sequence([json(deviceBody())]);
     const github = provider(secrets.service, mock.fetchImplementation);
-    const result = await github.connect(["identity.read", "repository.read"], lifecycle());
+    const result = await github.connect(
+      ["identity.read", "repository.read", "repository.write"],
+      lifecycle(),
+    );
     expect(result).toMatchObject({
       kind: "device_code",
       verificationUri: "https://github.com/login/device",
@@ -153,10 +151,10 @@ describe("GitHubProvider", () => {
     });
     const request = mock.requests[0]!;
     expect(request.url).toBe("https://github.com/login/device/code");
-    expect(String(request.init?.body)).toBe(
-      `client_id=${encodeURIComponent(CONFIGURATION.clientId)}`,
-    );
-    expect(String(request.init?.body)).not.toMatch(/scope|secret|token/iu);
+    const form = new URLSearchParams(String(request.init?.body));
+    expect(form.get("client_id")).toBe(CONFIGURATION.clientId);
+    expect(form.get("scope")).toBe("repo read:org workflow");
+    expect(form.has("client_secret")).toBe(false);
     expect(secrets.values.size).toBe(0);
   });
 
@@ -183,79 +181,89 @@ describe("GitHubProvider", () => {
       message: expect.stringMatching(/cancelled/u),
     });
     expect(secrets.values.size).toBe(0);
-    await expect(github.poll(flow.flowId, lifecycle())).rejects.toThrow(/not found/u);
   });
 
-  it("verifies the token, GitHub App relationship, and empty scope before storing credentials", async () => {
+  it("stores an ordinary non-expiring OAuth grant and calls zero installation APIs", async () => {
     const secrets = memorySecrets();
-    const mock = sequence([
-      json(deviceBody()),
-      json(tokenBody(true)),
-      json(userBody()),
-      json(installationsBody()),
-    ]);
+    secrets.values.set("github-app-user", new TextEncoder().encode("obsolete"));
+    const mock = sequence([json(deviceBody()), json(tokenBody()), json(userBody())]);
     const github = provider(secrets.service, mock.fetchImplementation);
-    const flow = await github.connect(
-      ["identity.read", "repository.read", "issues.write"],
+    const result = await github.poll(
+      (
+        await github.connect(
+          [
+            "identity.read",
+            "repository.read",
+            "repository.write",
+            "issues.write",
+            "pull-requests.write",
+          ],
+          lifecycle(),
+        )
+      ).flowId,
       lifecycle(),
     );
-    const result = await github.poll(flow.flowId, lifecycle());
     expect(result).toMatchObject({
       state: "connected",
       message: expect.stringContaining("octo-user"),
     });
-    expect(mock.requests[2]?.url).toBe("https://api.github.com/user");
-    expect(mock.requests[2]?.init?.headers).toMatchObject({
-      authorization: `Bearer ${accessValue}`,
+    expect(mock.requests.map(({ url }) => url)).toEqual([
+      "https://github.com/login/device/code",
+      "https://github.com/login/oauth/access_token",
+      "https://api.github.com/user",
+    ]);
+    expect(mock.requests.some(({ url }) => url.includes("installation"))).toBe(false);
+    const stored = JSON.parse(
+      new TextDecoder().decode(secrets.values.get(GITHUB_SECRET_SUFFIX)),
+    ) as Record<string, unknown>;
+    expect(stored).toMatchObject({
+      version: 2,
+      accessToken: accessValue,
+      oauthScopes: ["read:org", "repo", "workflow"],
     });
-    expect(mock.requests[3]?.url).toBe(
-      "https://api.github.com/user/installations?per_page=1&page=1",
-    );
-    expect(secrets.calls).toContain(`set:${GITHUB_SECRET_SUFFIX}`);
-    expect([...secrets.values.keys()]).toEqual([GITHUB_SECRET_SUFFIX]);
-    const storedText = new TextDecoder().decode(secrets.values.get(GITHUB_SECRET_SUFFIX));
-    expect(storedText).toContain(accessValue);
-    expect(String(result)).not.toContain(accessValue);
+    expect(stored).not.toHaveProperty("refreshToken");
+    expect(stored).not.toHaveProperty("accessTokenExpiresAt");
+    expect(secrets.values.has("github-app-user")).toBe(false);
     expect(await github.status()).toMatchObject({
       state: "connected",
       accountLabel: "octo-user",
-      grantedCapabilities: ["identity.read", "issues.write", "repository.read"],
+      grantedCapabilities: [
+        "identity.read",
+        "issues.write",
+        "pull-requests.write",
+        "repository.read",
+        "repository.write",
+      ],
     });
   });
 
-  it("reports an aborted status check as cancellation without blaming the credential", async () => {
+  it("rejects incomplete, excess, and refresh-token grants before storage", async () => {
+    for (const grant of [
+      { ...tokenBody(), scope: "repo,read:org" },
+      { ...tokenBody(), scope: "repo,read:org,workflow,gist" },
+      { ...tokenBody(), expires_in: 28_800, refresh_token: "refresh" },
+    ]) {
+      const secrets = memorySecrets();
+      const mock = sequence([json(deviceBody()), json(grant)]);
+      const github = provider(secrets.service, mock.fetchImplementation);
+      const flow = await github.connect(["identity.read"], lifecycle());
+      await expect(github.poll(flow.flowId, lifecycle())).rejects.toThrow(/OAuth scopes|expiring/u);
+      expect(secrets.values.size).toBe(0);
+    }
+  });
+
+  it("drops previously granted Harness write capabilities when reconnecting narrowly", async () => {
     const secrets = memorySecrets();
     const mock = sequence([
       json(deviceBody()),
       json(tokenBody()),
       json(userBody()),
-      json(installationsBody()),
-    ]);
-    const github = provider(secrets.service, mock.fetchImplementation);
-    await authorize(github);
-    const controller = new AbortController();
-    controller.abort();
-    expect(await github.status({ signal: controller.signal })).toMatchObject({
-      state: "error",
-      message: expect.stringMatching(/cancelled/u),
-    });
-    expect((await github.status()).state).toBe("connected");
-  });
-
-  it("drops previously granted write capabilities when reconnecting more narrowly", async () => {
-    const secrets = memorySecrets();
-    const mock = sequence([
       json(deviceBody()),
       json(tokenBody()),
       json(userBody()),
-      json(installationsBody()),
-      json(deviceBody()),
-      json(tokenBody()),
-      json(userBody()),
-      json(installationsBody()),
     ]);
     const github = provider(secrets.service, mock.fetchImplementation);
-    await authorize(github, lifecycle(), ["identity.read", "issues.write"]);
+    await authorize(github, lifecycle(), ["identity.read", "repository.write"]);
     await authorize(github, lifecycle(), ["identity.read"]);
     expect(await github.status()).toMatchObject({
       state: "connected",
@@ -263,308 +271,215 @@ describe("GitHubProvider", () => {
     });
   });
 
-  it("rejects classic OAuth scope grants and never commits them", async () => {
+  it("prepares a stored OAuth token using only GET /user and caches its verified identity", async () => {
     const secrets = memorySecrets();
-    const mock = sequence([json(deviceBody()), json({ ...tokenBody(), scope: "repo" })]);
+    const mock = sequence([json(deviceBody()), json(tokenBody()), json(userBody())]);
     const github = provider(secrets.service, mock.fetchImplementation);
-    const flow = await github.connect(["identity.read"], lifecycle());
-    await expect(github.poll(flow.flowId, lifecycle())).rejects.toThrow(/unexpected token grant/u);
-    expect(secrets.values.size).toBe(0);
-  });
-
-  it("rejects a token that cannot use the GitHub App installations API", async () => {
-    const secrets = memorySecrets();
-    const mock = sequence([
-      json(deviceBody()),
-      json(tokenBody()),
-      json(userBody()),
-      json({ message: "not an app user token" }, 403),
-    ]);
-    const github = provider(secrets.service, mock.fetchImplementation);
-    const flow = await github.connect(["identity.read"], lifecycle());
-    await expect(github.poll(flow.flowId, lifecycle())).rejects.toThrow(/denied/u);
-    expect(secrets.values.size).toBe(0);
-    expect(await github.status()).toMatchObject({
-      state: "error",
-      message: expect.stringMatching(/uncertain/u),
-    });
-  });
-
-  it("refreshes rotating device-flow credentials with no client secret and verifies account continuity", async () => {
-    const secrets = memorySecrets();
-    const expired = {
-      version: 1,
-      accessToken: "expired-access",
-      accessTokenExpiresAt: new Date(Date.now() - 60_000).toISOString(),
-      refreshToken: refreshValue,
-      refreshTokenExpiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      account: { login: "octo-user", id: 42 },
-      grantedCapabilities: ["identity.read"],
-      updatedAt: new Date().toISOString(),
-    };
-    secrets.values.set(GITHUB_SECRET_SUFFIX, new TextEncoder().encode(JSON.stringify(expired)));
-    const mock = sequence([
-      json({
-        ...tokenBody(true),
-        access_token: "rotated-access",
-        refresh_token: "rotated-refresh",
-      }),
-      json(userBody()),
-      json(installationsBody()),
-    ]);
-    const github = provider(secrets.service, mock.fetchImplementation);
+    await authorize(github);
     await github.prepare(lifecycle());
-    const form = String(mock.requests[0]?.init?.body);
-    expect(form).toContain("grant_type=refresh_token");
-    expect(form).toContain(`client_id=${encodeURIComponent(CONFIGURATION.clientId)}`);
-    expect(form).not.toContain("client_secret");
-    const stored = new TextDecoder().decode(secrets.values.get(GITHUB_SECRET_SUFFIX));
-    expect(stored).toContain("rotated-access");
-    expect(stored).toContain("rotated-refresh");
+    await github.prepare(lifecycle());
+    expect(mock.requests).toHaveLength(3);
+    expect(mock.requests.some(({ url }) => url.includes("installation"))).toBe(false);
   });
 
-  it("reports fully expired credentials without attempting a network request", async () => {
-    const secrets = memorySecrets();
-    secrets.values.set(
-      GITHUB_SECRET_SUFFIX,
-      new TextEncoder().encode(
-        JSON.stringify({
-          version: 1,
-          accessToken: "expired-access",
-          accessTokenExpiresAt: new Date(Date.now() - 120_000).toISOString(),
-          refreshToken: refreshValue,
-          refreshTokenExpiresAt: new Date(Date.now() - 60_000).toISOString(),
-          account: { login: "octo-user", id: 42 },
-          grantedCapabilities: ["identity.read"],
-          updatedAt: new Date().toISOString(),
-        }),
-      ),
-    );
-    const mock = sequence([]);
-    const github = provider(secrets.service, mock.fetchImplementation);
-    expect(await github.status()).toMatchObject({
-      state: "error",
-      accountLabel: "octo-user",
-      message: expect.stringMatching(/expired/u),
-    });
-    await expect(github.prepare(lifecycle())).rejects.toThrow(/reconnect/iu);
-    expect(mock.requests).toHaveLength(0);
-  });
-
-  it("requires write approval and beginCommit before any issue mutation", async () => {
+  it("enumerates bounded authenticated-user repositories instead of installations", async () => {
     const secrets = memorySecrets();
     const mock = sequence([
       json(deviceBody()),
       json(tokenBody()),
       json(userBody()),
-      json(installationsBody()),
+      json([{ id: 1, full_name: "octo/repo" }]),
+    ]);
+    const github = provider(secrets.service, mock.fetchImplementation);
+    await authorize(github);
+    await expect(
+      github.invoke("github.repositories.list", { limit: 51 }, invocation()),
+    ).rejects.toThrow();
+    expect(mock.requests).toHaveLength(3);
+    await expect(
+      github.invoke("github.repositories.list", { limit: 1, page: 2 }, invocation()),
+    ).resolves.toEqual([{ id: 1, full_name: "octo/repo" }]);
+    expect(mock.requests[3]?.url).toBe(
+      "https://api.github.com/user/repos?visibility=all&affiliation=owner%2Ccollaborator%2Corganization_member&sort=updated&direction=desc&per_page=1&page=2",
+    );
+    expect(mock.requests[3]?.url).not.toContain("installation");
+  });
+
+  it("supports fixed fork, branch, and bounded content-commit contribution tools", async () => {
+    const secrets = memorySecrets();
+    const sourceSha = "a".repeat(40);
+    const mock = sequence([
+      json(deviceBody()),
+      json(tokenBody()),
+      json(userBody()),
+      json({ id: 80, full_name: "octo-user/project" }, 202),
+      json({ sha: sourceSha }),
+      json({ ref: "refs/heads/feature/demo", object: { sha: sourceSha } }, 201),
+      json({
+        content: { path: "README.md", sha: "b".repeat(40) },
+        commit: { sha: "c".repeat(40) },
+      }),
+      json({ number: 12, html_url: "https://github.com/upstream/project/pull/12" }, 201),
+    ]);
+    const github = provider(secrets.service, mock.fetchImplementation);
+    await authorize(github, lifecycle(), [
+      "identity.read",
+      "repository.read",
+      "repository.write",
+      "pull-requests.write",
+    ]);
+    const events: string[] = [];
+    await github.invoke(
+      "github.repositories.fork",
+      { owner: "upstream", repo: "project" },
+      invocation(true, events),
+    );
+    await github.invoke(
+      "github.branches.create",
+      { owner: "octo-user", repo: "project", branch: "feature/demo", fromRef: "main" },
+      invocation(true, events),
+    );
+    await github.invoke(
+      "github.contents.put",
+      {
+        owner: "octo-user",
+        repo: "project",
+        path: "README.md",
+        branch: "feature/demo",
+        message: "Document the contribution",
+        content: "Hello, GitHub!",
+        sha: "d".repeat(40),
+      },
+      invocation(true, events),
+    );
+    await github.invoke(
+      "github.pulls.create",
+      {
+        owner: "upstream",
+        repo: "project",
+        title: "Contribute the documentation",
+        head: "octo-user:feature/demo",
+        base: "main",
+      },
+      invocation(true, events),
+    );
+    expect(events).toEqual(["beginCommit", "beginCommit", "beginCommit", "beginCommit"]);
+    expect(mock.requests.slice(3).map(({ url, init }) => [url, init?.method])).toEqual([
+      ["https://api.github.com/repos/upstream/project/forks", "POST"],
+      ["https://api.github.com/repos/octo-user/project/commits/main", "GET"],
+      ["https://api.github.com/repos/octo-user/project/git/refs", "POST"],
+      ["https://api.github.com/repos/octo-user/project/contents/README.md", "PUT"],
+      ["https://api.github.com/repos/upstream/project/pulls", "POST"],
+    ]);
+    expect(JSON.parse(String(mock.requests[5]?.init?.body))).toEqual({
+      ref: "refs/heads/feature/demo",
+      sha: sourceSha,
+    });
+    expect(JSON.parse(String(mock.requests[6]?.init?.body))).toEqual({
+      message: "Document the contribution",
+      content: Buffer.from("Hello, GitHub!").toString("base64"),
+      branch: "feature/demo",
+      sha: "d".repeat(40),
+    });
+  });
+
+  it("cannot bypass repository.write, approval, commit admission, or input bounds", async () => {
+    const secrets = memorySecrets();
+    const mock = sequence([
+      json(deviceBody()),
+      json(tokenBody()),
+      json(userBody()),
+      json(deviceBody()),
+      json(tokenBody()),
+      json(userBody()),
+    ]);
+    const github = provider(secrets.service, mock.fetchImplementation);
+    await authorize(github);
+    await expect(
+      github.invoke("github.repositories.fork", { owner: "octo", repo: "repo" }, invocation()),
+    ).rejects.toThrow(/repository.write access is not enabled/u);
+    expect(mock.requests).toHaveLength(3);
+    await authorize(github, lifecycle(), ["identity.read", "repository.read", "repository.write"]);
+    await expect(
+      github.invoke(
+        "github.contents.put",
+        {
+          owner: "octo",
+          repo: "repo",
+          path: "a.txt",
+          branch: "main",
+          message: "write",
+          content: "safe",
+        },
+        invocation(false),
+      ),
+    ).rejects.toThrow(/approval and commit admission/u);
+    await expect(
+      github.invoke(
+        "github.contents.put",
+        {
+          owner: "octo",
+          repo: "repo",
+          path: "a.txt",
+          branch: "main",
+          message: "write",
+          content: "é".repeat(600_000),
+        },
+        invocation(),
+      ),
+    ).rejects.toThrow(/one-megabyte UTF-8/u);
+    await expect(
+      github.invoke(
+        "github.branches.create",
+        { owner: "octo", repo: "repo", branch: "../unsafe", fromRef: "main" },
+        invocation(),
+      ),
+    ).rejects.toThrow();
+    expect(mock.requests).toHaveLength(6);
+  });
+
+  it("keeps issue and pull-request writes behind their independent capabilities", async () => {
+    const secrets = memorySecrets();
+    const mock = sequence([
+      json(deviceBody()),
+      json(tokenBody()),
+      json(userBody()),
       json({ id: 10, number: 7, title: "Created" }),
     ]);
     const github = provider(secrets.service, mock.fetchImplementation);
-    await authorize(github, lifecycle(), ["identity.read", "repository.read", "issues.write"]);
-    const input = { owner: "octo-org", repo: "repo.one", title: "Bounded issue" };
-    await expect(github.invoke("github.issues.create", input, invocation(false))).rejects.toThrow(
-      /approval and commit admission/u,
-    );
-    expect(mock.requests).toHaveLength(4);
-    const events: string[] = [];
-    const result = await github.invoke("github.issues.create", input, invocation(true, events));
-    expect(result).toMatchObject({ number: 7 });
-    expect(events).toEqual(["beginCommit"]);
-    expect(mock.requests[4]?.url).toBe("https://api.github.com/repos/octo-org/repo.one/issues");
-    expect(mock.requests[4]?.init?.method).toBe("POST");
-  });
-
-  it("does not let issue updates cross the pull-request capability boundary", async () => {
-    const secrets = memorySecrets();
-    const mock = sequence([
-      json(deviceBody()),
-      json(tokenBody()),
-      json(userBody()),
-      json(installationsBody()),
-      json({ number: 7, pull_request: { url: "https://api.github.test/pulls/7" } }),
-    ]);
-    const github = provider(secrets.service, mock.fetchImplementation);
     await authorize(github, lifecycle(), ["identity.read", "issues.write"]);
-    const events: string[] = [];
-
     await expect(
       github.invoke(
-        "github.issues.update",
-        { owner: "octo-org", repo: "repo.one", number: 7, title: "Wrong boundary" },
-        invocation(true, events),
-      ),
-    ).rejects.toThrow(/belongs to a pull request/u);
-    expect(events).toEqual([]);
-    expect(mock.requests).toHaveLength(5);
-    expect(mock.requests[4]?.init?.method).toBe("GET");
-  });
-
-  it("reuses the verified account while the stored credential revision is unchanged", async () => {
-    const secrets = memorySecrets();
-    const mock = sequence([
-      json(deviceBody()),
-      json(tokenBody()),
-      json(userBody()),
-      json(installationsBody()),
-    ]);
-    const github = provider(secrets.service, mock.fetchImplementation);
-    await authorize(github);
-
-    await github.prepare(lifecycle());
-    await github.prepare(lifecycle());
-
-    expect(mock.requests).toHaveLength(4);
-  });
-
-  it("requires an independently enabled write capability even when the token is connected", async () => {
-    const secrets = memorySecrets();
-    const mock = sequence([
-      json(deviceBody()),
-      json(tokenBody()),
-      json(userBody()),
-      json(installationsBody()),
-    ]);
-    const github = provider(secrets.service, mock.fetchImplementation);
-    await authorize(github);
-    await expect(
-      github.invoke(
-        "github.pulls.comment.create",
-        { owner: "octo", repo: "repo", number: 1, body: "comment" },
+        "github.pulls.create",
+        { owner: "octo", repo: "repo", title: "PR", head: "feature", base: "main" },
         invocation(),
       ),
     ).rejects.toThrow(/pull-requests.write access is not enabled/u);
-    expect(mock.requests).toHaveLength(4);
+    const events: string[] = [];
+    await expect(
+      github.invoke(
+        "github.issues.create",
+        { owner: "octo", repo: "repo", title: "Bounded issue" },
+        invocation(true, events),
+      ),
+    ).resolves.toMatchObject({ number: 7 });
+    expect(events).toEqual(["beginCommit"]);
   });
 
-  it("keeps issue and pull-request comment capabilities bound to the target type", async () => {
+  it("uses fixed read endpoints and rejects unsafe search qualifiers before network access", async () => {
     const secrets = memorySecrets();
     const mock = sequence([
       json(deviceBody()),
       json(tokenBody()),
       json(userBody()),
-      json(installationsBody()),
-      json({ number: 1 }),
-      json({ number: 2, pull_request: { url: "https://api.github.test/pulls/2" } }),
-      json({ number: 3 }),
-      json({ id: 30, body: "issue comment" }),
-      json({ number: 4, pull_request: { url: "https://api.github.test/pulls/4" } }),
-      json({ id: 40, body: "pull comment" }),
-    ]);
-    const github = provider(secrets.service, mock.fetchImplementation);
-    await authorize(github, lifecycle(), ["identity.read", "issues.write", "pull-requests.write"]);
-
-    const mismatchedPullEvents: string[] = [];
-    await expect(
-      github.invoke(
-        "github.pulls.comment.create",
-        { owner: "octo", repo: "repo", number: 1, body: "wrong target" },
-        invocation(true, mismatchedPullEvents),
-      ),
-    ).rejects.toThrow(/belongs to an issue/u);
-    expect(mismatchedPullEvents).toEqual([]);
-
-    const mismatchedIssueEvents: string[] = [];
-    await expect(
-      github.invoke(
-        "github.issues.comment.create",
-        { owner: "octo", repo: "repo", number: 2, body: "wrong target" },
-        invocation(true, mismatchedIssueEvents),
-      ),
-    ).rejects.toThrow(/belongs to a pull request/u);
-    expect(mismatchedIssueEvents).toEqual([]);
-
-    const issueEvents: string[] = [];
-    await expect(
-      github.invoke(
-        "github.issues.comment.create",
-        { owner: "octo", repo: "repo", number: 3, body: "issue comment" },
-        invocation(true, issueEvents),
-      ),
-    ).resolves.toMatchObject({ id: 30 });
-    expect(issueEvents).toEqual(["beginCommit"]);
-
-    const pullEvents: string[] = [];
-    await expect(
-      github.invoke(
-        "github.pulls.comment.create",
-        { owner: "octo", repo: "repo", number: 4, body: "pull comment" },
-        invocation(true, pullEvents),
-      ),
-    ).resolves.toMatchObject({ id: 40 });
-    expect(pullEvents).toEqual(["beginCommit"]);
-    expect(mock.requests.slice(4).map(({ init }) => init?.method ?? "GET")).toEqual([
-      "GET",
-      "GET",
-      "GET",
-      "POST",
-      "GET",
-      "POST",
-    ]);
-  });
-
-  it("rejects search qualifiers and comma-bearing label filters before network access", async () => {
-    const secrets = memorySecrets();
-    const mock = sequence([
-      json(deviceBody()),
-      json(tokenBody()),
-      json(userBody()),
-      json(installationsBody()),
+      json({ type: "file", size: 4, content: "dGVzdA==", encoding: "base64", path: "src/a.ts" }),
+      json({ total_count: 1, workflow_runs: [{ id: 99, conclusion: "failure" }] }),
     ]);
     const github = provider(secrets.service, mock.fetchImplementation);
     await authorize(github);
     await expect(
       github.invoke("github.repositories.search", { query: "org:another" }, invocation()),
     ).rejects.toThrow();
-    await expect(
-      github.invoke(
-        "github.code.search",
-        { owner: "octo", repo: "repo", query: "repo:another/private" },
-        invocation(),
-      ),
-    ).rejects.toThrow();
-    await expect(
-      github.invoke(
-        "github.issues.search",
-        { owner: "octo", repo: "repo", query: "is:private" },
-        invocation(),
-      ),
-    ).rejects.toThrow();
-    await expect(
-      github.invoke(
-        "github.issues.list",
-        { owner: "octo", repo: "repo", labels: ["triage, urgent"] },
-        invocation(),
-      ),
-    ).rejects.toThrow();
-    expect(mock.requests).toHaveLength(4);
-  });
-
-  it("uses fixed installation, content, and Actions endpoints with bounded pagination", async () => {
-    const secrets = memorySecrets();
-    const mock = sequence([
-      json(deviceBody()),
-      json(tokenBody()),
-      json(userBody()),
-      json(installationsBody()),
-      json({ total_count: 1, repositories: [{ id: 1, full_name: "octo/repo" }] }),
-      json({ type: "file", size: 4, content: "dGVzdA==", encoding: "base64", path: "src/a.ts" }),
-      json({
-        total_count: 1,
-        workflow_runs: [{ id: 99, status: "completed", conclusion: "failure" }],
-      }),
-    ]);
-    const github = provider(secrets.service, mock.fetchImplementation);
-    await authorize(github);
-    await expect(
-      github.invoke("github.repositories.list", { installationId: 88, limit: 51 }, invocation()),
-    ).rejects.toThrow();
-    expect(mock.requests).toHaveLength(4);
-    await github.invoke(
-      "github.repositories.list",
-      { installationId: 88, limit: 1, page: 2 },
-      invocation(),
-    );
     await github.invoke(
       "github.contents.get",
       { owner: "octo", repo: "repo", path: "src/a.ts", ref: "feature/safe" },
@@ -575,52 +490,13 @@ describe("GitHubProvider", () => {
       { owner: "octo", repo: "repo", limit: 1 },
       invocation(),
     );
-    expect(mock.requests.slice(4).map(({ url }) => url)).toEqual([
-      "https://api.github.com/user/installations/88/repositories?per_page=1&page=2",
+    expect(mock.requests.slice(3).map(({ url }) => url)).toEqual([
       "https://api.github.com/repos/octo/repo/contents/src/a.ts?ref=feature%2Fsafe",
       "https://api.github.com/repos/octo/repo/actions/runs?per_page=1&page=1",
     ]);
   });
 
-  it("rejects unsafe refs, directory responses, oversized files, and excess fields", async () => {
-    const secrets = memorySecrets();
-    const mock = sequence([
-      json(deviceBody()),
-      json(tokenBody()),
-      json(userBody()),
-      json(installationsBody()),
-      json([{ type: "file", path: "nested" }]),
-      json({ type: "file", size: 1_048_577, content: "eA==" }),
-    ]);
-    const github = provider(secrets.service, mock.fetchImplementation);
-    await authorize(github);
-    await expect(
-      github.invoke(
-        "github.contents.get",
-        { owner: "octo", repo: "repo", path: "a", ref: "../main" },
-        invocation(),
-      ),
-    ).rejects.toThrow();
-    await expect(
-      github.invoke(
-        "github.contents.get",
-        { owner: "octo", repo: "repo", path: "dir" },
-        invocation(),
-      ),
-    ).rejects.toThrow(/directory/u);
-    await expect(
-      github.invoke(
-        "github.contents.get",
-        { owner: "octo", repo: "repo", path: "large.bin" },
-        invocation(),
-      ),
-    ).rejects.toThrow(/one-megabyte/u);
-    await expect(
-      github.invoke("github.identity.get", { token: accessValue }, invocation()),
-    ).rejects.toThrow();
-  });
-
-  it("bounds response bytes and sanitizes GitHub API errors", async () => {
+  it("bounds responses and sanitizes GitHub API errors", async () => {
     const secrets = memorySecrets();
     const sentinel = "private-server-error-and-token";
     const huge = "x".repeat(2 * 1024 * 1024 + 1);
@@ -628,7 +504,6 @@ describe("GitHubProvider", () => {
       json(deviceBody()),
       json(tokenBody()),
       json(userBody()),
-      json(installationsBody()),
       json({ message: sentinel }, 403),
       json({ value: huge }),
     ]);
@@ -654,12 +529,7 @@ describe("GitHubProvider", () => {
 
   it("enters uncertain state if an issued token cannot be durably persisted", async () => {
     const secrets = memorySecrets({ failSetAfterWrite: true });
-    const mock = sequence([
-      json(deviceBody()),
-      json(tokenBody()),
-      json(userBody()),
-      json(installationsBody()),
-    ]);
+    const mock = sequence([json(deviceBody()), json(tokenBody()), json(userBody())]);
     const github = provider(secrets.service, mock.fetchImplementation);
     const flow = await github.connect(["identity.read"], lifecycle());
     await expect(github.poll(flow.flowId, lifecycle())).rejects.toThrow(/persistence/u);
@@ -671,12 +541,7 @@ describe("GitHubProvider", () => {
 
   it("disconnect removes the package secret and invalidates in-memory access", async () => {
     const secrets = memorySecrets();
-    const mock = sequence([
-      json(deviceBody()),
-      json(tokenBody()),
-      json(userBody()),
-      json(installationsBody()),
-    ]);
+    const mock = sequence([json(deviceBody()), json(tokenBody()), json(userBody())]);
     const github = provider(secrets.service, mock.fetchImplementation);
     await authorize(github);
     await github.disconnect(lifecycle());

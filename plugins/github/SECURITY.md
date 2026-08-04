@@ -2,9 +2,9 @@
 
 ## Boundary
 
-The plugin accepts only a public GitHub App client ID. Device and refresh codes, access and refresh tokens, and authorization headers are never tool inputs or outputs. Stored credentials use the Harness-injected, encrypted, package-scoped secret store.
+The plugin accepts only a public GitHub OAuth App client ID. Device codes, access tokens, and authorization headers are never tool inputs or outputs. There is no client secret, private key, GitHub App installation, repository picker, refresh token, generic HTTP client, GraphQL document, shell, or token passthrough.
 
-GitHub App permissions and selected repositories provide the server-side ceiling. The signed-in user's own permissions further restrict the user access token. Harness capabilities and commit admission form a separate local policy boundary.
+The OAuth token requests `repo`, `read:org`, and `workflow`. Those scopes are intentionally broad enough for ordinary developer work across repositories the user can access, but never elevate the user's GitHub permissions. GitHub organization policy, SAML SSO, repository permissions, branch protections, and rulesets remain server-side ceilings. Harness capabilities, write approval, and commit admission form separate local boundaries.
 
 ## Network surface
 
@@ -14,18 +14,28 @@ The provider contacts only:
 - `https://github.com/login/oauth/access_token`
 - fixed paths under `https://api.github.com`
 
-It rejects redirects, bounds time and response bytes, validates identifiers and refs, and never accepts a URL, method, GraphQL document, shell command, or authorization token from a tool call.
+It rejects redirects, bounds time and response bytes, validates identifiers, paths, refs, SHAs, text lengths, and UTF-8 file bytes, and never accepts an origin, URL, REST method, or authorization token from a tool call. Repository enumeration uses only bounded `GET /user/repos`; installation APIs are never called.
 
 ## Mutations
 
-Only bounded issue create/update/comment and pull-request create/comment/review operations are present. Write capabilities are enabled by default but can still be disabled individually. Every mutation requires its capability plus `writeApproved: true`, then calls `beginCommit()` immediately before the network mutation. There are no delete, merge, git-object, branch, workflow, release, secrets, collaborator, installation, or administration mutations.
+The fixed mutation set is:
+
+- issue create/update/comment;
+- pull-request create/comment/review;
+- fork into the signed-in user's personal account;
+- branch creation from an existing same-repository ref; and
+- create/update one bounded UTF-8 repository file and commit it to an existing branch.
+
+All write capabilities are enabled by default but can be disabled individually. Every mutation requires its declared capability plus `writeApproved: true`, then calls `beginCommit()` immediately before the network mutation. Read-only lookups used to validate or resolve a target do not substitute for commit admission.
+
+There are no delete, merge, repository creation, branch deletion, settings, protection, collaborator, organization administration, billing, release, secret, deployment-key, OAuth App, or GitHub App mutations. `github.contents.put` can update a workflow file because the product requests `workflow`, but only through the same bounded single-file, approval-gated commit path.
 
 ## Credential lifecycle
 
-The provider verifies new and refreshed tokens with `GET /user` and `GET /user/installations`, validates the GitHub App token's empty OAuth scope and bearer type, supports rotating expiring user tokens, rejects expired refresh credentials, serializes secret mutations, and invalidates in-memory access on disconnect or `401`. If a token may have rotated but encrypted persistence did not complete, the provider enters an uncertain state and requires disconnect/reset.
+The provider accepts only a non-expiring bearer token response containing exactly the requested `repo`, `read:org`, and `workflow` scopes. It rejects refresh-token and expiring-token fields, verifies the identity with `GET /user`, serializes secret mutations, and invalidates in-memory access on disconnect or `401`. It never calls installation APIs. If GitHub issued a token but encrypted persistence may not have completed, the provider enters an uncertain state and requires disconnect/reset.
 
-Disconnect removes the local encrypted record but cannot revoke the GitHub authorization without a confidential app credential. Users can revoke the app in GitHub settings.
+Disconnect removes the local encrypted record but cannot revoke the OAuth token without a confidential app credential. Users can revoke the authorization under GitHub's Authorized OAuth Apps settings.
 
 ## Reporting
 
-Report suspected vulnerabilities privately to the TritonAI maintainers. Do not include access tokens, refresh tokens, device codes, private repository contents, or full authorization headers in reports or logs.
+Report suspected vulnerabilities privately to the TritonAI maintainers. Do not include access tokens, device codes, private repository contents, or full authorization headers in reports or logs.

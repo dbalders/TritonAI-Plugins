@@ -66,7 +66,7 @@ const provider = providerModule.createIntegrationProvider({
     set: () => Effect.void,
     remove: () => Effect.void,
   },
-  configuration: { clientId: "Iv1.1234567890abcdef" },
+  configuration: { clientId: "Ov23li1234567890abcd" },
 });
 assert(
   !isPromiseLike(provider) && provider.id === validated.provider,

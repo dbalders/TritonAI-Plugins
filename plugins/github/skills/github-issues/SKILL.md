@@ -11,4 +11,4 @@ Read the exact issue and relevant comments before proposing a mutation. Note tha
 
 Before creating, updating, closing, reopening, relabeling, reassigning, or commenting, summarize the exact repository, issue number, and intended change. A write requires the `issues.write` capability plus Harness approval. Do not work around a denied write with another tool.
 
-Use bounded queries and pagination. Do not claim a `404` proves nonexistence when app installation or repository selection could hide the resource.
+Use bounded queries and pagination. Do not claim a `404` proves nonexistence when repository visibility, OAuth authorization, SSO, organization policy, or user permission could hide the resource.

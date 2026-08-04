@@ -4,7 +4,8 @@ import * as Schema from "effect/Schema";
 import { IntegrationProviderPublicError, } from "./host-contract.js";
 export const GITHUB_PROVIDER_ID = "github";
 /** Package-local suffix; Harness adds the collision-free package namespace. */
-export const GITHUB_SECRET_SUFFIX = "github-app-user";
+export const GITHUB_SECRET_SUFFIX = "github-oauth-user";
+const LEGACY_GITHUB_APP_SECRET_SUFFIX = "github-app-user";
 const GITHUB_WEB_ORIGIN = "https://github.com";
 const GITHUB_API_ORIGIN = "https://api.github.com";
 const DEVICE_CODE_URL = `${GITHUB_WEB_ORIGIN}/login/device/code`;
@@ -17,10 +18,13 @@ const CONTENT_RESPONSE_BYTES = 3 * 1024 * 1024;
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TOKEN_CHARS = 2_048;
 const MAX_BODY_CHARS = 65_536;
-const ACCESS_TOKEN_SKEW_MS = 60_000;
+const MAX_COMMIT_MESSAGE_CHARS = 4_096;
+const REQUIRED_OAUTH_SCOPES = ["repo", "read:org", "workflow"];
+const REQUIRED_OAUTH_SCOPE = REQUIRED_OAUTH_SCOPES.join(" ");
 const CAPABILITY_NAMES = new Set([
     "identity.read",
     "repository.read",
+    "repository.write",
     "issues.write",
     "pull-requests.write",
 ]);
@@ -35,11 +39,16 @@ const Page = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 }));
 const REF_PATTERN = /^(?!\/|.*(?:^|\/)\.\.(?:\/|$))(?!.*(?:~|\^|:|\?|\*|\[|\\))(?!.*\p{Cc})(?!.*\s)[^/]+(?:\/[^/]+)*$/u;
 const Ref = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255), Schema.isPattern(REF_PATTERN)).annotate({ description: "Exact branch, tag, or commit ref without a refs/ prefix." });
 const ShaOrRef = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255), Schema.isPattern(REF_PATTERN)).annotate({ description: "Exact commit SHA, branch, or tag." });
+const PULL_HEAD_PATTERN = /^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,98}[A-Za-z0-9])?:)?(?!\/)(?!.*(?:^|[/:])\.\.(?:\/|$))(?!.*(?:~|\^|:|\?|\*|\[|\\))(?!.*\p{Cc})(?!.*\s)[^/]+(?:\/[^/]+)*$/u;
+const PullHead = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(356), Schema.isPattern(PULL_HEAD_PATTERN)).annotate({ description: "Exact branch or owner-qualified fork branch." });
 const FilePath = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_024), Schema.isPattern(/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*\p{Cc})[^/]+(?:\/[^/]+)*$/u)).annotate({ description: "Exact repository-relative file path; directories are not returned." });
 const Query = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256), Schema.isPattern(/^(?!\s*$)[^:\p{Cc}]+$/u)).annotate({ description: "Bounded free-text search terms; qualifiers are not accepted." });
 const Title = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
 const Body = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_BODY_CHARS));
 const OptionalBody = Schema.String.check(Schema.isMaxLength(MAX_BODY_CHARS));
+const CommitMessage = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_COMMIT_MESSAGE_CHARS));
+const FileContent = Schema.String.check(Schema.isMaxLength(MAX_FILE_BYTES));
+const GitObjectSha = Schema.String.check(Schema.isMinLength(40), Schema.isMaxLength(40), Schema.isPattern(/^[0-9a-f]{40}$/u)).annotate({ description: "Exact Git object SHA." });
 const Label = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100), Schema.isPattern(/^[^,\p{Cc}]+$/u)).annotate({ description: "Exact label name; commas are not accepted." });
 const Login = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100));
 const Labels = Schema.Array(Label).check(Schema.isMaxLength(20));
@@ -47,14 +56,23 @@ const Assignees = Schema.Array(Login).check(Schema.isMaxLength(10));
 const ownerRepo = { owner: Owner, repo: Repo };
 const pagination = { limit: Schema.optionalKey(Limit), page: Schema.optionalKey(Page) };
 const EmptyInput = Schema.Record(Schema.String, Schema.Never);
-const InstallationsListInput = Schema.Struct(pagination);
-const RepositoriesListInput = Schema.Struct({ installationId: PositiveId, ...pagination });
+const RepositoriesListInput = Schema.Struct(pagination);
 const RepositoryGetInput = Schema.Struct(ownerRepo);
+const RepositoryForkInput = Schema.Struct(ownerRepo);
+const BranchCreateInput = Schema.Struct({ ...ownerRepo, branch: Ref, fromRef: ShaOrRef });
 const RepositorySearchInput = Schema.Struct({ query: Query, ...pagination });
 const ContentsGetInput = Schema.Struct({
     ...ownerRepo,
     path: FilePath,
     ref: Schema.optionalKey(Ref),
+});
+const ContentsPutInput = Schema.Struct({
+    ...ownerRepo,
+    path: FilePath,
+    branch: Ref,
+    message: CommitMessage,
+    content: FileContent,
+    sha: Schema.optionalKey(GitObjectSha),
 });
 const CodeSearchInput = Schema.Struct({ ...ownerRepo, query: Query, ...pagination });
 const IssuesListInput = Schema.Struct({
@@ -94,7 +112,7 @@ const PullCreateInput = Schema.Struct({
     ...ownerRepo,
     title: Title,
     body: Schema.optionalKey(OptionalBody),
-    head: Ref,
+    head: PullHead,
     base: Ref,
     draft: Schema.optionalKey(Schema.Boolean),
 });
@@ -140,11 +158,13 @@ const tool = (name, description, input, readOnly = true, destructive = false) =>
 });
 export const GITHUB_TOOLS = [
     tool("github.identity.get", "Read the connected GitHub account through GET /user.", EmptyInput),
-    tool("github.installations.list", "List bounded GitHub App installations visible to this user token.", InstallationsListInput),
-    tool("github.repositories.list", "List bounded repositories granted to one exact GitHub App installation.", RepositoriesListInput),
+    tool("github.repositories.list", "List bounded repositories accessible to the authenticated GitHub user.", RepositoriesListInput),
     tool("github.repositories.get", "Read one exact repository.", RepositoryGetInput),
+    tool("github.repositories.fork", "Fork one repository into the authenticated user's personal account.", RepositoryForkInput, false),
+    tool("github.branches.create", "Create one branch from an existing commit, branch, or tag in the same repository.", BranchCreateInput, false),
     tool("github.repositories.search", "Search repositories with a bounded GitHub search query.", RepositorySearchInput),
     tool("github.contents.get", "Read one exact repository file no larger than one megabyte.", ContentsGetInput),
+    tool("github.contents.put", "Create or update one bounded UTF-8 repository file and commit it to an existing branch.", ContentsPutInput, false, true),
     tool("github.code.search", "Search code in one exact repository.", CodeSearchInput),
     tool("github.issues.list", "List bounded issues and pull-request issue records in one repository.", IssuesListInput),
     tool("github.issues.search", "Search issues and pull requests in one exact repository.", IssuesSearchInput),
@@ -198,6 +218,17 @@ function validateCapabilities(value) {
     }
     return [...value].toSorted();
 }
+function validateOauthScopes(value) {
+    if (!Array.isArray(value) ||
+        value.length !== REQUIRED_OAUTH_SCOPES.length ||
+        value.length !== new Set(value).size ||
+        value.some((item) => typeof item !== "string"))
+        throw new Error("Stored GitHub credential is invalid.");
+    const scopes = [...value].toSorted();
+    if (scopes.join("\n") !== [...REQUIRED_OAUTH_SCOPES].toSorted().join("\n"))
+        throw new Error("Stored GitHub credential is invalid.");
+    return scopes;
+}
 function parseCredential(bytes) {
     let parsed;
     try {
@@ -210,9 +241,7 @@ function parseCredential(bytes) {
     const allowed = new Set([
         "version",
         "accessToken",
-        "accessTokenExpiresAt",
-        "refreshToken",
-        "refreshTokenExpiresAt",
+        "oauthScopes",
         "account",
         "grantedCapabilities",
         "updatedAt",
@@ -220,51 +249,40 @@ function parseCredential(bytes) {
     const account = asRecord(value.account, "Stored GitHub credential is invalid.");
     if (!exactKeys(value, allowed) ||
         !exactKeys(account, new Set(["login", "id"])) ||
-        value.version !== 1 ||
+        value.version !== 2 ||
         !validIso(value.updatedAt))
         throw new Error("Stored GitHub credential is invalid.");
     const accessToken = boundedString(value.accessToken, MAX_TOKEN_CHARS);
     const login = boundedString(account.login, 100);
     const id = boundedInt(account.id, 1, Number.MAX_SAFE_INTEGER);
-    const accessTokenExpiresAt = value.accessTokenExpiresAt;
-    const refreshToken = value.refreshToken;
-    const refreshTokenExpiresAt = value.refreshTokenExpiresAt;
-    const expiring = accessTokenExpiresAt !== null;
-    if ((expiring &&
-        (!validIso(accessTokenExpiresAt) ||
-            typeof refreshToken !== "string" ||
-            !validIso(refreshTokenExpiresAt))) ||
-        (!expiring && (refreshToken !== null || refreshTokenExpiresAt !== null)))
-        throw new Error("Stored GitHub credential is invalid.");
     return {
-        version: 1,
+        version: 2,
         accessToken,
-        accessTokenExpiresAt: expiring ? accessTokenExpiresAt : null,
-        refreshToken: expiring ? boundedString(refreshToken, MAX_TOKEN_CHARS) : null,
-        refreshTokenExpiresAt: expiring ? refreshTokenExpiresAt : null,
+        oauthScopes: validateOauthScopes(value.oauthScopes),
         account: { login, id },
         grantedCapabilities: validateCapabilities(value.grantedCapabilities),
         updatedAt: value.updatedAt,
     };
 }
 function parseTokenGrant(json) {
-    if (boundedString(json.token_type, 32).toLowerCase() !== "bearer" ||
-        boundedString(json.scope, 512, true) !== "")
+    if (boundedString(json.token_type, 32).toLowerCase() !== "bearer")
         throw new Error("GitHub returned an unexpected token grant.");
+    if (json.expires_in !== undefined ||
+        json.refresh_token !== undefined ||
+        json.refresh_token_expires_in !== undefined)
+        throw new Error("GitHub returned an unexpected expiring token grant.");
     const accessToken = boundedString(json.access_token, MAX_TOKEN_CHARS);
-    if (json.expires_in === undefined) {
-        if (json.refresh_token !== undefined || json.refresh_token_expires_in !== undefined)
-            throw new Error("GitHub returned an inconsistent token grant.");
-        return { accessToken, expiresAt: null, refreshToken: null, refreshExpiresAt: null };
-    }
-    const expires = boundedInt(json.expires_in, 60, 86_400);
-    const refreshExpires = boundedInt(json.refresh_token_expires_in, 60, 31_536_000);
-    return {
-        accessToken,
-        expiresAt: Date.now() + expires * 1_000,
-        refreshToken: boundedString(json.refresh_token, MAX_TOKEN_CHARS),
-        refreshExpiresAt: Date.now() + refreshExpires * 1_000,
-    };
+    const scopeValue = boundedString(json.scope, 512);
+    const scopes = scopeValue
+        .split(",")
+        .map((scope) => scope.trim())
+        .filter((scope) => scope.length > 0)
+        .toSorted();
+    if (scopes.length !== REQUIRED_OAUTH_SCOPES.length ||
+        scopes.length !== new Set(scopes).size ||
+        scopes.join("\n") !== [...REQUIRED_OAUTH_SCOPES].toSorted().join("\n"))
+        throw new Error("GitHub did not grant the required OAuth scopes.");
+    return { accessToken, oauthScopes: scopes };
 }
 async function readJson(response, maximumBytes) {
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
@@ -356,8 +374,8 @@ export class GitHubProvider {
     constructor(secrets, configuration, fetchImplementation = globalThis.fetch, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
         this.#secrets = secrets;
         const clientId = configuration.clientId.trim();
-        if (!/^(?:Iv1\.[0-9a-fA-F]{16}|[A-Za-z0-9]{20,128})$/u.test(clientId))
-            throw new Error("GitHub requires a valid public GitHub App client ID.");
+        if (!/^(?!Iv)[A-Za-z0-9]{20,128}$/u.test(clientId))
+            throw new Error("GitHub requires a valid public GitHub OAuth App client ID.");
         if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 30_000)
             throw new Error("GitHub requires a bounded request timeout.");
         this.#clientId = clientId;
@@ -414,8 +432,9 @@ export class GitHubProvider {
         const stored = await Effect.runPromise(this.#secrets.get(GITHUB_SECRET_SUFFIX), { signal });
         return Option.isSome(stored) ? parseCredential(stored.value) : null;
     }
-    #writeCredential(value, signal) {
-        return Effect.runPromise(this.#secrets.set(GITHUB_SECRET_SUFFIX, encoder.encode(JSON.stringify(value))), { signal });
+    async #writeCredential(value, signal) {
+        await Effect.runPromise(this.#secrets.set(GITHUB_SECRET_SUFFIX, encoder.encode(JSON.stringify(value))), { signal });
+        await Effect.runPromise(this.#secrets.remove(LEGACY_GITHUB_APP_SECRET_SUFFIX), { signal });
     }
     async #beginCommit(context) {
         if (!context || typeof context.beginCommit !== "function")
@@ -448,9 +467,9 @@ export class GitHubProvider {
             if (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0")
                 throw new IntegrationProviderPublicError("GitHub is rate limiting this account. Try again after the rate-limit reset.");
             if (response.status === 403)
-                throw new IntegrationProviderPublicError("GitHub denied this request. Check the GitHub App installation, repository selection, and permissions.");
+                throw new IntegrationProviderPublicError("GitHub denied this request. Check the signed-in user's repository permission, organization policy, and OAuth authorization.");
             if (response.status === 404)
-                throw new IntegrationProviderPublicError("GitHub could not find that item, or the installed app cannot access it.");
+                throw new IntegrationProviderPublicError("GitHub could not find that item, or the signed-in user cannot access it.");
             if (response.status === 409)
                 throw new IntegrationProviderPublicError("GitHub could not complete the request because the repository state conflicts with it.");
             if (response.status === 422)
@@ -464,9 +483,7 @@ export class GitHubProvider {
         return json;
     }
     async #verify(token, signal) {
-        const account = accountFrom(await this.#api("/user", token, { signal }));
-        collectionField(await this.#api("/user/installations?per_page=1&page=1", token, { signal }), "installations", 1);
-        return account;
+        return accountFrom(await this.#api("/user", token, { signal }));
     }
     async status(context) {
         if (this.#closed)
@@ -521,28 +538,11 @@ export class GitHubProvider {
                     grantedCapabilities: [],
                     message: null,
                 };
-            const accessExpiry = credential.accessTokenExpiresAt === null
-                ? null
-                : Date.parse(credential.accessTokenExpiresAt);
-            const refreshExpiry = credential.refreshTokenExpiresAt === null
-                ? null
-                : Date.parse(credential.refreshTokenExpiresAt);
-            if (accessExpiry !== null &&
-                accessExpiry <= now &&
-                (refreshExpiry === null || refreshExpiry <= now))
-                return {
-                    state: "error",
-                    accountLabel: credential.account.login,
-                    grantedCapabilities: credential.grantedCapabilities,
-                    message: "GitHub sign-in expired. Reconnect GitHub.",
-                };
             return {
                 state: "connected",
                 accountLabel: credential.account.login,
                 grantedCapabilities: credential.grantedCapabilities,
-                message: accessExpiry !== null && accessExpiry <= now
-                    ? "Connected; GitHub access will refresh before use."
-                    : "Connected through the TritonAI GitHub App. Repository access depends on app installations.",
+                message: "Connected through GitHub OAuth. Access follows the signed-in user's GitHub permissions.",
             };
         }
         catch {
@@ -574,9 +574,9 @@ export class GitHubProvider {
             throw new Error("Unsupported GitHub capability.");
         const generation = this.#generation;
         const requested = [...new Set(capabilities)].toSorted();
-        const { response, json: raw } = await this.#postAuth(DEVICE_CODE_URL, { client_id: this.#clientId }, context?.signal);
+        const { response, json: raw } = await this.#postAuth(DEVICE_CODE_URL, { client_id: this.#clientId, scope: REQUIRED_OAUTH_SCOPE }, context?.signal);
         if (!response.ok)
-            throw new IntegrationProviderPublicError("GitHub sign-in could not start. Confirm device flow is enabled for the GitHub App.");
+            throw new IntegrationProviderPublicError("GitHub sign-in could not start. Confirm device flow is enabled for the GitHub OAuth App.");
         const json = asRecord(raw);
         const deviceCode = boundedString(json.device_code, MAX_TOKEN_CHARS);
         const userCode = boundedString(json.user_code, 64);
@@ -670,7 +670,7 @@ export class GitHubProvider {
                     return {
                         state: "failed",
                         retryAfterSeconds: null,
-                        message: "Device flow is not enabled for the TritonAI GitHub App.",
+                        message: "Device flow is not enabled for the TritonAI GitHub OAuth App.",
                     };
                 return {
                     state: "failed",
@@ -682,11 +682,9 @@ export class GitHubProvider {
             tokenIssued = true;
             const account = await this.#verify(grant.accessToken, signal);
             const credential = {
-                version: 1,
+                version: 2,
                 accessToken: grant.accessToken,
-                accessTokenExpiresAt: grant.expiresAt === null ? null : new Date(grant.expiresAt).toISOString(),
-                refreshToken: grant.refreshToken,
-                refreshTokenExpiresAt: grant.refreshExpiresAt === null ? null : new Date(grant.refreshExpiresAt).toISOString(),
+                oauthScopes: grant.oauthScopes,
                 account,
                 grantedCapabilities: flow.capabilities,
                 updatedAt: new Date().toISOString(),
@@ -707,7 +705,6 @@ export class GitHubProvider {
                 this.#pending.clear();
                 this.#access = {
                     token: grant.accessToken,
-                    expiresAt: grant.expiresAt,
                     capabilities: flow.capabilities,
                     account,
                 };
@@ -715,7 +712,7 @@ export class GitHubProvider {
             return {
                 state: "connected",
                 retryAfterSeconds: null,
-                message: `GitHub is connected as ${account.login}. Install the TritonAI GitHub App on repositories you want to use.`,
+                message: `GitHub is connected as ${account.login}. Repository access follows this account's GitHub permissions.`,
             };
         }
         catch (error) {
@@ -737,78 +734,22 @@ export class GitHubProvider {
                 this.#verifiedCredential = null;
                 return;
             }
-            const expiresAt = credential.accessTokenExpiresAt === null
-                ? null
-                : Date.parse(credential.accessTokenExpiresAt);
-            if (expiresAt === null || expiresAt - ACCESS_TOKEN_SKEW_MS > Date.now()) {
-                const cached = this.#verifiedCredential;
-                const account = cached?.revision === this.#credentialRevision && cached.token === credential.accessToken
-                    ? cached.account
-                    : await this.#verify(credential.accessToken, context?.signal);
-                if (account.id !== credential.account.id)
-                    throw new Error("GitHub token identity changed unexpectedly.");
-                this.#verifiedCredential = {
-                    revision: this.#credentialRevision,
-                    token: credential.accessToken,
-                    account,
-                };
-                this.#access = {
-                    token: credential.accessToken,
-                    expiresAt,
-                    capabilities: credential.grantedCapabilities,
-                    account,
-                };
-                return;
-            }
-            if (credential.refreshToken === null ||
-                credential.refreshTokenExpiresAt === null ||
-                Date.parse(credential.refreshTokenExpiresAt) <= Date.now())
-                throw new IntegrationProviderPublicError("GitHub sign-in expired. Reconnect GitHub.");
-            let admitted = false;
-            let rotated = false;
-            try {
-                const signal = await this.#beginCommit(context);
-                admitted = true;
-                const { response, json: raw } = await this.#postAuth(TOKEN_URL, {
-                    client_id: this.#clientId,
-                    grant_type: "refresh_token",
-                    refresh_token: credential.refreshToken,
-                }, signal);
-                if (!response.ok)
-                    throw new IntegrationProviderPublicError("GitHub access could not be refreshed. Reconnect GitHub.");
-                const grant = parseTokenGrant(asRecord(raw));
-                rotated = true;
-                const account = await this.#verify(grant.accessToken, signal);
-                if (account.id !== credential.account.id)
-                    throw new Error("GitHub token identity changed unexpectedly.");
-                const next = {
-                    ...credential,
-                    accessToken: grant.accessToken,
-                    accessTokenExpiresAt: grant.expiresAt === null ? null : new Date(grant.expiresAt).toISOString(),
-                    refreshToken: grant.refreshToken,
-                    refreshTokenExpiresAt: grant.refreshExpiresAt === null ? null : new Date(grant.refreshExpiresAt).toISOString(),
-                    account,
-                    updatedAt: new Date().toISOString(),
-                };
-                await this.#writeCredential(next, signal);
-                this.#credentialRevision += 1;
-                this.#verifiedCredential = {
-                    revision: this.#credentialRevision,
-                    token: grant.accessToken,
-                    account,
-                };
-                this.#access = {
-                    token: grant.accessToken,
-                    expiresAt: grant.expiresAt,
-                    capabilities: next.grantedCapabilities,
-                    account,
-                };
-            }
-            catch (error) {
-                if (admitted && rotated)
-                    this.#uncertainCredentialState = true;
-                throw error;
-            }
+            const cached = this.#verifiedCredential;
+            const account = cached?.revision === this.#credentialRevision && cached.token === credential.accessToken
+                ? cached.account
+                : await this.#verify(credential.accessToken, context?.signal);
+            if (account.id !== credential.account.id)
+                throw new Error("GitHub token identity changed unexpectedly.");
+            this.#verifiedCredential = {
+                revision: this.#credentialRevision,
+                token: credential.accessToken,
+                account,
+            };
+            this.#access = {
+                token: credential.accessToken,
+                capabilities: credential.grantedCapabilities,
+                account,
+            };
         });
     }
     disconnect(context) {
@@ -823,6 +764,7 @@ export class GitHubProvider {
                 const signal = await this.#beginCommit(context);
                 admitted = true;
                 await Effect.runPromise(this.#secrets.remove(GITHUB_SECRET_SUFFIX), { signal });
+                await Effect.runPromise(this.#secrets.remove(LEGACY_GITHUB_APP_SECRET_SUFFIX), { signal });
                 this.#credentialRevision += 1;
                 this.#uncertainCredentialState = false;
             }
@@ -838,8 +780,7 @@ export class GitHubProvider {
     }
     #require(capability) {
         const access = this.#access;
-        if (!access ||
-            (access.expiresAt !== null && access.expiresAt - ACCESS_TOKEN_SKEW_MS <= Date.now()))
+        if (!access)
             throw new IntegrationProviderPublicError("GitHub access needs preparation or reconnection before use.");
         if (!access.capabilities.includes(capability))
             throw new IntegrationProviderPublicError(`GitHub ${capability} access is not enabled.`);
@@ -872,13 +813,20 @@ export class GitHubProvider {
             "github.pulls.comment.create",
             "github.pulls.review.create",
         ].includes(toolName);
+        const isRepositoryWrite = [
+            "github.repositories.fork",
+            "github.branches.create",
+            "github.contents.put",
+        ].includes(toolName);
         const capability = isIssueWrite
             ? "issues.write"
             : isPullWrite
                 ? "pull-requests.write"
-                : toolName === "github.identity.get" || toolName === "github.installations.list"
-                    ? "identity.read"
-                    : "repository.read";
+                : isRepositoryWrite
+                    ? "repository.write"
+                    : toolName === "github.identity.get"
+                        ? "identity.read"
+                        : "repository.read";
         const access = this.#require(capability);
         const generation = this.#generation;
         const read = async (path, maximumBytes) => {
@@ -899,19 +847,27 @@ export class GitHubProvider {
             accountFrom(result);
             return result;
         }
-        if (toolName === "github.installations.list") {
-            const values = await this.#decode(InstallationsListInput, input);
-            const p = page(values);
-            return collectionField(await read(`/user/installations?${params({ per_page: p.limit, page: p.page })}`), "installations", p.limit);
-        }
         if (toolName === "github.repositories.list") {
             const values = await this.#decode(RepositoriesListInput, input);
             const p = page(values);
-            return collectionField(await read(`/user/installations/${values.installationId}/repositories?${params({ per_page: p.limit, page: p.page })}`), "repositories", p.limit);
+            return listResult(await read(`/user/repos?${params({ visibility: "all", affiliation: "owner,collaborator,organization_member", sort: "updated", direction: "desc", per_page: p.limit, page: p.page })}`), p.limit);
         }
         if (toolName === "github.repositories.get") {
             const values = await this.#decode(RepositoryGetInput, input);
             return asRecord(await read(`/repos/${encodeURIComponent(values.owner)}/${encodeURIComponent(values.repo)}`));
+        }
+        if (toolName === "github.repositories.fork") {
+            const values = await this.#decode(RepositoryForkInput, input);
+            return write(`/repos/${encodeURIComponent(values.owner)}/${encodeURIComponent(values.repo)}/forks`, "POST", {});
+        }
+        if (toolName === "github.branches.create") {
+            const values = await this.#decode(BranchCreateInput, input);
+            const prefix = `/repos/${encodeURIComponent(values.owner)}/${encodeURIComponent(values.repo)}`;
+            const source = asRecord(await read(`${prefix}/commits/${encodeURIComponent(values.fromRef)}`));
+            const sha = boundedString(source.sha, 64);
+            if (!/^[0-9a-f]{40}$/u.test(sha))
+                throw new Error("GitHub returned an invalid commit SHA.");
+            return write(`${prefix}/git/refs`, "POST", { ref: `refs/heads/${values.branch}`, sha });
         }
         if (toolName === "github.repositories.search") {
             const values = await this.#decode(RepositorySearchInput, input);
@@ -931,6 +887,18 @@ export class GitHubProvider {
                 file.content.length > 1_500_000)
                 throw new IntegrationProviderPublicError("GitHub file content is unavailable or exceeds the one-megabyte limit.");
             return file;
+        }
+        if (toolName === "github.contents.put") {
+            const values = await this.#decode(ContentsPutInput, input);
+            const bytes = encoder.encode(values.content);
+            if (bytes.byteLength > MAX_FILE_BYTES)
+                throw new IntegrationProviderPublicError("GitHub file content exceeds the one-megabyte UTF-8 limit.");
+            return write(`/repos/${encodeURIComponent(values.owner)}/${encodeURIComponent(values.repo)}/contents/${values.path.split("/").map(encodeURIComponent).join("/")}`, "PUT", {
+                message: values.message,
+                content: Buffer.from(bytes).toString("base64"),
+                branch: values.branch,
+                ...(values.sha === undefined ? {} : { sha: values.sha }),
+            });
         }
         if (toolName === "github.code.search") {
             const values = await this.#decode(CodeSearchInput, input);

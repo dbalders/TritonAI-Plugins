@@ -11,7 +11,7 @@ const secrets: IntegrationSecretStore = {
   set: () => Effect.void,
   remove: () => Effect.void,
 };
-const validConfiguration = { clientId: "Iv1.1234567890abcdef" } as const;
+const validConfiguration = { clientId: "Ov23li1234567890abcd" } as const;
 
 describe("GitHub plugin factory", () => {
   it("constructs the exact manifest provider and effect surface", () => {
@@ -38,6 +38,7 @@ describe("GitHub plugin factory", () => {
     expect(manifest.capabilities.map(({ id, access }) => ({ id, access }))).toEqual([
       { id: "identity.read", access: "default" },
       { id: "repository.read", access: "default" },
+      { id: "repository.write", access: "default" },
       { id: "issues.write", access: "default" },
       { id: "pull-requests.write", access: "default" },
     ]);

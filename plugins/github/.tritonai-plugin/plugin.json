@@ -4,20 +4,26 @@
   "manifestVersion": 2,
   "id": "github",
   "name": "GitHub",
-  "description": "Connect a GitHub App to read installed repositories and perform bounded issue and pull-request writes.",
+  "description": "Connect a GitHub account with OAuth to read repositories and perform bounded developer workflows.",
   "version": "1.0.0",
   "provider": "github",
   "capabilities": [
     {
       "id": "identity.read",
       "displayName": "Read GitHub identity",
-      "description": "Read the signed-in GitHub account and accessible TritonAI GitHub App installations.",
+      "description": "Read the signed-in GitHub account.",
       "access": "default"
     },
     {
       "id": "repository.read",
       "displayName": "Read repositories",
-      "description": "Search and read bounded repository, file, issue, pull-request, commit-check, and Actions metadata from repositories where the GitHub App is installed.",
+      "description": "Search and read bounded repository, file, issue, pull-request, commit-check, and Actions metadata available to the signed-in user.",
+      "access": "default"
+    },
+    {
+      "id": "repository.write",
+      "displayName": "Contribute repository changes",
+      "description": "Fork repositories, create branches, and create or update bounded files with commits. Cannot delete repositories, merge, or administer settings.",
       "access": "default"
     },
     {
@@ -29,7 +35,7 @@
     {
       "id": "pull-requests.write",
       "displayName": "Create and review pull requests",
-      "description": "Create pull requests from existing branches, add comments, and submit reviews. Cannot merge pull requests or write commits or branches.",
+      "description": "Create pull requests, add comments, and submit reviews. Cannot merge pull requests.",
       "access": "default"
     }
   ],
@@ -42,16 +48,9 @@
       "effect": "read"
     },
     {
-      "name": "github.installations.list",
-      "displayName": "List GitHub App installations",
-      "description": "List bounded GitHub App installations accessible to the connected account.",
-      "capabilities": ["identity.read"],
-      "effect": "read"
-    },
-    {
       "name": "github.repositories.list",
       "displayName": "List repositories",
-      "description": "List bounded repositories available through the connected GitHub App.",
+      "description": "List bounded repositories available to the signed-in GitHub user.",
       "capabilities": ["repository.read"],
       "effect": "read"
     },
@@ -61,6 +60,20 @@
       "description": "Read metadata for one exact repository.",
       "capabilities": ["repository.read"],
       "effect": "read"
+    },
+    {
+      "name": "github.repositories.fork",
+      "displayName": "Fork repository",
+      "description": "Fork one repository into the signed-in user's personal account.",
+      "capabilities": ["repository.write"],
+      "effect": "write"
+    },
+    {
+      "name": "github.branches.create",
+      "displayName": "Create branch",
+      "description": "Create one branch from an existing commit, branch, or tag in the same repository.",
+      "capabilities": ["repository.write"],
+      "effect": "write"
     },
     {
       "name": "github.repositories.search",
@@ -75,6 +88,13 @@
       "description": "Read one exact bounded file at an optional repository ref.",
       "capabilities": ["repository.read"],
       "effect": "read"
+    },
+    {
+      "name": "github.contents.put",
+      "displayName": "Commit repository file",
+      "description": "Create or update one bounded UTF-8 file and commit it to an existing branch.",
+      "capabilities": ["repository.write"],
+      "effect": "write"
     },
     {
       "name": "github.code.search",
@@ -220,8 +240,8 @@
   "skills": [
     {
       "name": "github-repositories",
-      "description": "Find and read GitHub repositories, files, and code through TritonAI provider tools. Use when the user asks to inspect GitHub source or repository metadata without changing it.",
-      "capabilities": ["identity.read", "repository.read"]
+      "description": "Find, read, fork, branch, and commit bounded GitHub repository content through TritonAI provider tools. Use for repository inspection and ordinary contribution setup.",
+      "capabilities": ["identity.read", "repository.read", "repository.write"]
     },
     {
       "name": "github-issues",
@@ -230,8 +250,8 @@
     },
     {
       "name": "github-pull-requests",
-      "description": "Read, create, comment on, or review GitHub pull requests through TritonAI provider tools. Never assume gh CLI authentication or merge access.",
-      "capabilities": ["repository.read", "pull-requests.write"]
+      "description": "Read, prepare branches and commits for, create, comment on, or review GitHub pull requests through TritonAI provider tools. Never assume gh CLI authentication or merge access.",
+      "capabilities": ["repository.read", "repository.write", "pull-requests.write"]
     },
     {
       "name": "github-actions",
