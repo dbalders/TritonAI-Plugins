@@ -29,6 +29,12 @@ describe("GitHub plugin factory", () => {
     expect(
       provider.tools.map(({ input }) => Schema.toJsonSchemaDocument(input).schema.type),
     ).toEqual(provider.tools.map(() => "object"));
+    expect(manifest.capabilities.map(({ id, access }) => ({ id, access }))).toEqual([
+      { id: "identity.read", access: "default" },
+      { id: "repository.read", access: "default" },
+      { id: "issues.write", access: "default" },
+      { id: "pull-requests.write", access: "default" },
+    ]);
   });
 
   it("accepts only an exact public clientId configuration without disclosing values", () => {

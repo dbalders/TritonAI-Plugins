@@ -33,11 +33,10 @@ Harness configuration must contain exactly:
 
 ## Capability model
 
-- `identity.read` and `repository.read` are enabled by default.
-- `issues.write` and `pull-requests.write` are explicit opt-ins.
+- All four capabilities are enabled by default, including `issues.write` and `pull-requests.write`.
 - Every mutation is declared `effect: write`, checks `context.writeApproved`, and obtains `beginCommit()` before the request is sent.
 
-GitHub App installation permissions are the outer server-enforced ceiling. Harness capabilities are an additional per-user policy boundary: installing an app with issue or pull-request write permission does not automatically enable TritonAI write tools.
+GitHub App installation permissions are the outer server-enforced ceiling. Harness capabilities remain a per-user policy boundary and can be disabled individually. Default write access does not bypass the active task's write-approval policy.
 
 ## Deliberate v1 limits
 
@@ -49,7 +48,7 @@ The file tool reads one exact file, rejects directories, and has a one-megabyte 
 
 ## Sign-in and recovery
 
-1. Enable the desired capabilities in Harness and choose Connect.
+1. Enable the plugin, review its default capabilities, and choose Connect.
 2. Open the displayed `https://github.com/login/device` address and enter the one-time code.
 3. Authorize the GitHub App. Install it on the desired personal or organization repositories if it is not already installed.
 4. Harness polls no faster than GitHub's returned interval and verifies the resulting token with `GET /user` plus `GET /user/installations` before storing it.

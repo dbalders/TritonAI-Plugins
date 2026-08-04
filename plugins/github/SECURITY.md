@@ -18,7 +18,7 @@ It rejects redirects, bounds time and response bytes, validates identifiers and 
 
 ## Mutations
 
-Only bounded issue create/update/comment and pull-request create/comment/review operations are present. Every mutation requires both an enabled opt-in capability and `writeApproved: true`, then calls `beginCommit()` immediately before the network mutation. There are no delete, merge, git-object, branch, workflow, release, secrets, collaborator, installation, or administration mutations.
+Only bounded issue create/update/comment and pull-request create/comment/review operations are present. Write capabilities are enabled by default but can still be disabled individually. Every mutation requires its capability plus `writeApproved: true`, then calls `beginCommit()` immediately before the network mutation. There are no delete, merge, git-object, branch, workflow, release, secrets, collaborator, installation, or administration mutations.
 
 ## Credential lifecycle
 

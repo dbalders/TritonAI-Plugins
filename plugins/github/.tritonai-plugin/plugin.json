@@ -24,13 +24,13 @@
       "id": "issues.write",
       "displayName": "Create and edit issues",
       "description": "Create or narrowly update issues and add issue comments. Cannot delete issues or manage repository settings.",
-      "access": "opt-in"
+      "access": "default"
     },
     {
       "id": "pull-requests.write",
       "displayName": "Create and review pull requests",
       "description": "Create pull requests from existing branches, add comments, and submit reviews. Cannot merge pull requests or write commits or branches.",
-      "access": "opt-in"
+      "access": "default"
     }
   ],
   "tools": [
