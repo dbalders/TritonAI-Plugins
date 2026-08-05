@@ -8,8 +8,8 @@ import { pathToFileURL } from "node:url";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
+import { assertTrustedHarnessCheckout } from "../../../scripts/harness-contract.mjs";
 import { assertProviderRuntimeDependencies } from "../../../scripts/provider-runtime-dependencies.mjs";
-import { REVIEWED_HARNESS_COMMIT } from "../../../scripts/reviewed-harness.mjs";
 
 const packageRoot = Path.resolve(import.meta.dirname, "..");
 const repositoryRoot = Path.resolve(packageRoot, "../..");
@@ -27,36 +27,7 @@ function isPromiseLike(value) {
   );
 }
 
-assert(
-  typeof harnessRoot === "string" && harnessRoot.length > 0,
-  "TRITONAI_HARNESS_ROOT must identify the exact reviewed Harness checkout.",
-);
-assert(
-  /^[a-f0-9]{40}$/u.test(expectedHarnessCommit ?? ""),
-  "TRITONAI_HARNESS_COMMIT must be the full reviewed Harness commit SHA.",
-);
-assert(
-  expectedHarnessCommit === REVIEWED_HARNESS_COMMIT,
-  `TRITONAI_HARNESS_COMMIT must match the repository-reviewed Harness commit ${REVIEWED_HARNESS_COMMIT}.`,
-);
-const harness = Path.resolve(harnessRoot);
-const git = spawnSync("git", ["rev-parse", "HEAD"], { cwd: harness, encoding: "utf8" });
-assert(git.status === 0, `Harness checkout is unavailable at ${harness}.`);
-const actualHead = git.stdout.trim();
-assert(/^[a-f0-9]{40}$/u.test(actualHead), "Harness HEAD must be a full commit SHA.");
-assert(
-  actualHead === REVIEWED_HARNESS_COMMIT,
-  `Harness checkout is at ${actualHead}, expected ${REVIEWED_HARNESS_COMMIT}.`,
-);
-const harnessStatus = spawnSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
-  cwd: harness,
-  encoding: "utf8",
-});
-assert(harnessStatus.status === 0, "Could not verify the Harness working-tree state.");
-assert(
-  harnessStatus.stdout.trim() === "",
-  "Harness worktree must be clean so the provider contract uses only reviewed contents.",
-);
+const { actualHead, harness } = assertTrustedHarnessCheckout(harnessRoot, expectedHarnessCommit);
 
 const manifest = JSON.parse(
   await Fs.readFile(Path.join(packageRoot, ".tritonai-plugin", "plugin.json"), "utf8"),

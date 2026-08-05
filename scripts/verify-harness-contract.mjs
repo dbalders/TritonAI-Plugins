@@ -4,53 +4,21 @@ import { spawnSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 
-import * as YAML from "yaml";
-
 import { discoverPluginDirectories } from "./plugin-directories.mjs";
+import { assertTrustedHarnessCheckout, verifyHarnessEffectRuntime } from "./harness-contract.mjs";
 import {
   assertProviderRuntimeDependencies,
   PROVIDER_EFFECT_PEER_RANGE,
 } from "./provider-runtime-dependencies.mjs";
-import { REVIEWED_HARNESS_COMMIT } from "./reviewed-harness.mjs";
 
 const harnessRoot = process.env.TRITONAI_HARNESS_ROOT;
 const expectedHarnessCommit = process.env.TRITONAI_HARNESS_COMMIT;
-if (!harnessRoot) {
-  throw new Error(
-    "TRITONAI_HARNESS_ROOT must identify a clean checkout at the exact reviewed Harness head.",
-  );
-}
-if (!/^[a-f0-9]{40}$/u.test(expectedHarnessCommit ?? "")) {
-  throw new Error("TRITONAI_HARNESS_COMMIT must be the full reviewed Harness commit SHA.");
-}
-if (expectedHarnessCommit !== REVIEWED_HARNESS_COMMIT) {
-  throw new Error(
-    `TRITONAI_HARNESS_COMMIT must match the repository-reviewed Harness commit ${REVIEWED_HARNESS_COMMIT}.`,
-  );
-}
-const harness = Path.resolve(harnessRoot);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-const git = spawnSync("git", ["rev-parse", "HEAD"], { cwd: harness, encoding: "utf8" });
-assert(git.status === 0, `Harness checkout is unavailable at ${harness}.`);
-const actualHead = git.stdout.trim();
-assert(/^[a-f0-9]{40}$/u.test(actualHead), "Harness HEAD must be a full commit SHA.");
-assert(
-  actualHead === REVIEWED_HARNESS_COMMIT,
-  `Harness checkout is at ${actualHead}, expected ${REVIEWED_HARNESS_COMMIT}.`,
-);
-const harnessStatus = spawnSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
-  cwd: harness,
-  encoding: "utf8",
-});
-assert(harnessStatus.status === 0, "Could not verify Harness working-tree state.");
-assert(
-  harnessStatus.stdout.trim() === "",
-  "Harness worktree must be clean so the contract is proven against one immutable commit.",
-);
+const { actualHead, harness } = assertTrustedHarnessCheckout(harnessRoot, expectedHarnessCommit);
 
 const registry = await Fs.readFile(
   Path.join(harness, "apps/server/src/integrations/IntegrationRegistry.ts"),
@@ -68,9 +36,7 @@ const productionBuiltins = await Fs.readFile(
   Path.join(harness, "apps/server/src/integrations/productionBuiltins.ts"),
   "utf8",
 );
-const harnessWorkspace = YAML.parse(
-  await Fs.readFile(Path.join(harness, "pnpm-workspace.yaml"), "utf8"),
-);
+const { version: harnessEffectVersion } = await verifyHarnessEffectRuntime(harness);
 
 for (const fragment of [
   "beginCommit(): Promise<AbortSignal>",
@@ -107,8 +73,6 @@ for (const fragment of [
     `Harness provider factory contract drifted: missing ${fragment}`,
   );
 }
-assert(harnessWorkspace.catalog?.effect === "4.0.0-beta.102", "Harness Effect pin drifted.");
-
 const manifestModule = await import(
   pathToFileURL(Path.join(harness, "apps/server/src/integrations/manifest.ts")).href
 );
@@ -159,14 +123,11 @@ for (const directory of await discoverPluginDirectories(pluginsRoot)) {
   if (harnessValidated.provider !== undefined) {
     assert(
       isDeepStrictEqual(
-        hostRuntimeModule.resolvePluginHostRuntimeDependencies(
-          packageJson,
-          harnessWorkspace.catalog.effect,
-        ),
+        hostRuntimeModule.resolvePluginHostRuntimeDependencies(packageJson, harnessEffectVersion),
         [
           {
             name: "effect",
-            version: harnessWorkspace.catalog.effect,
+            version: harnessEffectVersion,
             declaration: "peer",
           },
         ],
