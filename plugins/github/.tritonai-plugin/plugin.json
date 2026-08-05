@@ -1,0 +1,274 @@
+{
+  "apiVersion": "tritonai.harness/v2",
+  "kind": "IntegrationPlugin",
+  "manifestVersion": 2,
+  "id": "github",
+  "name": "GitHub",
+  "description": "Connect a GitHub account with OAuth to read repositories and perform bounded developer workflows.",
+  "version": "1.0.0",
+  "provider": "github",
+  "capabilities": [
+    {
+      "id": "identity.read",
+      "displayName": "Read GitHub identity",
+      "description": "Read the signed-in GitHub account.",
+      "access": "default"
+    },
+    {
+      "id": "repository.read",
+      "displayName": "Read repositories",
+      "description": "Search and read bounded repository, file, issue, pull-request, commit-check, and Actions metadata available to the signed-in user.",
+      "access": "default"
+    },
+    {
+      "id": "repository.write",
+      "displayName": "Contribute repository changes",
+      "description": "Fork repositories, create branches, and create or update bounded files with commits. Cannot delete repositories, merge, or administer settings.",
+      "access": "default"
+    },
+    {
+      "id": "issues.write",
+      "displayName": "Create and edit issues",
+      "description": "Create or narrowly update issues and add issue comments. Cannot delete issues or manage repository settings.",
+      "access": "default"
+    },
+    {
+      "id": "pull-requests.write",
+      "displayName": "Create and review pull requests",
+      "description": "Create pull requests, add comments, and submit reviews. Cannot merge pull requests.",
+      "access": "default"
+    }
+  ],
+  "tools": [
+    {
+      "name": "github.identity.get",
+      "displayName": "Read GitHub identity",
+      "description": "Read the connected GitHub account.",
+      "capabilities": ["identity.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.repositories.list",
+      "displayName": "List repositories",
+      "description": "List compact repository summaries available to the signed-in GitHub user (limit 1-50, page 1-10).",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.repositories.count",
+      "displayName": "Count repositories",
+      "description": "Count all repositories available to the signed-in GitHub user without paginating tool output.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.repositories.get",
+      "displayName": "Read repository",
+      "description": "Read metadata for one exact repository.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.repositories.fork",
+      "displayName": "Fork repository",
+      "description": "Fork one repository into the signed-in user's personal account.",
+      "capabilities": ["repository.write"],
+      "effect": "write"
+    },
+    {
+      "name": "github.branches.create",
+      "displayName": "Create branch",
+      "description": "Create one branch from an existing commit, branch, or tag in the same repository.",
+      "capabilities": ["repository.write"],
+      "effect": "write"
+    },
+    {
+      "name": "github.repositories.search",
+      "displayName": "Search repositories",
+      "description": "Search repositories with a bounded text query.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.contents.get",
+      "displayName": "Read repository file",
+      "description": "Read one exact bounded file at an optional repository ref.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.contents.put",
+      "displayName": "Commit repository file",
+      "description": "Create or update one bounded UTF-8 file and commit it to an existing branch.",
+      "capabilities": ["repository.write"],
+      "effect": "write"
+    },
+    {
+      "name": "github.code.search",
+      "displayName": "Search repository code",
+      "description": "Search code in one exact repository with a bounded query.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.issues.list",
+      "displayName": "List issues",
+      "description": "List bounded issues in one repository.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.issues.search",
+      "displayName": "Search issues and pull requests",
+      "description": "Search issues and pull requests in one exact repository.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.issues.get",
+      "displayName": "Read issue",
+      "description": "Read one exact issue or pull-request issue record.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.issues.comments.list",
+      "displayName": "List issue comments",
+      "description": "List bounded comments for one issue or pull request.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.issues.create",
+      "displayName": "Create issue",
+      "description": "Create one issue with bounded text, labels, and assignees.",
+      "capabilities": ["issues.write"],
+      "effect": "write"
+    },
+    {
+      "name": "github.issues.update",
+      "displayName": "Update issue",
+      "description": "Narrowly update one issue title, body, state, labels, or assignees.",
+      "capabilities": ["issues.write"],
+      "effect": "write"
+    },
+    {
+      "name": "github.issues.comment.create",
+      "displayName": "Comment on issue",
+      "description": "Add one bounded comment to an issue.",
+      "capabilities": ["issues.write"],
+      "effect": "write"
+    },
+    {
+      "name": "github.pulls.list",
+      "displayName": "List pull requests",
+      "description": "List bounded pull requests in one repository.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.pulls.get",
+      "displayName": "Read pull request",
+      "description": "Read one exact pull request.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.pulls.reviews.list",
+      "displayName": "List pull-request reviews",
+      "description": "List bounded review metadata for one pull request.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.pulls.review-comments.list",
+      "displayName": "List review comments",
+      "description": "List bounded inline review comments for one pull request.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.pulls.create",
+      "displayName": "Create pull request",
+      "description": "Create a pull request between existing branches without writing commits.",
+      "capabilities": ["pull-requests.write"],
+      "effect": "write"
+    },
+    {
+      "name": "github.pulls.comment.create",
+      "displayName": "Comment on pull request",
+      "description": "Add one bounded conversation comment to a pull request.",
+      "capabilities": ["pull-requests.write"],
+      "effect": "write"
+    },
+    {
+      "name": "github.pulls.review.create",
+      "displayName": "Submit pull-request review",
+      "description": "Submit an approve, request-changes, or general review without inline comments.",
+      "capabilities": ["pull-requests.write"],
+      "effect": "write"
+    },
+    {
+      "name": "github.actions.runs.list",
+      "displayName": "List workflow runs",
+      "description": "List bounded GitHub Actions workflow-run metadata for one repository.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.actions.run.get",
+      "displayName": "Read workflow run",
+      "description": "Read metadata for one exact GitHub Actions workflow run.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.actions.jobs.list",
+      "displayName": "List workflow jobs",
+      "description": "List bounded job and step metadata for one workflow run.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.commits.check-runs.list",
+      "displayName": "List commit check runs",
+      "description": "List bounded check-run metadata for one exact commit ref.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.commits.status.get",
+      "displayName": "Read commit status",
+      "description": "Read combined commit-status metadata for one exact commit ref.",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    }
+  ],
+  "skills": [
+    {
+      "name": "github-repositories",
+      "description": "Find, read, fork, branch, and commit bounded GitHub repository content through TritonAI provider tools. Use for repository inspection and ordinary contribution setup.",
+      "capabilities": ["identity.read", "repository.read", "repository.write"]
+    },
+    {
+      "name": "github-issues",
+      "description": "Read, triage, create, update, or comment on GitHub issues through TritonAI provider tools. Use read tools first and require enabled issue-write access for mutations.",
+      "capabilities": ["repository.read", "issues.write"]
+    },
+    {
+      "name": "github-pull-requests",
+      "description": "Read, prepare branches and commits for, create, comment on, or review GitHub pull requests through TritonAI provider tools. Never assume gh CLI authentication or merge access.",
+      "capabilities": ["repository.read", "repository.write", "pull-requests.write"]
+    },
+    {
+      "name": "github-contributions",
+      "description": "Fork repositories, create branches, commit bounded file changes, and open pull requests through TritonAI provider tools for ordinary contribution flows.",
+      "capabilities": ["repository.read", "repository.write", "pull-requests.write"]
+    },
+    {
+      "name": "github-actions",
+      "description": "Inspect GitHub Actions runs, jobs, checks, and commit status through TritonAI provider tools for bounded CI triage.",
+      "capabilities": ["repository.read"]
+    }
+  ]
+}

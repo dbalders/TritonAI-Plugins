@@ -24,6 +24,12 @@ importers:
         specifier: 2.9.0
         version: 2.9.0
 
+  plugins/github:
+    devDependencies:
+      effect:
+        specifier: 4.0.0-beta.102
+        version: 4.0.0-beta.102
+
   plugins/google-workspace:
     devDependencies:
       effect:
