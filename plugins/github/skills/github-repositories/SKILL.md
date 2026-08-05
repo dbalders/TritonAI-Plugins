@@ -7,7 +7,7 @@ description: Find, read, fork, branch, and commit bounded GitHub repository cont
 
 Use only `github.*` provider tools. Do not assume a separately authenticated `gh` CLI, GitHub connector, shell, or browser session.
 
-1. Use `github.identity.get` when account context matters. Use `github.repositories.count` for an exact accessible-repository count. Use `github.repositories.list` only to enumerate compact pages with `limit` from 1 through 50 and `page` from 1 through 10; there is no GitHub App installation or repository picker.
+1. Use `github.identity.get` when account context matters. When the user asks for an exact accessible-repository count, call `github.repositories.count` in the same response; do not merely announce or name the tool. Use `github.repositories.list` only to enumerate compact pages with `limit` from 1 through 50 and `page` from 1 through 10; there is no GitHub App installation or repository picker.
 2. Prefer `github.repositories.get` for exact owner/repository metadata and `github.contents.get` for an exact file. The content tool does not list directories and will not return files over one megabyte.
 3. Use `github.code.search` only after narrowing to an exact owner and repository. Use `github.repositories.search` only for discovery; confirm the exact repository before subsequent reads.
 4. For contributions, first determine whether the user can write directly. If not, use `github.repositories.fork`, wait until GitHub makes the fork available, then use `github.branches.create` in the fork.

@@ -42,6 +42,9 @@ describe("GitHub plugin factory", () => {
       { id: "issues.write", access: "default" },
       { id: "pull-requests.write", access: "default" },
     ]);
+    expect(
+      provider.tools.find(({ name }) => name === "github.repositories.count")?.description,
+    ).toContain("do not narrate");
   });
 
   it("accepts only an exact public clientId configuration without disclosing values", () => {

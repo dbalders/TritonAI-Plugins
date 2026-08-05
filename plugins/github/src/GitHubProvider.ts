@@ -243,7 +243,7 @@ export const GITHUB_TOOLS = [
   ),
   tool(
     "github.repositories.count",
-    "Count all repositories accessible to the authenticated GitHub user without paginating tool output.",
+    "Call this tool for every exact accessible-repository count request. It returns the count directly; do not narrate, paginate, or infer the result instead of calling it.",
     EmptyInput,
   ),
   tool("github.repositories.get", "Read one exact repository.", RepositoryGetInput),

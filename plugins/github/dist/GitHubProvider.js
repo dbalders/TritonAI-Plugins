@@ -163,7 +163,7 @@ const tool = (name, description, input, readOnly = true, destructive = false) =>
 export const GITHUB_TOOLS = [
     tool("github.identity.get", "Read the connected GitHub account through GET /user.", EmptyInput),
     tool("github.repositories.list", "List compact repository summaries accessible to the authenticated GitHub user. Limit must be 1-50 and page must be 1-10.", RepositoriesListInput),
-    tool("github.repositories.count", "Count all repositories accessible to the authenticated GitHub user without paginating tool output.", EmptyInput),
+    tool("github.repositories.count", "Call this tool for every exact accessible-repository count request. It returns the count directly; do not narrate, paginate, or infer the result instead of calling it.", EmptyInput),
     tool("github.repositories.get", "Read one exact repository.", RepositoryGetInput),
     tool("github.repositories.fork", "Fork one repository into the authenticated user's personal account.", RepositoryForkInput, false),
     tool("github.branches.create", "Create one branch from an existing commit, branch, or tag in the same repository.", BranchCreateInput, false),
