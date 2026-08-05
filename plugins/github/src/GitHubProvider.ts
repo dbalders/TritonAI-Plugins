@@ -63,8 +63,12 @@ const PositiveId = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 );
 const IssueNumber = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }));
-const Limit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }));
-const Page = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 }));
+const Limit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })).annotate({
+  description: "Page size from 1 through 50.",
+});
+const Page = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })).annotate({
+  description: "Page number from 1 through 10.",
+});
 const REF_PATTERN =
   /^(?!\/|.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*(?:~|\^|:|\?|\*|\[|\\))(?!.*\p{Cc})(?!.*\s)[^/]+(?:\/[^/]+)*$/u;
 const Ref = Schema.String.check(
@@ -234,8 +238,13 @@ export const GITHUB_TOOLS = [
   tool("github.identity.get", "Read the connected GitHub account through GET /user.", EmptyInput),
   tool(
     "github.repositories.list",
-    "List bounded repositories accessible to the authenticated GitHub user.",
+    "List compact repository summaries accessible to the authenticated GitHub user. Limit must be 1-50 and page must be 1-10.",
     RepositoriesListInput,
+  ),
+  tool(
+    "github.repositories.count",
+    "Count all repositories accessible to the authenticated GitHub user without paginating tool output.",
+    EmptyInput,
   ),
   tool("github.repositories.get", "Read one exact repository.", RepositoryGetInput),
   tool(
@@ -530,6 +539,77 @@ function listResult(value: unknown, limit: number): ReadonlyArray<unknown> {
     throw new Error("GitHub returned an invalid collection response.");
   return value;
 }
+function requiredBoolean(value: unknown): boolean {
+  if (typeof value !== "boolean") throw new Error("GitHub returned an invalid response.");
+  return value;
+}
+function nullableString(value: unknown, max: number): string | null {
+  return value === null ? null : boundedString(value, max, true);
+}
+function repositorySummary(value: unknown): Record<string, unknown> {
+  const repository = asRecord(value);
+  const owner = asRecord(repository.owner);
+  const updatedAt = boundedString(repository.updated_at, 64);
+  const pushedAt = nullableString(repository.pushed_at, 64);
+  if (!validIso(updatedAt) || (pushedAt !== null && !validIso(pushedAt)))
+    throw new Error("GitHub returned an invalid response.");
+  return {
+    id: boundedInt(repository.id, 1, Number.MAX_SAFE_INTEGER),
+    name: boundedString(repository.name, 100),
+    full_name: boundedString(repository.full_name, 201),
+    private: requiredBoolean(repository.private),
+    fork: requiredBoolean(repository.fork),
+    archived: requiredBoolean(repository.archived),
+    disabled: requiredBoolean(repository.disabled),
+    visibility: boundedString(repository.visibility, 32),
+    html_url: boundedString(repository.html_url, 2_048),
+    description: nullableString(repository.description, 1_024),
+    default_branch: boundedString(repository.default_branch, 255),
+    language: nullableString(repository.language, 100),
+    updated_at: updatedAt,
+    pushed_at: pushedAt,
+    owner: {
+      login: boundedString(owner.login, 100),
+      id: boundedInt(owner.id, 1, Number.MAX_SAFE_INTEGER),
+    },
+  };
+}
+function repositoryListResult(
+  value: unknown,
+  limit: number,
+): ReadonlyArray<Record<string, unknown>> {
+  return listResult(value, limit).map(repositorySummary);
+}
+function repositoryCountResult(value: unknown, maximum: number): number {
+  if (!Array.isArray(value) || value.length > maximum)
+    throw new Error("GitHub returned an invalid collection response.");
+  return value.length;
+}
+function lastPageFromLink(value: string | null): number | null {
+  if (value === null) return null;
+  for (const entry of value.split(",")) {
+    const match = entry.trim().match(/^<([^>]+)>;\s*rel="last"$/u);
+    if (!match) continue;
+    let url: URL;
+    try {
+      url = new URL(match[1]!);
+    } catch {
+      throw new Error("GitHub returned an invalid pagination link.");
+    }
+    const pageValue = Number(url.searchParams.get("page"));
+    if (
+      url.origin !== GITHUB_API_ORIGIN ||
+      url.pathname !== "/user/repos" ||
+      url.searchParams.get("per_page") !== "100" ||
+      !Number.isSafeInteger(pageValue) ||
+      pageValue < 1 ||
+      pageValue > 100_000
+    )
+      throw new Error("GitHub returned an invalid pagination link.");
+    return pageValue;
+  }
+  return null;
+}
 function collectionField(value: unknown, field: string, limit: number): Record<string, unknown> {
   const record = asRecord(value);
   if (!Array.isArray(record[field]) || (record[field] as unknown[]).length > limit)
@@ -662,7 +742,7 @@ export class GitHubProvider implements IntegrationProvider {
       signal?: AbortSignal;
       maximumBytes?: number;
     } = {},
-  ): Promise<unknown> {
+  ): Promise<{ readonly response: Response; readonly json: unknown }> {
     if (!path.startsWith("/") || path.startsWith("//") || path.includes("://"))
       throw new Error("GitHub endpoint is invalid.");
     const headers: Record<string, string> = {
@@ -718,10 +798,10 @@ export class GitHubProvider implements IntegrationProvider {
         throw new IntegrationProviderPublicError("GitHub could not accept this request.");
       throw new Error(`GitHub API request failed with HTTP ${response.status}.`);
     }
-    return json;
+    return { response, json };
   }
   async #verify(token: string, signal?: AbortSignal): Promise<Account> {
-    return accountFrom(await this.#api("/user", token, { signal }));
+    return accountFrom((await this.#api("/user", token, { signal })).json);
   }
 
   async status(context?: IntegrationInvocationContext): Promise<IntegrationProviderStatus> {
@@ -1101,15 +1181,17 @@ export class GitHubProvider implements IntegrationProvider {
             : "repository.read";
     const access = this.#require(capability);
     const generation = this.#generation;
-    const read = async (path: string, maximumBytes?: number) => {
+    const request = async (path: string, maximumBytes?: number) => {
       const result = await this.#api(path, access.token, { signal: context?.signal, maximumBytes });
       this.#assertCurrent(generation);
       return result;
     };
+    const read = async (path: string, maximumBytes?: number) =>
+      (await request(path, maximumBytes)).json;
     const write = async (path: string, method: "POST" | "PATCH" | "PUT", body: unknown) => {
       const signal = await this.#writeSignal(context);
       this.#assertCurrent(generation);
-      const result = await this.#api(path, access.token, { method, body, signal });
+      const result = (await this.#api(path, access.token, { method, body, signal })).json;
       this.#assertCurrent(generation);
       return asRecord(result);
     };
@@ -1123,12 +1205,44 @@ export class GitHubProvider implements IntegrationProvider {
     if (toolName === "github.repositories.list") {
       const values = await this.#decode(RepositoriesListInput, input);
       const p = page(values);
-      return listResult(
+      return repositoryListResult(
         await read(
           `/user/repos?${params({ visibility: "all", affiliation: "owner,collaborator,organization_member", sort: "updated", direction: "desc", per_page: p.limit, page: p.page })}`,
         ),
         p.limit,
       );
+    }
+    if (toolName === "github.repositories.count") {
+      await this.#decode(EmptyInput, input);
+      const query = params({
+        visibility: "all",
+        affiliation: "owner,collaborator,organization_member",
+        sort: "updated",
+        direction: "desc",
+        per_page: 100,
+        page: 1,
+      });
+      const first = await request(`/user/repos?${query}`);
+      const firstCount = repositoryCountResult(first.json, 100);
+      const lastPage = lastPageFromLink(first.response.headers.get("link"));
+      if (lastPage === null || lastPage === 1)
+        return { count: firstCount, scope: "all accessible repositories" };
+      const lastQuery = params({
+        visibility: "all",
+        affiliation: "owner,collaborator,organization_member",
+        sort: "updated",
+        direction: "desc",
+        per_page: 100,
+        page: lastPage,
+      });
+      const lastCount = repositoryCountResult(
+        (await request(`/user/repos?${lastQuery}`)).json,
+        100,
+      );
+      return {
+        count: (lastPage - 1) * 100 + lastCount,
+        scope: "all accessible repositories",
+      };
     }
     if (toolName === "github.repositories.get") {
       const values = await this.#decode(RepositoryGetInput, input);

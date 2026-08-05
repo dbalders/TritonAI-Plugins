@@ -50,7 +50,14 @@
     {
       "name": "github.repositories.list",
       "displayName": "List repositories",
-      "description": "List bounded repositories available to the signed-in GitHub user.",
+      "description": "List compact repository summaries available to the signed-in GitHub user (limit 1-50, page 1-10).",
+      "capabilities": ["repository.read"],
+      "effect": "read"
+    },
+    {
+      "name": "github.repositories.count",
+      "displayName": "Count repositories",
+      "description": "Count all repositories available to the signed-in GitHub user without paginating tool output.",
       "capabilities": ["repository.read"],
       "effect": "read"
     },

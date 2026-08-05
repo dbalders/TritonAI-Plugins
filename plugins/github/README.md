@@ -64,7 +64,7 @@ The read file tool requires an exact file path, rejects directories, and has a o
 3. Authorize the TritonAI OAuth App. There is no GitHub App installation or repository picker.
 4. Harness polls no faster than GitHub's returned interval, requires the exact `repo`, `read:org`, and `workflow` grant, verifies the account with `GET /user`, and stores the token only after commit admission.
 
-`github.repositories.list` uses bounded authenticated-user repository enumeration (`GET /user/repos`) and therefore reflects repositories available to the user and OAuth token. If an organization uses SAML SSO or OAuth App restrictions, authorize the application as required by that organization. A `403` generally means user permission, organization policy, SSO, branch policy, or OAuth authorization is insufficient. A `404` can intentionally hide an inaccessible private repository.
+`github.repositories.count` returns the exact accessible-repository count using GitHub pagination metadata, while `github.repositories.list` returns compact bounded summaries (`limit` 1-50 and `page` 1-10). Both use authenticated-user repository enumeration (`GET /user/repos`) and therefore reflect repositories available to the user and OAuth token. If an organization uses SAML SSO or OAuth App restrictions, authorize the application as required by that organization. A `403` generally means user permission, organization policy, SSO, branch policy, or OAuth authorization is insufficient. A `404` can intentionally hide an inaccessible private repository.
 
 Disconnect removes TritonAI's local encrypted credential. To revoke server-side access, remove TritonAI from GitHub **Settings > Applications > Authorized OAuth Apps**.
 

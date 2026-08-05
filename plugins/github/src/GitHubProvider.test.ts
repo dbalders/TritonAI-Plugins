@@ -103,7 +103,7 @@ async function authorize(
 
 describe("GitHubProvider OAuth product", () => {
   it("publishes strict schemas and truthful read/write metadata", async () => {
-    expect(GITHUB_TOOLS).toHaveLength(28);
+    expect(GITHUB_TOOLS).toHaveLength(29);
     for (const definition of GITHUB_TOOLS) {
       expect(definition.openWorld).toBe(true);
       expect(definition.idempotent).toBe(definition.readOnly);
@@ -284,11 +284,30 @@ describe("GitHubProvider OAuth product", () => {
 
   it("enumerates bounded authenticated-user repositories instead of installations", async () => {
     const secrets = memorySecrets();
+    const repository = {
+      id: 1,
+      name: "repo",
+      full_name: "octo/repo",
+      private: false,
+      fork: false,
+      archived: false,
+      disabled: false,
+      visibility: "public",
+      html_url: "https://github.com/octo/repo",
+      description: "A fixture repository",
+      default_branch: "main",
+      language: "TypeScript",
+      updated_at: "2026-08-05T12:00:00Z",
+      pushed_at: "2026-08-05T11:00:00Z",
+      owner: { login: "octo", id: 2, avatar_url: "https://avatars.example/octo" },
+      clone_url: "https://github.com/octo/repo.git",
+      permissions: { admin: true, push: true, pull: true },
+    };
     const mock = sequence([
       json(deviceBody()),
       json(tokenBody()),
       json(userBody()),
-      json([{ id: 1, full_name: "octo/repo" }]),
+      json([repository]),
     ]);
     const github = provider(secrets.service, mock.fetchImplementation);
     await authorize(github);
@@ -298,11 +317,56 @@ describe("GitHubProvider OAuth product", () => {
     expect(mock.requests).toHaveLength(3);
     await expect(
       github.invoke("github.repositories.list", { limit: 1, page: 2 }, invocation()),
-    ).resolves.toEqual([{ id: 1, full_name: "octo/repo" }]);
+    ).resolves.toEqual([
+      {
+        id: 1,
+        name: "repo",
+        full_name: "octo/repo",
+        private: false,
+        fork: false,
+        archived: false,
+        disabled: false,
+        visibility: "public",
+        html_url: "https://github.com/octo/repo",
+        description: "A fixture repository",
+        default_branch: "main",
+        language: "TypeScript",
+        updated_at: "2026-08-05T12:00:00Z",
+        pushed_at: "2026-08-05T11:00:00Z",
+        owner: { login: "octo", id: 2 },
+      },
+    ]);
     expect(mock.requests[3]?.url).toBe(
       "https://api.github.com/user/repos?visibility=all&affiliation=owner%2Ccollaborator%2Corganization_member&sort=updated&direction=desc&per_page=1&page=2",
     );
     expect(mock.requests[3]?.url).not.toContain("installation");
+  });
+
+  it("counts all accessible repositories from GitHub pagination metadata", async () => {
+    const secrets = memorySecrets();
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({ id: index + 1 }));
+    const lastPage = Array.from({ length: 7 }, (_, index) => ({ id: index + 101 }));
+    const link = [
+      '<https://api.github.com/user/repos?visibility=all&affiliation=owner%2Ccollaborator%2Corganization_member&sort=updated&direction=desc&per_page=100&page=2>; rel="next"',
+      '<https://api.github.com/user/repos?visibility=all&affiliation=owner%2Ccollaborator%2Corganization_member&sort=updated&direction=desc&per_page=100&page=2>; rel="last"',
+    ].join(", ");
+    const mock = sequence([
+      json(deviceBody()),
+      json(tokenBody()),
+      json(userBody()),
+      json(firstPage, 200, { link }),
+      json(lastPage),
+    ]);
+    const github = provider(secrets.service, mock.fetchImplementation);
+    await authorize(github);
+    await expect(github.invoke("github.repositories.count", {}, invocation())).resolves.toEqual({
+      count: 107,
+      scope: "all accessible repositories",
+    });
+    expect(mock.requests.slice(3).map(({ url }) => url)).toEqual([
+      "https://api.github.com/user/repos?visibility=all&affiliation=owner%2Ccollaborator%2Corganization_member&sort=updated&direction=desc&per_page=100&page=1",
+      "https://api.github.com/user/repos?visibility=all&affiliation=owner%2Ccollaborator%2Corganization_member&sort=updated&direction=desc&per_page=100&page=2",
+    ]);
   });
 
   it("supports fixed fork, branch, and bounded content-commit contribution tools", async () => {
