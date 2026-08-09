@@ -43,7 +43,10 @@ const provider = providerModule.createIntegrationProvider({
   },
   configuration: { serverUrl: "https://n8n.tritonai.ucsd.edu/mcp-server/http" },
 });
-assert(!isPromiseLike(provider) && provider.id === validated.provider, "Invalid n8n provider factory.");
+assert(
+  !isPromiseLike(provider) && provider.id === validated.provider,
+  "Invalid n8n provider factory.",
+);
 assert(
   isDeepStrictEqual(
     validated.tools.map(({ name }) => name).toSorted(),
@@ -85,9 +88,20 @@ try {
   const compile = spawnSync(
     Path.join(repositoryRoot, "node_modules/.bin/tsc"),
     [
-      "--noEmit", "--ignoreConfig", "--strict", "--skipLibCheck", "--target", "ES2024",
-      "--module", "NodeNext", "--moduleResolution", "NodeNext", "--types", "node",
-      "--allowImportingTsExtensions", probe,
+      "--noEmit",
+      "--ignoreConfig",
+      "--strict",
+      "--skipLibCheck",
+      "--target",
+      "ES2024",
+      "--module",
+      "NodeNext",
+      "--moduleResolution",
+      "NodeNext",
+      "--types",
+      "node",
+      "--allowImportingTsExtensions",
+      probe,
     ],
     { cwd: repositoryRoot, encoding: "utf8" },
   );

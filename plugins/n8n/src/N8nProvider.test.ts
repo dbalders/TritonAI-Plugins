@@ -115,11 +115,13 @@ function mcpResponse(request: Record<string, unknown>, result: unknown, headers:
   return json({ jsonrpc: "2.0", id: request.id, result }, 200, headers);
 }
 
-function oauthMcpFetch(options: {
-  readonly scopes?: ReadonlyArray<string>;
-  readonly mutateTools?: (tools: Record<string, unknown>[]) => void;
-  readonly toolResult?: unknown;
-} = {}) {
+function oauthMcpFetch(
+  options: {
+    readonly scopes?: ReadonlyArray<string>;
+    readonly mutateTools?: (tools: Record<string, unknown>[]) => void;
+    readonly toolResult?: unknown;
+  } = {},
+) {
   const requests: Array<{ url: string; init?: RequestInit; body?: Record<string, unknown> }> = [];
   const scopes = options.scopes ?? SCOPES;
   const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -141,7 +143,9 @@ function oauthMcpFetch(options: {
         {
           client_id: "dynamic-client-fixture",
           token_endpoint_auth_method: "none",
-          redirect_uris: [(JSON.parse(String(init?.body)) as { redirect_uris: string[] }).redirect_uris[0]],
+          redirect_uris: [
+            (JSON.parse(String(init?.body)) as { redirect_uris: string[] }).redirect_uris[0],
+          ],
           grant_types: ["authorization_code", "refresh_token"],
           response_types: ["code"],
         },
@@ -151,8 +155,10 @@ function oauthMcpFetch(options: {
     if (url.endsWith("/mcp-oauth/token")) {
       const form = new URLSearchParams(String(init?.body));
       return json({
-        access_token: form.get("grant_type") === "refresh_token" ? "access-rotated" : "access-fixture",
-        refresh_token: form.get("grant_type") === "refresh_token" ? "refresh-rotated" : "refresh-fixture",
+        access_token:
+          form.get("grant_type") === "refresh_token" ? "access-rotated" : "access-fixture",
+        refresh_token:
+          form.get("grant_type") === "refresh_token" ? "refresh-rotated" : "refresh-fixture",
         expires_in: 3600,
         token_type: "Bearer",
         scope: scopes.join(" "),
@@ -164,7 +170,11 @@ function oauthMcpFetch(options: {
       if (body.method === "initialize") {
         return mcpResponse(
           body,
-          { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "n8n", version: "2.34.1" } },
+          {
+            protocolVersion: "2025-06-18",
+            capabilities: { tools: {} },
+            serverInfo: { name: "n8n", version: "2.34.1" },
+          },
           { "mcp-session-id": "session-fixture" },
         );
       }
@@ -181,9 +191,19 @@ function oauthMcpFetch(options: {
   return { fetchImplementation, requests };
 }
 
-async function authorize(provider: N8nProvider, requests: ReturnType<typeof oauthMcpFetch>["requests"]) {
+async function authorize(
+  provider: N8nProvider,
+  requests: ReturnType<typeof oauthMcpFetch>["requests"],
+) {
   const flow = await provider.connect(
-    ["workflow.read", "workflow.write", "workflow.execute", "execution.read", "data-table.read", "data-table.write"],
+    [
+      "workflow.read",
+      "workflow.write",
+      "workflow.execute",
+      "execution.read",
+      "data-table.read",
+      "data-table.write",
+    ],
     lifecycle(),
   );
   expect(flow.kind).toBe("authorization_url");
@@ -195,7 +215,9 @@ async function authorize(provider: N8nProvider, requests: ReturnType<typeof oaut
   callback.searchParams.set("code", "authorization-code-fixture");
   const response = await fetch(callback);
   expect(response.status).toBe(200);
-  await expect(provider.poll(flow.flowId, lifecycle())).resolves.toMatchObject({ state: "connected" });
+  await expect(provider.poll(flow.flowId, lifecycle())).resolves.toMatchObject({
+    state: "connected",
+  });
   expect(requests.length).toBeGreaterThan(5);
   return authorization;
 }
@@ -212,10 +234,11 @@ describe("N8nProvider", () => {
       expect(typeof tool.idempotent).toBe("boolean");
       expect(Schema.toJsonSchemaDocument(tool.input).schema).toMatchObject({ type: "object" });
     }
-    expect(N8N_TOOLS.filter(({ openWorld }) => openWorld).map(({ name }) => name).toSorted()).toEqual([
-      "n8n.execute_workflow",
-      "n8n.explore_node_resources",
-    ]);
+    expect(
+      N8N_TOOLS.filter(({ openWorld }) => openWorld)
+        .map(({ name }) => name)
+        .toSorted(),
+    ).toEqual(["n8n.execute_workflow", "n8n.explore_node_resources"]);
     expect(N8N_TOOLS.find(({ name }) => name === "n8n.publish_workflow")).toMatchObject({
       readOnly: false,
       destructive: false,
@@ -231,18 +254,25 @@ describe("N8nProvider", () => {
     ).schema as { properties: Record<string, unknown> };
     expect(searchNodesSchema.properties).toHaveProperty("usage");
     for (const name of ["n8n.create_workflow_from_code", "n8n.update_workflow"]) {
-      const schema = Schema.toJsonSchemaDocument(N8N_TOOLS.find((tool) => tool.name === name)!.input)
-        .schema as { properties: Record<string, unknown> };
+      const schema = Schema.toJsonSchemaDocument(
+        N8N_TOOLS.find((tool) => tool.name === name)!.input,
+      ).schema as { properties: Record<string, unknown> };
       expect(schema.properties).toHaveProperty("versionName");
       expect(schema.properties).toHaveProperty("versionDescription");
     }
     const search = N8N_TOOLS.find(({ name }) => name === "n8n.search_workflows")!;
     await expect(
-      Schema.decodeUnknownPromise(search.input)({ limit: 201, extra: true }, { onExcessProperty: "error" }),
+      Schema.decodeUnknownPromise(search.input)(
+        { limit: 201, extra: true },
+        { onExcessProperty: "error" },
+      ),
     ).rejects.toBeDefined();
     const execute = N8N_TOOLS.find(({ name }) => name === "n8n.execute_workflow")!;
     await expect(
-      Schema.decodeUnknownPromise(execute.input)({ workflowId: "wf" }, { onExcessProperty: "error" }),
+      Schema.decodeUnknownPromise(execute.input)(
+        { workflowId: "wf" },
+        { onExcessProperty: "error" },
+      ),
     ).rejects.toBeDefined();
     expect(execute).toMatchObject({ readOnly: false, destructive: true, idempotent: false });
   });
@@ -250,23 +280,33 @@ describe("N8nProvider", () => {
   it("discovers same-origin OAuth, registers a public PKCE client, verifies MCP, and proxies calls", async () => {
     const secrets = memorySecrets();
     const mock = oauthMcpFetch();
-    const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, mock.fetchImplementation);
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
     const authorization = await authorize(provider, mock.requests);
     expect(authorization.origin).toBe(ORIGIN);
     expect(authorization.searchParams.get("resource")).toBe(SERVER);
     expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
-    expect(authorization.searchParams.get("scope")?.split(" ").toSorted()).toEqual([...SCOPES].toSorted());
+    expect(authorization.searchParams.get("scope")?.split(" ").toSorted()).toEqual(
+      [...SCOPES].toSorted(),
+    );
     const registration = mock.requests.find(({ url }) => url.endsWith("/mcp-oauth/register"))!;
     expect(registration.init?.redirect).toBe("error");
     expect(String(registration.init?.body)).not.toContain("client_secret");
     const token = mock.requests.find(({ url }) => url.endsWith("/mcp-oauth/token"))!;
     expect(new URLSearchParams(String(token.init?.body)).get("resource")).toBe(SERVER);
-    expect(JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_SECRET_SUFFIX)))).toMatchObject({
+    expect(
+      JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_SECRET_SUFFIX))),
+    ).toMatchObject({
       version: 1,
       clientId: "dynamic-client-fixture",
       refreshToken: "refresh-fixture",
     });
-    await expect(provider.invoke("n8n.search_projects", { limit: 1 }, invocation(false))).resolves.toMatchObject({
+    await expect(
+      provider.invoke("n8n.search_projects", { limit: 1 }, invocation(false)),
+    ).resolves.toMatchObject({
       content: [{ type: "text", text: "ok" }],
     });
     expect(mock.requests.at(-1)?.body).toMatchObject({
@@ -279,7 +319,11 @@ describe("N8nProvider", () => {
   it("gates every write before network access and calls beginCommit immediately before the proxy call", async () => {
     const secrets = memorySecrets();
     const mock = oauthMcpFetch();
-    const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, mock.fetchImplementation);
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
     await authorize(provider, mock.requests);
     const before = mock.requests.length;
     await expect(
@@ -298,7 +342,8 @@ describe("N8nProvider", () => {
 
   it("fails closed on unknown tools and schema drift without storing credentials", async () => {
     for (const mutateTools of [
-      (tools: Record<string, unknown>[]) => tools.push({ name: "future_admin_tool", inputSchema: { type: "object" } }),
+      (tools: Record<string, unknown>[]) =>
+        tools.push({ name: "future_admin_tool", inputSchema: { type: "object" } }),
       (tools: Record<string, unknown>[]) => {
         const first = tools[0]!;
         first.inputSchema = { type: "object", properties: { injected: { type: "string" } } };
@@ -306,7 +351,11 @@ describe("N8nProvider", () => {
     ]) {
       const secrets = memorySecrets();
       const mock = oauthMcpFetch({ mutateTools });
-      const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, mock.fetchImplementation);
+      const provider = new N8nProvider(
+        secrets.service,
+        { serverUrl: SERVER },
+        mock.fetchImplementation,
+      );
       const flow = await provider.connect(["workflow.read"], lifecycle());
       if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
       const authorization = new URL(flow.authorizationUrl);
@@ -327,7 +376,11 @@ describe("N8nProvider", () => {
       scopes: ["workflow:read"],
       mutateTools: (tools) => tools.splice(1),
     });
-    const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, mock.fetchImplementation);
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
     await authorize(provider, mock.requests);
     await expect(provider.status()).resolves.toMatchObject({
       grantedCapabilities: ["workflow.read"],
@@ -341,17 +394,29 @@ describe("N8nProvider", () => {
   it("rotates refresh tokens, recovers a new MCP session, and rejects remote tool errors", async () => {
     const secrets = memorySecrets();
     const first = oauthMcpFetch();
-    const connected = new N8nProvider(secrets.service, { serverUrl: SERVER }, first.fetchImplementation);
+    const connected = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      first.fetchImplementation,
+    );
     await authorize(connected, first.requests);
     await connected.close();
-    const second = oauthMcpFetch({ toolResult: { isError: true, content: [{ type: "text", text: "sensitive remote detail" }] } });
-    const restored = new N8nProvider(secrets.service, { serverUrl: SERVER }, second.fetchImplementation);
+    const second = oauthMcpFetch({
+      toolResult: { isError: true, content: [{ type: "text", text: "sensitive remote detail" }] },
+    });
+    const restored = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      second.fetchImplementation,
+    );
     await restored.prepare(lifecycle());
-    const stored = JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_SECRET_SUFFIX))) as Record<string, unknown>;
+    const stored = JSON.parse(
+      new TextDecoder().decode(secrets.values.get(N8N_SECRET_SUFFIX)),
+    ) as Record<string, unknown>;
     expect(stored.refreshToken).toBe("refresh-rotated");
-    await expect(
-      restored.invoke("n8n.search_projects", {}, invocation(false)),
-    ).rejects.toThrow("n8n reported that the tool operation failed.");
+    await expect(restored.invoke("n8n.search_projects", {}, invocation(false))).rejects.toThrow(
+      "n8n reported that the tool operation failed.",
+    );
     await restored.disconnect(lifecycle());
     expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
     await restored.close();
@@ -359,22 +424,29 @@ describe("N8nProvider", () => {
 
   it("bounds network responses and propagates caller cancellation without leaking endpoints", async () => {
     const secrets = memorySecrets();
-    const oversized = vi.fn(async () =>
-      new Response("x", { status: 200, headers: { "content-type": "application/json", "content-length": String(200_000) } }),
+    const oversized = vi.fn(
+      async () =>
+        new Response("x", {
+          status: 200,
+          headers: { "content-type": "application/json", "content-length": String(200_000) },
+        }),
     ) as unknown as typeof fetch;
     const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, oversized);
     await expect(provider.connect(["workflow.read"], lifecycle())).rejects.toThrow(/size/u);
     await provider.close();
 
     const controller = new AbortController();
-    const waiting = vi.fn(async (_input: string | URL | Request, init?: RequestInit) =>
-      new Promise<Response>((_resolve, reject) => {
-        if (init?.signal?.aborted) {
-          reject(new Error("fixture aborted"));
-          return;
-        }
-        init?.signal?.addEventListener("abort", () => reject(new Error("fixture aborted")), { once: true });
-      }),
+    const waiting = vi.fn(
+      async (_input: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          if (init?.signal?.aborted) {
+            reject(new Error("fixture aborted"));
+            return;
+          }
+          init?.signal?.addEventListener("abort", () => reject(new Error("fixture aborted")), {
+            once: true,
+          });
+        }),
     ) as unknown as typeof fetch;
     const cancelled = new N8nProvider(secrets.service, { serverUrl: SERVER }, waiting);
     const context = { signal: controller.signal, beginCommit: async () => controller.signal };
