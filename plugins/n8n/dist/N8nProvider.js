@@ -279,10 +279,22 @@ const UpdateSettings = Schema.Struct({
 });
 const UpdateOperation = Schema.Struct({
     type: Schema.Literals([
-        "updateNodeParameters", "setNodeParameter", "addNode", "removeNode", "renameNode",
-        "addConnection", "removeConnection", "setNodeCredential", "setNodePosition",
-        "setNodeDisabled", "setNodeSettings", "setWorkflowMetadata", "setWorkflowSettings",
-        "addTags", "removeTags", "setNodeGroups",
+        "updateNodeParameters",
+        "setNodeParameter",
+        "addNode",
+        "removeNode",
+        "renameNode",
+        "addConnection",
+        "removeConnection",
+        "setNodeCredential",
+        "setNodePosition",
+        "setNodeDisabled",
+        "setNodeSettings",
+        "setWorkflowMetadata",
+        "setWorkflowSettings",
+        "addTags",
+        "removeTags",
+        "setNodeGroups",
     ]),
     nodeName: Schema.optionalKey(BoundedText),
     node: Schema.optionalKey(NewNode),
@@ -477,7 +489,11 @@ function sameOriginEndpoint(value, path, origin, label) {
     return endpoint.toString();
 }
 function parseScopes(value, label = "n8n OAuth scope grant") {
-    const values = typeof value === "string" ? value.split(/\s+/u).filter(Boolean) : Array.isArray(value) ? value : [];
+    const values = typeof value === "string"
+        ? value.split(/\s+/u).filter(Boolean)
+        : Array.isArray(value)
+            ? value
+            : [];
     if (values.length === 0 ||
         values.length > OAUTH_SCOPE_SET.size ||
         values.some((entry) => typeof entry !== "string" || !OAUTH_SCOPE_SET.has(entry)) ||
@@ -690,7 +706,9 @@ function schemaContract(value) {
         return value;
     const record = value;
     const normalized = {};
-    for (const key of Object.keys(record).filter((entry) => STRUCTURAL_SCHEMA_KEYS.has(entry)).toSorted()) {
+    for (const key of Object.keys(record)
+        .filter((entry) => STRUCTURAL_SCHEMA_KEYS.has(entry))
+        .toSorted()) {
         if (key === "properties") {
             const properties = record.properties;
             if (!properties || typeof properties !== "object" || Array.isArray(properties))
@@ -917,7 +935,8 @@ export class N8nProvider {
             throw new IntegrationProviderPublicError("n8n could not register this local OAuth client.");
         }
         if (json.client_secret !== undefined ||
-            (json.token_endpoint_auth_method !== undefined && json.token_endpoint_auth_method !== "none") ||
+            (json.token_endpoint_auth_method !== undefined &&
+                json.token_endpoint_auth_method !== "none") ||
             (json.redirect_uris !== undefined &&
                 (!Array.isArray(json.redirect_uris) ||
                     json.redirect_uris.length !== 1 ||
@@ -1154,7 +1173,8 @@ export class N8nProvider {
             this.#sessionVerified = false;
             throw new SessionInvalidError("n8n MCP session expired.");
         }
-        if (notification && (response.status === 200 || response.status === 202 || response.status === 204)) {
+        if (notification &&
+            (response.status === 200 || response.status === 202 || response.status === 204)) {
             if (bytes.byteLength === 0)
                 return undefined;
         }
@@ -1399,17 +1419,27 @@ export class N8nProvider {
             ? flow.callbackExpiresAt !== null && flow.callbackExpiresAt <= Date.now()
             : flow.expiresAt <= Date.now()) {
             await this.#removeFlow(flowId);
-            return { state: "expired", retryAfterSeconds: null, message: "n8n sign-in expired. Start again." };
+            return {
+                state: "expired",
+                retryAfterSeconds: null,
+                message: "n8n sign-in expired. Start again.",
+            };
         }
         if (flow.callback === null) {
-            return { state: "pending", retryAfterSeconds: FLOW_POLL_SECONDS, message: "Waiting for n8n sign-in." };
+            return {
+                state: "pending",
+                retryAfterSeconds: FLOW_POLL_SECONDS,
+                message: "Waiting for n8n sign-in.",
+            };
         }
         if (flow.callback.kind === "error") {
             await this.#removeFlow(flowId);
             return {
                 state: "failed",
                 retryAfterSeconds: null,
-                message: flow.callback.error === "access_denied" ? "n8n sign-in was cancelled." : "n8n sign-in did not complete. Start again.",
+                message: flow.callback.error === "access_denied"
+                    ? "n8n sign-in was cancelled."
+                    : "n8n sign-in did not complete. Start again.",
             };
         }
         this.#polling.add(flowId);
@@ -1421,7 +1451,10 @@ export class N8nProvider {
             admitted = true;
             const { response, json } = await this.#requestJson(flow.discovery.tokenEndpoint, {
                 method: "POST",
-                headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
+                headers: {
+                    accept: "application/json",
+                    "content-type": "application/x-www-form-urlencoded",
+                },
                 body: new URLSearchParams({
                     client_id: flow.clientId,
                     code: flow.callback.code,
@@ -1435,7 +1468,11 @@ export class N8nProvider {
             responseSettled = true;
             if (!response.ok) {
                 await this.#removeFlow(flowId);
-                return { state: "failed", retryAfterSeconds: null, message: "n8n sign-in failed. Start again." };
+                return {
+                    state: "failed",
+                    retryAfterSeconds: null,
+                    message: "n8n sign-in failed. Start again.",
+                };
             }
             credentialIssued = true;
             const parsed = this.#parseTokenResponse(json, flow.clientId, flow.discovery);
@@ -1470,7 +1507,11 @@ export class N8nProvider {
                 this.#generation += 1;
             });
             await this.#removeFlow(flowId);
-            return { state: "connected", retryAfterSeconds: null, message: "n8n is connected for this user." };
+            return {
+                state: "connected",
+                retryAfterSeconds: null,
+                message: "n8n is connected for this user.",
+            };
         }
         catch (error) {
             if (admitted && (!responseSettled || credentialIssued) && this.#accessToken !== null) {
@@ -1510,7 +1551,10 @@ export class N8nProvider {
                 admitted = true;
                 const { response, json } = await this.#requestJson(discovery.tokenEndpoint, {
                     method: "POST",
-                    headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
+                    headers: {
+                        accept: "application/json",
+                        "content-type": "application/x-www-form-urlencoded",
+                    },
                     body: new URLSearchParams({
                         client_id: credential.clientId,
                         grant_type: "refresh_token",

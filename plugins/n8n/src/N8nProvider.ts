@@ -146,14 +146,9 @@ const ExecuteWorkflowInput = Schema.Struct({
 });
 const TestWorkflowInput = Schema.Struct({
   workflowId: BoundedId,
-  pinData: Schema.Record(
-    BoundedText,
-    Schema.Array(JsonObject).check(Schema.isMaxLength(1_000)),
-  ),
+  pinData: Schema.Record(BoundedText, Schema.Array(JsonObject).check(Schema.isMaxLength(1_000))),
   triggerNodeName: Schema.optionalKey(BoundedText),
-  timeout: Schema.optionalKey(
-    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3_600 })),
-  ),
+  timeout: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3_600 }))),
 });
 const PublishWorkflowInput = Schema.Struct({
   workflowId: BoundedId,
@@ -291,15 +286,11 @@ const NodeConfiguration = Schema.Struct({
 const ValidateNodeConfigInput = Schema.Struct({
   nodes: Schema.Array(NodeConfiguration).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
 });
-const SkillsUsed = Schema.optionalKey(
-  Schema.Array(BoundedText).check(Schema.isMaxLength(100)),
-);
+const SkillsUsed = Schema.optionalKey(Schema.Array(BoundedText).check(Schema.isMaxLength(100)));
 const CreateWorkflowInput = Schema.Struct({
   code: Code,
   skillsUsed: SkillsUsed,
-  name: Schema.optionalKey(
-    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
-  ),
+  name: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
   description: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(16_384))),
   versionName: Schema.optionalKey(
     Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
@@ -351,8 +342,12 @@ const UpdateSettings = Schema.Struct({
   errorWorkflow: Schema.optionalKey(BoundedId),
   timezone: Schema.optionalKey(BoundedText),
   executionOrder: Schema.optionalKey(Schema.Literals(["v0", "v1"])),
-  saveExecutionProgress: Schema.optionalKey(Schema.Union([Schema.Boolean, Schema.Literal("DEFAULT")])),
-  saveManualExecutions: Schema.optionalKey(Schema.Union([Schema.Boolean, Schema.Literal("DEFAULT")])),
+  saveExecutionProgress: Schema.optionalKey(
+    Schema.Union([Schema.Boolean, Schema.Literal("DEFAULT")]),
+  ),
+  saveManualExecutions: Schema.optionalKey(
+    Schema.Union([Schema.Boolean, Schema.Literal("DEFAULT")]),
+  ),
   saveDataErrorExecution: Schema.optionalKey(Schema.Literals(["DEFAULT", "all", "none"])),
   saveDataSuccessExecution: Schema.optionalKey(Schema.Literals(["DEFAULT", "all", "none"])),
   executionTimeout: Schema.optionalKey(
@@ -368,10 +363,22 @@ const UpdateSettings = Schema.Struct({
 });
 const UpdateOperation = Schema.Struct({
   type: Schema.Literals([
-    "updateNodeParameters", "setNodeParameter", "addNode", "removeNode", "renameNode",
-    "addConnection", "removeConnection", "setNodeCredential", "setNodePosition",
-    "setNodeDisabled", "setNodeSettings", "setWorkflowMetadata", "setWorkflowSettings",
-    "addTags", "removeTags", "setNodeGroups",
+    "updateNodeParameters",
+    "setNodeParameter",
+    "addNode",
+    "removeNode",
+    "renameNode",
+    "addConnection",
+    "removeConnection",
+    "setNodeCredential",
+    "setNodePosition",
+    "setNodeDisabled",
+    "setNodeSettings",
+    "setWorkflowMetadata",
+    "setWorkflowSettings",
+    "addTags",
+    "removeTags",
+    "setNodeGroups",
   ]),
   nodeName: Schema.optionalKey(BoundedText),
   node: Schema.optionalKey(NewNode),
@@ -394,9 +401,7 @@ const UpdateOperation = Schema.Struct({
   position: Schema.optionalKey(Position),
   disabled: Schema.optionalKey(Schema.Boolean),
   settings: Schema.optionalKey(UpdateSettings),
-  name: Schema.optionalKey(
-    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
-  ),
+  name: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
   description: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(255))),
   names: Schema.optionalKey(
     Schema.Array(BoundedText).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
@@ -419,10 +424,7 @@ const UpdateWorkflowInput = Schema.Struct({
     Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
   ),
   versionDescription: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(1_000))),
-  operations: Schema.Array(UpdateOperation).check(
-    Schema.isMinLength(1),
-    Schema.isMaxLength(100),
-  ),
+  operations: Schema.Array(UpdateOperation).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
 });
 const SearchDataTablesInput = Schema.Struct({
   query: OptionalQuery,
@@ -503,40 +505,220 @@ function reviewedTool(
 }
 
 const REVIEWED_TOOLS = [
-  reviewedTool("search_workflows", "Search workflow previews visible to the connected n8n user.", SearchWorkflowsInput, "workflow.read"),
-  reviewedTool("get_workflow_details", "Read one accessible workflow with sanitized nodes and trigger guidance.", WorkflowIdInput, "workflow.read"),
-  reviewedTool("get_workflow_history", "Read bounded version history for one accessible workflow.", WorkflowHistoryInput, "workflow.read"),
-  reviewedTool("get_workflow_version", "Read one exact historical workflow version.", WorkflowVersionInput, "workflow.read"),
-  reviewedTool("execute_workflow", "Execute an accessible workflow in manual or production mode.", ExecuteWorkflowInput, "workflow.execute", { readOnly: false, destructive: true, idempotent: false, openWorld: true }),
-  reviewedTool("test_workflow", "Test workflow logic with bounded pin data.", TestWorkflowInput, "workflow.execute", { readOnly: false, destructive: true, idempotent: false }),
-  reviewedTool("prepare_workflow_pin_data", "Prepare pin-data schemas for testing one workflow.", WorkflowIdInput, "workflow.execute"),
-  reviewedTool("publish_workflow", "Publish an accessible workflow version.", PublishWorkflowInput, "workflow.write", { readOnly: false, idempotent: true }),
-  reviewedTool("unpublish_workflow", "Unpublish an accessible workflow.", WorkflowIdInput, "workflow.write", { readOnly: false, idempotent: true }),
-  reviewedTool("search_projects", "Search projects visible to the connected n8n user.", SearchProjectsInput, "project.read"),
-  reviewedTool("search_folders", "Search folders within one accessible project.", SearchFoldersInput, "project.read"),
+  reviewedTool(
+    "search_workflows",
+    "Search workflow previews visible to the connected n8n user.",
+    SearchWorkflowsInput,
+    "workflow.read",
+  ),
+  reviewedTool(
+    "get_workflow_details",
+    "Read one accessible workflow with sanitized nodes and trigger guidance.",
+    WorkflowIdInput,
+    "workflow.read",
+  ),
+  reviewedTool(
+    "get_workflow_history",
+    "Read bounded version history for one accessible workflow.",
+    WorkflowHistoryInput,
+    "workflow.read",
+  ),
+  reviewedTool(
+    "get_workflow_version",
+    "Read one exact historical workflow version.",
+    WorkflowVersionInput,
+    "workflow.read",
+  ),
+  reviewedTool(
+    "execute_workflow",
+    "Execute an accessible workflow in manual or production mode.",
+    ExecuteWorkflowInput,
+    "workflow.execute",
+    { readOnly: false, destructive: true, idempotent: false, openWorld: true },
+  ),
+  reviewedTool(
+    "test_workflow",
+    "Test workflow logic with bounded pin data.",
+    TestWorkflowInput,
+    "workflow.execute",
+    { readOnly: false, destructive: true, idempotent: false },
+  ),
+  reviewedTool(
+    "prepare_workflow_pin_data",
+    "Prepare pin-data schemas for testing one workflow.",
+    WorkflowIdInput,
+    "workflow.execute",
+  ),
+  reviewedTool(
+    "publish_workflow",
+    "Publish an accessible workflow version.",
+    PublishWorkflowInput,
+    "workflow.write",
+    { readOnly: false, idempotent: true },
+  ),
+  reviewedTool(
+    "unpublish_workflow",
+    "Unpublish an accessible workflow.",
+    WorkflowIdInput,
+    "workflow.write",
+    { readOnly: false, idempotent: true },
+  ),
+  reviewedTool(
+    "search_projects",
+    "Search projects visible to the connected n8n user.",
+    SearchProjectsInput,
+    "project.read",
+  ),
+  reviewedTool(
+    "search_folders",
+    "Search folders within one accessible project.",
+    SearchFoldersInput,
+    "project.read",
+  ),
   reviewedTool("list_workflow_tags", "List available workflow tags.", ListTagsInput, "tag.read"),
-  reviewedTool("get_workflow_execution", "Read one accessible execution with optionally bounded result data.", GetExecutionInput, "execution.read"),
-  reviewedTool("search_workflow_executions", "Search accessible workflow executions.", SearchExecutionsInput, "execution.read"),
-  reviewedTool("list_credentials", "List accessible credential names and metadata without secret values.", ListCredentialsInput, "credential.read"),
-  reviewedTool("list_n8n_connect_services", "List n8n Connect managed-credential coverage without credential values.", EmptyInput, "credential.read"),
-  reviewedTool("get_workflow_sdk_reference", "Read reviewed n8n Workflow SDK reference material.", GetSdkReferenceInput, "workflow.read"),
-  reviewedTool("search_nodes", "Search n8n node types by bounded queries.", SearchNodesInput, "workflow.read"),
-  reviewedTool("get_node_types", "Read exact TypeScript definitions for selected n8n node types.", GetNodeTypesInput, "workflow.read"),
-  reviewedTool("get_workflow_best_practices", "Read n8n best practices for a workflow technique.", BestPracticesInput, "workflow.read"),
-  reviewedTool("explore_node_resources", "Resolve resources for one node using an accessible credential.", ExploreNodeResourcesInput, "credential.read", { openWorld: true }),
-  reviewedTool("validate_workflow", "Validate bounded Workflow SDK code without saving it.", ValidateWorkflowInput, "workflow.read"),
-  reviewedTool("validate_node_config", "Validate bounded node configurations without saving them.", ValidateNodeConfigInput, "workflow.read"),
-  reviewedTool("create_workflow_from_code", "Create a workflow from validated Workflow SDK code.", CreateWorkflowInput, "workflow.write", { readOnly: false, idempotent: false }),
-  reviewedTool("update_workflow", "Atomically apply a bounded ordered operation batch to a workflow.", UpdateWorkflowInput, "workflow.write", { readOnly: false, destructive: true, idempotent: false }),
-  reviewedTool("archive_workflow", "Archive an accessible workflow.", WorkflowIdInput, "workflow.write", { readOnly: false, destructive: true, idempotent: true }),
-  reviewedTool("restore_workflow_version", "Restore an accessible workflow from one exact historical version.", WorkflowVersionInput, "workflow.write", { readOnly: false, destructive: true, idempotent: false }),
-  reviewedTool("search_data_tables", "Search data tables visible to the connected n8n user.", SearchDataTablesInput, "data-table.read"),
-  reviewedTool("create_data_table", "Create a data table in an accessible project.", CreateDataTableInput, "data-table.write", { readOnly: false, idempotent: false }),
-  reviewedTool("add_data_table_column", "Add a column to an accessible data table.", AddDataTableColumnInput, "data-table.write", { readOnly: false, idempotent: false }),
-  reviewedTool("rename_data_table_column", "Rename a column in an accessible data table.", RenameDataTableColumnInput, "data-table.write", { readOnly: false, idempotent: true }),
-  reviewedTool("delete_data_table_column", "Permanently delete a data-table column and its data.", DeleteDataTableColumnInput, "data-table.write", { readOnly: false, destructive: true, idempotent: false }),
-  reviewedTool("rename_data_table", "Rename an accessible data table.", RenameDataTableInput, "data-table.write", { readOnly: false, idempotent: true }),
-  reviewedTool("add_data_table_rows", "Insert bounded rows into an accessible data table.", AddDataTableRowsInput, "data-table.write", { readOnly: false, idempotent: false }),
+  reviewedTool(
+    "get_workflow_execution",
+    "Read one accessible execution with optionally bounded result data.",
+    GetExecutionInput,
+    "execution.read",
+  ),
+  reviewedTool(
+    "search_workflow_executions",
+    "Search accessible workflow executions.",
+    SearchExecutionsInput,
+    "execution.read",
+  ),
+  reviewedTool(
+    "list_credentials",
+    "List accessible credential names and metadata without secret values.",
+    ListCredentialsInput,
+    "credential.read",
+  ),
+  reviewedTool(
+    "list_n8n_connect_services",
+    "List n8n Connect managed-credential coverage without credential values.",
+    EmptyInput,
+    "credential.read",
+  ),
+  reviewedTool(
+    "get_workflow_sdk_reference",
+    "Read reviewed n8n Workflow SDK reference material.",
+    GetSdkReferenceInput,
+    "workflow.read",
+  ),
+  reviewedTool(
+    "search_nodes",
+    "Search n8n node types by bounded queries.",
+    SearchNodesInput,
+    "workflow.read",
+  ),
+  reviewedTool(
+    "get_node_types",
+    "Read exact TypeScript definitions for selected n8n node types.",
+    GetNodeTypesInput,
+    "workflow.read",
+  ),
+  reviewedTool(
+    "get_workflow_best_practices",
+    "Read n8n best practices for a workflow technique.",
+    BestPracticesInput,
+    "workflow.read",
+  ),
+  reviewedTool(
+    "explore_node_resources",
+    "Resolve resources for one node using an accessible credential.",
+    ExploreNodeResourcesInput,
+    "credential.read",
+    { openWorld: true },
+  ),
+  reviewedTool(
+    "validate_workflow",
+    "Validate bounded Workflow SDK code without saving it.",
+    ValidateWorkflowInput,
+    "workflow.read",
+  ),
+  reviewedTool(
+    "validate_node_config",
+    "Validate bounded node configurations without saving them.",
+    ValidateNodeConfigInput,
+    "workflow.read",
+  ),
+  reviewedTool(
+    "create_workflow_from_code",
+    "Create a workflow from validated Workflow SDK code.",
+    CreateWorkflowInput,
+    "workflow.write",
+    { readOnly: false, idempotent: false },
+  ),
+  reviewedTool(
+    "update_workflow",
+    "Atomically apply a bounded ordered operation batch to a workflow.",
+    UpdateWorkflowInput,
+    "workflow.write",
+    { readOnly: false, destructive: true, idempotent: false },
+  ),
+  reviewedTool(
+    "archive_workflow",
+    "Archive an accessible workflow.",
+    WorkflowIdInput,
+    "workflow.write",
+    { readOnly: false, destructive: true, idempotent: true },
+  ),
+  reviewedTool(
+    "restore_workflow_version",
+    "Restore an accessible workflow from one exact historical version.",
+    WorkflowVersionInput,
+    "workflow.write",
+    { readOnly: false, destructive: true, idempotent: false },
+  ),
+  reviewedTool(
+    "search_data_tables",
+    "Search data tables visible to the connected n8n user.",
+    SearchDataTablesInput,
+    "data-table.read",
+  ),
+  reviewedTool(
+    "create_data_table",
+    "Create a data table in an accessible project.",
+    CreateDataTableInput,
+    "data-table.write",
+    { readOnly: false, idempotent: false },
+  ),
+  reviewedTool(
+    "add_data_table_column",
+    "Add a column to an accessible data table.",
+    AddDataTableColumnInput,
+    "data-table.write",
+    { readOnly: false, idempotent: false },
+  ),
+  reviewedTool(
+    "rename_data_table_column",
+    "Rename a column in an accessible data table.",
+    RenameDataTableColumnInput,
+    "data-table.write",
+    { readOnly: false, idempotent: true },
+  ),
+  reviewedTool(
+    "delete_data_table_column",
+    "Permanently delete a data-table column and its data.",
+    DeleteDataTableColumnInput,
+    "data-table.write",
+    { readOnly: false, destructive: true, idempotent: false },
+  ),
+  reviewedTool(
+    "rename_data_table",
+    "Rename an accessible data table.",
+    RenameDataTableInput,
+    "data-table.write",
+    { readOnly: false, idempotent: true },
+  ),
+  reviewedTool(
+    "add_data_table_rows",
+    "Insert bounded rows into an accessible data table.",
+    AddDataTableRowsInput,
+    "data-table.write",
+    { readOnly: false, idempotent: false },
+  ),
 ] as const satisfies ReadonlyArray<ReviewedTool>;
 
 export const N8N_TOOLS: ReadonlyArray<IntegrationProviderTool> = REVIEWED_TOOLS;
@@ -591,13 +773,6 @@ interface PendingFlow {
   callback: AuthorizationCodeResult | AuthorizationErrorResult | null;
   consumed: boolean;
   closePromise: Promise<void> | null;
-}
-
-interface JsonRpcResponse {
-  readonly jsonrpc: "2.0";
-  readonly id: string | number;
-  readonly result?: unknown;
-  readonly error?: { readonly code: number; readonly message?: unknown; readonly data?: unknown };
 }
 
 type Fetch = typeof globalThis.fetch;
@@ -683,7 +858,11 @@ function sameOriginEndpoint(value: unknown, path: string, origin: string, label:
 
 function parseScopes(value: unknown, label = "n8n OAuth scope grant"): string[] {
   const values =
-    typeof value === "string" ? value.split(/\s+/u).filter(Boolean) : Array.isArray(value) ? value : [];
+    typeof value === "string"
+      ? value.split(/\s+/u).filter(Boolean)
+      : Array.isArray(value)
+        ? value
+        : [];
   if (
     values.length === 0 ||
     values.length > OAUTH_SCOPE_SET.size ||
@@ -890,7 +1069,9 @@ function schemaContract(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   const record = value as Record<string, unknown>;
   const normalized: Record<string, unknown> = {};
-  for (const key of Object.keys(record).filter((entry) => STRUCTURAL_SCHEMA_KEYS.has(entry)).toSorted()) {
+  for (const key of Object.keys(record)
+    .filter((entry) => STRUCTURAL_SCHEMA_KEYS.has(entry))
+    .toSorted()) {
     if (key === "properties") {
       const properties = record.properties;
       if (!properties || typeof properties !== "object" || Array.isArray(properties)) continue;
@@ -1133,7 +1314,11 @@ export class N8nProvider implements IntegrationProvider {
     if (!response.ok || json.issuer !== issuer) {
       throw new Error("n8n OAuth authorization metadata is invalid.");
     }
-    exactStringSet(json.scopes_supported, OAUTH_SCOPE_SET, "n8n OAuth authorization scope metadata");
+    exactStringSet(
+      json.scopes_supported,
+      OAUTH_SCOPE_SET,
+      "n8n OAuth authorization scope metadata",
+    );
     if (
       !Array.isArray(json.response_types_supported) ||
       !json.response_types_supported.includes("code") ||
@@ -1204,7 +1389,8 @@ export class N8nProvider implements IntegrationProvider {
     }
     if (
       json.client_secret !== undefined ||
-      (json.token_endpoint_auth_method !== undefined && json.token_endpoint_auth_method !== "none") ||
+      (json.token_endpoint_auth_method !== undefined &&
+        json.token_endpoint_auth_method !== "none") ||
       (json.redirect_uris !== undefined &&
         (!Array.isArray(json.redirect_uris) ||
           json.redirect_uris.length !== 1 ||
@@ -1327,7 +1513,9 @@ export class N8nProvider implements IntegrationProvider {
     if (
       url.pathname !== CALLBACK_PATH ||
       [...url.searchParams.keys()].some((key) => !allowed.has(key)) ||
-      [...new Set(url.searchParams.keys())].some((key) => url.searchParams.getAll(key).length !== 1) ||
+      [...new Set(url.searchParams.keys())].some(
+        (key) => url.searchParams.getAll(key).length !== 1,
+      ) ||
       url.searchParams.get("iss") !== flow.discovery.issuer ||
       !timingSafeTextEqual(url.searchParams.get("state") ?? "", flow.state) ||
       flow.consumed
@@ -1412,12 +1600,15 @@ export class N8nProvider implements IntegrationProvider {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       throw new Error("n8n loopback listener did not bind safely.");
     }
-    const timer = setTimeout(() => {
-      if (this.#pending.get(input.flowId) === flow) {
-        this.#pending.delete(input.flowId);
-        if (flow) void this.#closeFlowListener(flow, true);
-      }
-    }, Math.max(1, input.expiresAt - Date.now()));
+    const timer = setTimeout(
+      () => {
+        if (this.#pending.get(input.flowId) === flow) {
+          this.#pending.delete(input.flowId);
+          if (flow) void this.#closeFlowListener(flow, true);
+        }
+      },
+      Math.max(1, input.expiresAt - Date.now()),
+    );
     timer.unref();
     flow = {
       ...input,
@@ -1475,22 +1666,31 @@ export class N8nProvider implements IntegrationProvider {
       this.#sessionId = null;
       this.#sessionVerified = false;
       this.#availableTools = new Set();
-      throw new IntegrationProviderPublicError("n8n authorization expired. Reconnect if refresh fails.");
+      throw new IntegrationProviderPublicError(
+        "n8n authorization expired. Reconnect if refresh fails.",
+      );
     }
     if (response.status === 404 && this.#sessionId) {
       this.#sessionId = null;
       this.#sessionVerified = false;
       throw new SessionInvalidError("n8n MCP session expired.");
     }
-    if (notification && (response.status === 200 || response.status === 202 || response.status === 204)) {
+    if (
+      notification &&
+      (response.status === 200 || response.status === 202 || response.status === 204)
+    ) {
       if (bytes.byteLength === 0) return undefined;
     }
     if (!response.ok) {
       if (response.status === 429) {
-        throw new IntegrationProviderPublicError("n8n is rate limiting MCP requests. Try again later.");
+        throw new IntegrationProviderPublicError(
+          "n8n is rate limiting MCP requests. Try again later.",
+        );
       }
       if (response.status === 403) {
-        throw new IntegrationProviderPublicError("n8n denied this operation for the connected user.");
+        throw new IntegrationProviderPublicError(
+          "n8n denied this operation for the connected user.",
+        );
       }
       throw new IntegrationProviderPublicError("n8n MCP could not complete the request.");
     }
@@ -1573,7 +1773,8 @@ export class N8nProvider implements IntegrationProvider {
         );
         if (!Array.isArray(result.tools)) throw new Error("n8n MCP tool inventory is invalid.");
         collected.push(...result.tools.map((tool) => asRecord(tool, "n8n MCP tool definition")));
-        if (collected.length > MAX_MCP_TOOLS) throw new Error("n8n MCP tool inventory is too large.");
+        if (collected.length > MAX_MCP_TOOLS)
+          throw new Error("n8n MCP tool inventory is too large.");
         if (result.nextCursor === undefined || result.nextCursor === null) {
           cursor = undefined;
           break;
@@ -1695,8 +1896,12 @@ export class N8nProvider implements IntegrationProvider {
     capabilities: ReadonlyArray<string>,
     context?: IntegrationLifecycleContext,
     submission?: IntegrationConnectionSubmission,
-  ): Promise<IntegrationAuthorizationUrlConnectResult | { readonly kind: "connected"; readonly flowId: string; readonly message: string }> {
-    if (submission !== undefined) throw new Error("n8n browser OAuth rejects credential submissions.");
+  ): Promise<
+    | IntegrationAuthorizationUrlConnectResult
+    | { readonly kind: "connected"; readonly flowId: string; readonly message: string }
+  > {
+    if (submission !== undefined)
+      throw new Error("n8n browser OAuth rejects credential submissions.");
     if (this.#closed || this.#disconnecting) throw new Error("n8n is unavailable.");
     if (this.#uncertainCredentialState) throw new Error("n8n credential state is uncertain.");
     if (
@@ -1751,7 +1956,10 @@ export class N8nProvider implements IntegrationProvider {
     authorizationUrl.searchParams.set("response_type", "code");
     authorizationUrl.searchParams.set("scope", OAUTH_SCOPES.join(" "));
     authorizationUrl.searchParams.set("state", state);
-    authorizationUrl.searchParams.set("code_challenge", NodeCrypto.createHash("sha256").update(codeVerifier, "ascii").digest("base64url"));
+    authorizationUrl.searchParams.set(
+      "code_challenge",
+      NodeCrypto.createHash("sha256").update(codeVerifier, "ascii").digest("base64url"),
+    );
     authorizationUrl.searchParams.set("code_challenge_method", "S256");
     authorizationUrl.searchParams.set("resource", this.#server.toString());
     return {
@@ -1779,17 +1987,28 @@ export class N8nProvider implements IntegrationProvider {
         : flow.expiresAt <= Date.now()
     ) {
       await this.#removeFlow(flowId);
-      return { state: "expired", retryAfterSeconds: null, message: "n8n sign-in expired. Start again." };
+      return {
+        state: "expired",
+        retryAfterSeconds: null,
+        message: "n8n sign-in expired. Start again.",
+      };
     }
     if (flow.callback === null) {
-      return { state: "pending", retryAfterSeconds: FLOW_POLL_SECONDS, message: "Waiting for n8n sign-in." };
+      return {
+        state: "pending",
+        retryAfterSeconds: FLOW_POLL_SECONDS,
+        message: "Waiting for n8n sign-in.",
+      };
     }
     if (flow.callback.kind === "error") {
       await this.#removeFlow(flowId);
       return {
         state: "failed",
         retryAfterSeconds: null,
-        message: flow.callback.error === "access_denied" ? "n8n sign-in was cancelled." : "n8n sign-in did not complete. Start again.",
+        message:
+          flow.callback.error === "access_denied"
+            ? "n8n sign-in was cancelled."
+            : "n8n sign-in did not complete. Start again.",
       };
     }
     this.#polling.add(flowId);
@@ -1803,7 +2022,10 @@ export class N8nProvider implements IntegrationProvider {
         flow.discovery.tokenEndpoint,
         {
           method: "POST",
-          headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
+          headers: {
+            accept: "application/json",
+            "content-type": "application/x-www-form-urlencoded",
+          },
           body: new URLSearchParams({
             client_id: flow.clientId,
             code: flow.callback.code,
@@ -1819,7 +2041,11 @@ export class N8nProvider implements IntegrationProvider {
       responseSettled = true;
       if (!response.ok) {
         await this.#removeFlow(flowId);
-        return { state: "failed", retryAfterSeconds: null, message: "n8n sign-in failed. Start again." };
+        return {
+          state: "failed",
+          retryAfterSeconds: null,
+          message: "n8n sign-in failed. Start again.",
+        };
       }
       credentialIssued = true;
       const parsed = this.#parseTokenResponse(json, flow.clientId, flow.discovery);
@@ -1830,9 +2056,11 @@ export class N8nProvider implements IntegrationProvider {
       try {
         await this.#initializeSession(parsed.access, commitSignal);
       } catch (error) {
-        await this.#revokeToken(flow.discovery, parsed.credential.refreshToken, commitSignal).catch(() => {
-          this.#uncertainCredentialState = true;
-        });
+        await this.#revokeToken(flow.discovery, parsed.credential.refreshToken, commitSignal).catch(
+          () => {
+            this.#uncertainCredentialState = true;
+          },
+        );
         this.#accessToken = null;
         this.#sessionId = null;
         this.#sessionVerified = false;
@@ -1855,7 +2083,11 @@ export class N8nProvider implements IntegrationProvider {
         this.#generation += 1;
       });
       await this.#removeFlow(flowId);
-      return { state: "connected", retryAfterSeconds: null, message: "n8n is connected for this user." };
+      return {
+        state: "connected",
+        retryAfterSeconds: null,
+        message: "n8n is connected for this user.",
+      };
     } catch (error) {
       if (admitted && (!responseSettled || credentialIssued) && this.#accessToken !== null) {
         this.#uncertainCredentialState = true;
@@ -1893,7 +2125,10 @@ export class N8nProvider implements IntegrationProvider {
           discovery.tokenEndpoint,
           {
             method: "POST",
-            headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
+            headers: {
+              accept: "application/json",
+              "content-type": "application/x-www-form-urlencoded",
+            },
             body: new URLSearchParams({
               client_id: credential.clientId,
               grant_type: "refresh_token",
@@ -1907,10 +2142,17 @@ export class N8nProvider implements IntegrationProvider {
         );
         responseSettled = true;
         if (!response.ok) {
-          throw new IntegrationProviderPublicError("n8n access could not be refreshed. Disconnect and reconnect.");
+          throw new IntegrationProviderPublicError(
+            "n8n access could not be refreshed. Disconnect and reconnect.",
+          );
         }
         credentialIssued = true;
-        const parsed = this.#parseTokenResponse(json, credential.clientId, discovery, credential.refreshToken);
+        const parsed = this.#parseTokenResponse(
+          json,
+          credential.clientId,
+          discovery,
+          credential.refreshToken,
+        );
         if (generation !== this.#generation || revision !== this.#credentialRevision) {
           throw new Error("n8n connection changed while refreshing.");
         }
@@ -1922,7 +2164,8 @@ export class N8nProvider implements IntegrationProvider {
         await this.#writeCredential(parsed.credential, commitSignal);
         this.#credentialRevision += 1;
       } catch (error) {
-        if (admitted && (!responseSettled || credentialIssued)) this.#uncertainCredentialState = true;
+        if (admitted && (!responseSettled || credentialIssued))
+          this.#uncertainCredentialState = true;
         throw error;
       }
     });
@@ -1984,7 +2227,9 @@ export class N8nProvider implements IntegrationProvider {
       this.#disconnecting ||
       this.#uncertainCredentialState
     ) {
-      throw new IntegrationProviderPublicError("n8n access is not prepared. Reconnect if this continues.");
+      throw new IntegrationProviderPublicError(
+        "n8n access is not prepared. Reconnect if this continues.",
+      );
     }
     if (!this.#availableTools.has(reviewed.upstreamName)) {
       throw new IntegrationProviderPublicError(
@@ -1999,7 +2244,8 @@ export class N8nProvider implements IntegrationProvider {
             throw new Error("n8n writes require Harness commit admission.");
           })();
     if (!signal) throw new Error("n8n invocation requires a cancellation signal.");
-    const timeout = reviewed.upstreamName === "test_workflow" ? TEST_REQUEST_TIMEOUT_MS : this.#requestTimeoutMs;
+    const timeout =
+      reviewed.upstreamName === "test_workflow" ? TEST_REQUEST_TIMEOUT_MS : this.#requestTimeoutMs;
     const call = async () => {
       const result = asRecord(
         await this.#mcpRpc(

@@ -64,46 +64,260 @@
     }
   ],
   "tools": [
-    { "name": "n8n.search_workflows", "displayName": "Search workflows", "description": "Search workflow previews visible to the connected n8n user.", "capabilities": ["workflow.read"], "effect": "read" },
-    { "name": "n8n.get_workflow_details", "displayName": "Read workflow", "description": "Read one accessible workflow with sanitized nodes and trigger guidance.", "capabilities": ["workflow.read"], "effect": "read" },
-    { "name": "n8n.get_workflow_history", "displayName": "Read workflow history", "description": "Read bounded version history for one accessible workflow.", "capabilities": ["workflow.read"], "effect": "read" },
-    { "name": "n8n.get_workflow_version", "displayName": "Read workflow version", "description": "Read one exact historical workflow version.", "capabilities": ["workflow.read"], "effect": "read" },
-    { "name": "n8n.execute_workflow", "displayName": "Execute workflow", "description": "Execute an accessible workflow in manual or production mode.", "capabilities": ["workflow.execute"], "effect": "write" },
-    { "name": "n8n.test_workflow", "displayName": "Test workflow", "description": "Test workflow logic with bounded pin data.", "capabilities": ["workflow.execute"], "effect": "write" },
-    { "name": "n8n.prepare_workflow_pin_data", "displayName": "Prepare workflow pin data", "description": "Prepare pin-data schemas for testing one workflow.", "capabilities": ["workflow.execute"], "effect": "read" },
-    { "name": "n8n.publish_workflow", "displayName": "Publish workflow", "description": "Publish an accessible workflow version.", "capabilities": ["workflow.write"], "effect": "write" },
-    { "name": "n8n.unpublish_workflow", "displayName": "Unpublish workflow", "description": "Unpublish an accessible workflow.", "capabilities": ["workflow.write"], "effect": "write" },
-    { "name": "n8n.search_projects", "displayName": "Search projects", "description": "Search projects visible to the connected n8n user.", "capabilities": ["project.read"], "effect": "read" },
-    { "name": "n8n.search_folders", "displayName": "Search folders", "description": "Search folders within one accessible project.", "capabilities": ["project.read"], "effect": "read" },
-    { "name": "n8n.list_workflow_tags", "displayName": "List workflow tags", "description": "List available workflow tags.", "capabilities": ["tag.read"], "effect": "read" },
-    { "name": "n8n.get_workflow_execution", "displayName": "Read execution", "description": "Read one accessible execution with optionally bounded result data.", "capabilities": ["execution.read"], "effect": "read" },
-    { "name": "n8n.search_workflow_executions", "displayName": "Search executions", "description": "Search accessible workflow executions.", "capabilities": ["execution.read"], "effect": "read" },
-    { "name": "n8n.list_credentials", "displayName": "List credentials", "description": "List accessible credential names and metadata without secret values.", "capabilities": ["credential.read"], "effect": "read" },
-    { "name": "n8n.list_n8n_connect_services", "displayName": "List n8n Connect services", "description": "List n8n Connect managed-credential coverage without credential values.", "capabilities": ["credential.read"], "effect": "read" },
-    { "name": "n8n.get_workflow_sdk_reference", "displayName": "Read workflow SDK reference", "description": "Read reviewed n8n Workflow SDK reference material.", "capabilities": ["workflow.read"], "effect": "read" },
-    { "name": "n8n.search_nodes", "displayName": "Search nodes", "description": "Search n8n node types by bounded queries.", "capabilities": ["workflow.read"], "effect": "read" },
-    { "name": "n8n.get_node_types", "displayName": "Read node types", "description": "Read exact TypeScript definitions for selected n8n node types.", "capabilities": ["workflow.read"], "effect": "read" },
-    { "name": "n8n.get_workflow_best_practices", "displayName": "Read workflow best practices", "description": "Read n8n best practices for a workflow technique.", "capabilities": ["workflow.read"], "effect": "read" },
-    { "name": "n8n.explore_node_resources", "displayName": "Explore node resources", "description": "Resolve resources for one node using an accessible credential.", "capabilities": ["credential.read"], "effect": "read" },
-    { "name": "n8n.validate_workflow", "displayName": "Validate workflow", "description": "Validate bounded Workflow SDK code without saving it.", "capabilities": ["workflow.read"], "effect": "read" },
-    { "name": "n8n.validate_node_config", "displayName": "Validate node configuration", "description": "Validate bounded node configurations without saving them.", "capabilities": ["workflow.read"], "effect": "read" },
-    { "name": "n8n.create_workflow_from_code", "displayName": "Create workflow", "description": "Create a workflow from validated Workflow SDK code.", "capabilities": ["workflow.write"], "effect": "write" },
-    { "name": "n8n.update_workflow", "displayName": "Update workflow", "description": "Atomically apply a bounded ordered operation batch to a workflow.", "capabilities": ["workflow.write"], "effect": "write" },
-    { "name": "n8n.archive_workflow", "displayName": "Archive workflow", "description": "Archive an accessible workflow.", "capabilities": ["workflow.write"], "effect": "write" },
-    { "name": "n8n.restore_workflow_version", "displayName": "Restore workflow version", "description": "Restore an accessible workflow from one exact historical version.", "capabilities": ["workflow.write"], "effect": "write" },
-    { "name": "n8n.search_data_tables", "displayName": "Search data tables", "description": "Search data tables visible to the connected n8n user.", "capabilities": ["data-table.read"], "effect": "read" },
-    { "name": "n8n.create_data_table", "displayName": "Create data table", "description": "Create a data table in an accessible project.", "capabilities": ["data-table.write"], "effect": "write" },
-    { "name": "n8n.add_data_table_column", "displayName": "Add data-table column", "description": "Add a column to an accessible data table.", "capabilities": ["data-table.write"], "effect": "write" },
-    { "name": "n8n.rename_data_table_column", "displayName": "Rename data-table column", "description": "Rename a column in an accessible data table.", "capabilities": ["data-table.write"], "effect": "write" },
-    { "name": "n8n.delete_data_table_column", "displayName": "Delete data-table column", "description": "Permanently delete a data-table column and its data.", "capabilities": ["data-table.write"], "effect": "write" },
-    { "name": "n8n.rename_data_table", "displayName": "Rename data table", "description": "Rename an accessible data table.", "capabilities": ["data-table.write"], "effect": "write" },
-    { "name": "n8n.add_data_table_rows", "displayName": "Add data-table rows", "description": "Insert bounded rows into an accessible data table.", "capabilities": ["data-table.write"], "effect": "write" }
+    {
+      "name": "n8n.search_workflows",
+      "displayName": "Search workflows",
+      "description": "Search workflow previews visible to the connected n8n user.",
+      "capabilities": ["workflow.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.get_workflow_details",
+      "displayName": "Read workflow",
+      "description": "Read one accessible workflow with sanitized nodes and trigger guidance.",
+      "capabilities": ["workflow.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.get_workflow_history",
+      "displayName": "Read workflow history",
+      "description": "Read bounded version history for one accessible workflow.",
+      "capabilities": ["workflow.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.get_workflow_version",
+      "displayName": "Read workflow version",
+      "description": "Read one exact historical workflow version.",
+      "capabilities": ["workflow.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.execute_workflow",
+      "displayName": "Execute workflow",
+      "description": "Execute an accessible workflow in manual or production mode.",
+      "capabilities": ["workflow.execute"],
+      "effect": "write"
+    },
+    {
+      "name": "n8n.test_workflow",
+      "displayName": "Test workflow",
+      "description": "Test workflow logic with bounded pin data.",
+      "capabilities": ["workflow.execute"],
+      "effect": "write"
+    },
+    {
+      "name": "n8n.prepare_workflow_pin_data",
+      "displayName": "Prepare workflow pin data",
+      "description": "Prepare pin-data schemas for testing one workflow.",
+      "capabilities": ["workflow.execute"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.publish_workflow",
+      "displayName": "Publish workflow",
+      "description": "Publish an accessible workflow version.",
+      "capabilities": ["workflow.write"],
+      "effect": "write"
+    },
+    {
+      "name": "n8n.unpublish_workflow",
+      "displayName": "Unpublish workflow",
+      "description": "Unpublish an accessible workflow.",
+      "capabilities": ["workflow.write"],
+      "effect": "write"
+    },
+    {
+      "name": "n8n.search_projects",
+      "displayName": "Search projects",
+      "description": "Search projects visible to the connected n8n user.",
+      "capabilities": ["project.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.search_folders",
+      "displayName": "Search folders",
+      "description": "Search folders within one accessible project.",
+      "capabilities": ["project.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.list_workflow_tags",
+      "displayName": "List workflow tags",
+      "description": "List available workflow tags.",
+      "capabilities": ["tag.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.get_workflow_execution",
+      "displayName": "Read execution",
+      "description": "Read one accessible execution with optionally bounded result data.",
+      "capabilities": ["execution.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.search_workflow_executions",
+      "displayName": "Search executions",
+      "description": "Search accessible workflow executions.",
+      "capabilities": ["execution.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.list_credentials",
+      "displayName": "List credentials",
+      "description": "List accessible credential names and metadata without secret values.",
+      "capabilities": ["credential.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.list_n8n_connect_services",
+      "displayName": "List n8n Connect services",
+      "description": "List n8n Connect managed-credential coverage without credential values.",
+      "capabilities": ["credential.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.get_workflow_sdk_reference",
+      "displayName": "Read workflow SDK reference",
+      "description": "Read reviewed n8n Workflow SDK reference material.",
+      "capabilities": ["workflow.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.search_nodes",
+      "displayName": "Search nodes",
+      "description": "Search n8n node types by bounded queries.",
+      "capabilities": ["workflow.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.get_node_types",
+      "displayName": "Read node types",
+      "description": "Read exact TypeScript definitions for selected n8n node types.",
+      "capabilities": ["workflow.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.get_workflow_best_practices",
+      "displayName": "Read workflow best practices",
+      "description": "Read n8n best practices for a workflow technique.",
+      "capabilities": ["workflow.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.explore_node_resources",
+      "displayName": "Explore node resources",
+      "description": "Resolve resources for one node using an accessible credential.",
+      "capabilities": ["credential.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.validate_workflow",
+      "displayName": "Validate workflow",
+      "description": "Validate bounded Workflow SDK code without saving it.",
+      "capabilities": ["workflow.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.validate_node_config",
+      "displayName": "Validate node configuration",
+      "description": "Validate bounded node configurations without saving them.",
+      "capabilities": ["workflow.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.create_workflow_from_code",
+      "displayName": "Create workflow",
+      "description": "Create a workflow from validated Workflow SDK code.",
+      "capabilities": ["workflow.write"],
+      "effect": "write"
+    },
+    {
+      "name": "n8n.update_workflow",
+      "displayName": "Update workflow",
+      "description": "Atomically apply a bounded ordered operation batch to a workflow.",
+      "capabilities": ["workflow.write"],
+      "effect": "write"
+    },
+    {
+      "name": "n8n.archive_workflow",
+      "displayName": "Archive workflow",
+      "description": "Archive an accessible workflow.",
+      "capabilities": ["workflow.write"],
+      "effect": "write"
+    },
+    {
+      "name": "n8n.restore_workflow_version",
+      "displayName": "Restore workflow version",
+      "description": "Restore an accessible workflow from one exact historical version.",
+      "capabilities": ["workflow.write"],
+      "effect": "write"
+    },
+    {
+      "name": "n8n.search_data_tables",
+      "displayName": "Search data tables",
+      "description": "Search data tables visible to the connected n8n user.",
+      "capabilities": ["data-table.read"],
+      "effect": "read"
+    },
+    {
+      "name": "n8n.create_data_table",
+      "displayName": "Create data table",
+      "description": "Create a data table in an accessible project.",
+      "capabilities": ["data-table.write"],
+      "effect": "write"
+    },
+    {
+      "name": "n8n.add_data_table_column",
+      "displayName": "Add data-table column",
+      "description": "Add a column to an accessible data table.",
+      "capabilities": ["data-table.write"],
+      "effect": "write"
+    },
+    {
+      "name": "n8n.rename_data_table_column",
+      "displayName": "Rename data-table column",
+      "description": "Rename a column in an accessible data table.",
+      "capabilities": ["data-table.write"],
+      "effect": "write"
+    },
+    {
+      "name": "n8n.delete_data_table_column",
+      "displayName": "Delete data-table column",
+      "description": "Permanently delete a data-table column and its data.",
+      "capabilities": ["data-table.write"],
+      "effect": "write"
+    },
+    {
+      "name": "n8n.rename_data_table",
+      "displayName": "Rename data table",
+      "description": "Rename an accessible data table.",
+      "capabilities": ["data-table.write"],
+      "effect": "write"
+    },
+    {
+      "name": "n8n.add_data_table_rows",
+      "displayName": "Add data-table rows",
+      "description": "Insert bounded rows into an accessible data table.",
+      "capabilities": ["data-table.write"],
+      "effect": "write"
+    }
   ],
   "skills": [
     {
       "name": "n8n-workflows",
       "description": "Find, inspect, build, test, execute, publish, archive, or manage n8n workflows and Data Tables through TritonAI Harness using the connected user's n8n access.",
-      "capabilities": ["workflow.read", "workflow.execute", "workflow.write", "execution.read", "credential.read", "data-table.read", "data-table.write", "project.read", "tag.read"]
+      "capabilities": [
+        "workflow.read",
+        "workflow.execute",
+        "workflow.write",
+        "execution.read",
+        "credential.read",
+        "data-table.read",
+        "data-table.write",
+        "project.read",
+        "tag.read"
+      ]
     }
   ]
 }
