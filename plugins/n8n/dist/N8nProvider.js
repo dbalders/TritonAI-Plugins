@@ -618,10 +618,13 @@ function parseMcpPayload(response, bytes) {
     catch {
         throw new Error("n8n MCP returned invalid event-stream text.");
     }
-    if (text.length === 0 || text.includes("\r")) {
+    text = text.replace(/\r\n?/gu, "\n");
+    if (text.length === 0) {
         throw new Error("n8n MCP returned an invalid event stream.");
     }
-    const events = text.split("\n\n").filter(Boolean);
+    const events = text
+        .split("\n\n")
+        .filter((block) => block.split("\n").some((line) => line !== "" && !line.startsWith(":")));
     if (events.length !== 1)
         throw new Error("n8n MCP returned an ambiguous event stream.");
     const lines = events[0].split("\n");
@@ -629,14 +632,19 @@ function parseMcpPayload(response, bytes) {
     for (const line of lines) {
         if (line.startsWith(":"))
             continue;
-        if (line.startsWith("event:") && line.slice(6).trim() !== "message") {
-            throw new Error("n8n MCP returned an unsupported event type.");
+        if (line.startsWith("event:")) {
+            if (line.slice(6).trim() !== "message") {
+                throw new Error("n8n MCP returned an unsupported event type.");
+            }
+            continue;
         }
-        if (line.startsWith("data:"))
+        if (line.startsWith("data:")) {
             dataLines.push(line.slice(5).trimStart());
-        else if (line.trim() !== "" && !line.startsWith("id:") && !line.startsWith("retry:")) {
-            throw new Error("n8n MCP returned an invalid event stream.");
+            continue;
         }
+        if (line.trim() === "" || line.startsWith("id:") || line.startsWith("retry:"))
+            continue;
+        throw new Error("n8n MCP returned an invalid event stream.");
     }
     if (dataLines.length === 0)
         throw new Error("n8n MCP event stream omitted response data.");
@@ -686,6 +694,9 @@ function assertJsonBounds(value) {
         }
     }
 }
+// Compare the structural wire contract only. Descriptions, titles, additionalProperties, and
+// defensive validation bounds are intentionally local because equivalent Effect and n8n schemas
+// encode them differently; the local bounded decoder remains authoritative for accepted inputs.
 const STRUCTURAL_SCHEMA_KEYS = new Set([
     "anyOf",
     "enum",
@@ -762,14 +773,15 @@ function validateToolInventory(value) {
             throw new IntegrationProviderPublicError(`n8n MCP schema changed for ${reviewed.upstreamName}. Update the TritonAI n8n plugin before use.`);
         }
         const annotations = upstream.annotations;
-        if (annotations && typeof annotations === "object" && !Array.isArray(annotations)) {
-            const hints = annotations;
-            if ((hints.readOnlyHint !== undefined && hints.readOnlyHint !== reviewed.readOnly) ||
-                (hints.destructiveHint !== undefined && hints.destructiveHint !== reviewed.destructive) ||
-                (hints.idempotentHint !== undefined && hints.idempotentHint !== reviewed.idempotent) ||
-                (hints.openWorldHint !== undefined && hints.openWorldHint !== reviewed.openWorld)) {
-                throw new IntegrationProviderPublicError(`n8n MCP effect metadata changed for ${reviewed.upstreamName}.`);
-            }
+        if (!annotations || typeof annotations !== "object" || Array.isArray(annotations)) {
+            throw new IntegrationProviderPublicError(`n8n MCP effect metadata changed for ${reviewed.upstreamName}.`);
+        }
+        const hints = annotations;
+        if (hints.readOnlyHint !== reviewed.readOnly ||
+            hints.destructiveHint !== reviewed.destructive ||
+            hints.idempotentHint !== reviewed.idempotent ||
+            hints.openWorldHint !== reviewed.openWorld) {
+            throw new IntegrationProviderPublicError(`n8n MCP effect metadata changed for ${reviewed.upstreamName}.`);
         }
     }
     return new Set(actual.keys());

@@ -115,11 +115,24 @@ function mcpResponse(request: Record<string, unknown>, result: unknown, headers:
   return json({ jsonrpc: "2.0", id: request.id, result }, 200, headers);
 }
 
+function mcpEventResponse(
+  request: Record<string, unknown>,
+  result: unknown,
+  headers: HeadersInit = {},
+) {
+  const payload = JSON.stringify({ jsonrpc: "2.0", id: request.id, result });
+  return new Response(`: keep-alive\r\n\r\nevent: message\r\ndata: ${payload}\r\n\r\n`, {
+    status: 200,
+    headers: { "content-type": "text/event-stream", ...headers },
+  });
+}
+
 function oauthMcpFetch(
   options: {
     readonly scopes?: ReadonlyArray<string>;
     readonly mutateTools?: (tools: Record<string, unknown>[]) => void;
     readonly toolResult?: unknown;
+    readonly eventStream?: boolean;
   } = {},
 ) {
   const requests: Array<{ url: string; init?: RequestInit; body?: Record<string, unknown> }> = [];
@@ -167,8 +180,9 @@ function oauthMcpFetch(
     if (url.endsWith("/mcp-oauth/revoke")) return new Response(null, { status: 204 });
     if (url === SERVER) {
       if (!body) throw new Error("missing fixture MCP request body");
+      const respond = options.eventStream ? mcpEventResponse : mcpResponse;
       if (body.method === "initialize") {
-        return mcpResponse(
+        return respond(
           body,
           {
             protocolVersion: "2025-06-18",
@@ -180,10 +194,10 @@ function oauthMcpFetch(
       }
       if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
       if (body.method === "tools/list") {
-        return mcpResponse(body, { tools: toolInventory({ mutate: options.mutateTools }) });
+        return respond(body, { tools: toolInventory({ mutate: options.mutateTools }) });
       }
       if (body.method === "tools/call") {
-        return mcpResponse(body, options.toolResult ?? { content: [{ type: "text", text: "ok" }] });
+        return respond(body, options.toolResult ?? { content: [{ type: "text", text: "ok" }] });
       }
     }
     throw new Error(`unexpected fixture request: ${url}`);
@@ -340,6 +354,23 @@ describe("N8nProvider", () => {
     await provider.close();
   });
 
+  it("accepts CRLF event streams with keep-alive comment blocks", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch({ eventStream: true });
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    await authorize(provider, mock.requests);
+    await expect(
+      provider.invoke("n8n.search_projects", { limit: 1 }, invocation(false)),
+    ).resolves.toMatchObject({
+      content: [{ type: "text", text: "ok" }],
+    });
+    await provider.close();
+  });
+
   it("fails closed on unknown tools and schema drift without storing credentials", async () => {
     for (const mutateTools of [
       (tools: Record<string, unknown>[]) =>
@@ -347,6 +378,9 @@ describe("N8nProvider", () => {
       (tools: Record<string, unknown>[]) => {
         const first = tools[0]!;
         first.inputSchema = { type: "object", properties: { injected: { type: "string" } } };
+      },
+      (tools: Record<string, unknown>[]) => {
+        delete tools[0]!.annotations;
       },
     ]) {
       const secrets = memorySecrets();
