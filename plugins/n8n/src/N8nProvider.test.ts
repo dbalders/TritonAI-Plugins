@@ -422,6 +422,53 @@ describe("N8nProvider", () => {
     await restored.close();
   });
 
+  it("serializes disconnect with authorization-code exchange and revokes the issued credential", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch();
+    let releaseToken: (() => void) | undefined;
+    let markTokenStarted: (() => void) | undefined;
+    const tokenGate = new Promise<void>((resolve) => {
+      releaseToken = resolve;
+    });
+    const tokenStarted = new Promise<void>((resolve) => {
+      markTokenStarted = resolve;
+    });
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const form = new URLSearchParams(String(init?.body));
+      if (url.endsWith("/mcp-oauth/token") && form.get("grant_type") === "authorization_code") {
+        markTokenStarted?.();
+        await tokenGate;
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
+    const flow = await provider.connect(["workflow.read"], lifecycle());
+    if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
+    const authorization = new URL(flow.authorizationUrl);
+    const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+    callback.searchParams.set("state", authorization.searchParams.get("state")!);
+    callback.searchParams.set("iss", ORIGIN);
+    callback.searchParams.set("code", "authorization-code-fixture");
+    await fetch(callback);
+
+    const polling = provider.poll(flow.flowId, lifecycle());
+    await tokenStarted;
+    const disconnecting = provider.disconnect(lifecycle());
+    releaseToken?.();
+
+    await expect(polling).resolves.toMatchObject({ state: "connected" });
+    await expect(disconnecting).resolves.toBeUndefined();
+    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+    const revocations = mock.requests.filter(({ url }) => url.endsWith("/mcp-oauth/revoke"));
+    expect(revocations).toHaveLength(1);
+    expect(new URLSearchParams(String(revocations[0]!.init?.body)).get("token")).toBe(
+      "refresh-fixture",
+    );
+    await expect(provider.status()).resolves.toMatchObject({ state: "not_connected" });
+    await provider.close();
+  });
+
   it("bounds network responses and propagates caller cancellation without leaking endpoints", async () => {
     const secrets = memorySecrets();
     const oversized = vi.fn(

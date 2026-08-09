@@ -1442,82 +1442,92 @@ export class N8nProvider {
                     : "n8n sign-in did not complete. Start again.",
             };
         }
+        const authorizationCode = flow.callback.code;
         this.#polling.add(flowId);
-        let admitted = false;
-        let responseSettled = false;
-        let credentialIssued = false;
         try {
-            const commitSignal = await this.#beginCommit(context);
-            admitted = true;
-            const { response, json } = await this.#requestJson(flow.discovery.tokenEndpoint, {
-                method: "POST",
-                headers: {
-                    accept: "application/json",
-                    "content-type": "application/x-www-form-urlencoded",
-                },
-                body: new URLSearchParams({
-                    client_id: flow.clientId,
-                    code: flow.callback.code,
-                    code_verifier: flow.codeVerifier,
-                    grant_type: "authorization_code",
-                    redirect_uri: flow.redirectUri,
-                    resource: this.#server.toString(),
-                }),
-                signal: commitSignal,
-            }, TOKEN_RESPONSE_BYTES);
-            responseSettled = true;
-            if (!response.ok) {
-                await this.#removeFlow(flowId);
-                return {
-                    state: "failed",
-                    retryAfterSeconds: null,
-                    message: "n8n sign-in failed. Start again.",
-                };
-            }
-            credentialIssued = true;
-            const parsed = this.#parseTokenResponse(json, flow.clientId, flow.discovery);
-            this.#accessToken = parsed.access;
-            this.#sessionId = null;
-            this.#sessionVerified = false;
-            this.#availableTools = new Set();
-            try {
-                await this.#initializeSession(parsed.access, commitSignal);
-            }
-            catch (error) {
-                await this.#revokeToken(flow.discovery, parsed.credential.refreshToken, commitSignal).catch(() => {
-                    this.#uncertainCredentialState = true;
-                });
-                this.#accessToken = null;
-                this.#sessionId = null;
-                this.#sessionVerified = false;
-                this.#availableTools = new Set();
-                await this.#removeFlow(flowId);
-                throw error;
-            }
-            await this.#serializeCredential(async () => {
+            return await this.#serializeCredential(async () => {
                 if (this.#closed ||
                     this.#disconnecting ||
                     this.#uncertainCredentialState ||
                     flow.generation !== this.#generation ||
                     this.#pending.get(flowId) !== flow) {
-                    throw new Error("n8n sign-in was superseded before credential commit.");
+                    throw new Error("n8n sign-in was superseded before token exchange.");
                 }
-                await this.#writeCredential(parsed.credential, commitSignal);
-                this.#credentialRevision += 1;
-                this.#generation += 1;
+                let admitted = false;
+                let responseSettled = false;
+                let credentialIssued = false;
+                try {
+                    const commitSignal = await this.#beginCommit(context);
+                    admitted = true;
+                    const { response, json } = await this.#requestJson(flow.discovery.tokenEndpoint, {
+                        method: "POST",
+                        headers: {
+                            accept: "application/json",
+                            "content-type": "application/x-www-form-urlencoded",
+                        },
+                        body: new URLSearchParams({
+                            client_id: flow.clientId,
+                            code: authorizationCode,
+                            code_verifier: flow.codeVerifier,
+                            grant_type: "authorization_code",
+                            redirect_uri: flow.redirectUri,
+                            resource: this.#server.toString(),
+                        }),
+                        signal: commitSignal,
+                    }, TOKEN_RESPONSE_BYTES);
+                    responseSettled = true;
+                    if (!response.ok) {
+                        await this.#removeFlow(flowId);
+                        return {
+                            state: "failed",
+                            retryAfterSeconds: null,
+                            message: "n8n sign-in failed. Start again.",
+                        };
+                    }
+                    credentialIssued = true;
+                    const parsed = this.#parseTokenResponse(json, flow.clientId, flow.discovery);
+                    this.#accessToken = parsed.access;
+                    this.#sessionId = null;
+                    this.#sessionVerified = false;
+                    this.#availableTools = new Set();
+                    try {
+                        await this.#initializeSession(parsed.access, commitSignal);
+                    }
+                    catch (error) {
+                        await this.#revokeToken(flow.discovery, parsed.credential.refreshToken, commitSignal).catch(() => {
+                            this.#uncertainCredentialState = true;
+                        });
+                        this.#accessToken = null;
+                        this.#sessionId = null;
+                        this.#sessionVerified = false;
+                        this.#availableTools = new Set();
+                        await this.#removeFlow(flowId);
+                        throw error;
+                    }
+                    if (this.#closed ||
+                        this.#disconnecting ||
+                        this.#uncertainCredentialState ||
+                        flow.generation !== this.#generation ||
+                        this.#pending.get(flowId) !== flow) {
+                        throw new Error("n8n sign-in was superseded before credential commit.");
+                    }
+                    await this.#writeCredential(parsed.credential, commitSignal);
+                    this.#credentialRevision += 1;
+                    this.#generation += 1;
+                    await this.#removeFlow(flowId);
+                    return {
+                        state: "connected",
+                        retryAfterSeconds: null,
+                        message: "n8n is connected for this user.",
+                    };
+                }
+                catch (error) {
+                    if (admitted && (!responseSettled || credentialIssued) && this.#accessToken !== null) {
+                        this.#uncertainCredentialState = true;
+                    }
+                    throw error;
+                }
             });
-            await this.#removeFlow(flowId);
-            return {
-                state: "connected",
-                retryAfterSeconds: null,
-                message: "n8n is connected for this user.",
-            };
-        }
-        catch (error) {
-            if (admitted && (!responseSettled || credentialIssued) && this.#accessToken !== null) {
-                this.#uncertainCredentialState = true;
-            }
-            throw error;
         }
         finally {
             this.#polling.delete(flowId);
