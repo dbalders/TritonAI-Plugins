@@ -1771,6 +1771,22 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
       }
       const commitSignal = await this.#beginInvocationCommit(context);
       this.#assertInvocationCurrent(generation);
+      const deletionFolderIds = new Set<string>();
+      const selectId = new URLSearchParams({ $select: "id" });
+      for (const wellKnownName of DELETION_MOVE_DESTINATIONS) {
+        const folder = await this.#graph(
+          `/me/mailFolders/${wellKnownName}?${selectId.toString()}`,
+          access.value,
+          { signal: commitSignal },
+        );
+        this.#assertInvocationCurrent(generation);
+        deletionFolderIds.add(boundedString(folder.id, 512));
+      }
+      if (deletionFolderIds.has(destinationFolderId)) {
+        throw new IntegrationProviderPublicError(
+          "Microsoft 365 mail organization cannot move messages into a deletion folder.",
+        );
+      }
       const result = await this.#graph(
         `/me/messages/${encodeURIComponent(values.messageId)}/move`,
         access.value,

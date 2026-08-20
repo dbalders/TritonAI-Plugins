@@ -1392,6 +1392,12 @@ describe("MicrosoftGraphProvider tools", () => {
         return jsonResponse(tokenBody("offline_access Mail.Read Mail.ReadWrite"));
       }
       graphCalls.push({ url, init });
+      if (url.includes("/mailFolders/deleteditems?")) {
+        return jsonResponse({ id: "deleted-items-folder-id" });
+      }
+      if (url.includes("/mailFolders/recoverableitemsdeletions?")) {
+        return jsonResponse({ id: "recoverable-items-deletions-folder-id" });
+      }
       if (init?.method !== "POST") {
         return jsonResponse({
           value: [{ id: "folder/id?fixture", displayName: "Receipts", totalItemCount: 4 }],
@@ -1477,9 +1483,49 @@ describe("MicrosoftGraphProvider tools", () => {
       "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture/childFolders",
     );
     expect(graphCalls[4]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/deleteditems?%24select=id",
+    );
+    expect(graphCalls[5]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/recoverableitemsdeletions?%24select=id",
+    );
+    expect(graphCalls[6]?.url).toBe(
       "https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture/move",
     );
-    expect(JSON.parse(String(graphCalls[4]?.init?.body))).toEqual({ destinationId: "archive" });
+    expect(JSON.parse(String(graphCalls[6]?.init?.body))).toEqual({ destinationId: "archive" });
+  });
+
+  it("rejects opaque deletion-folder IDs before moving a message", async () => {
+    const secrets = memorySecrets();
+    const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) {
+        return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      }
+      graphCalls.push({ url, init });
+      if (url.includes("/mailFolders/deleteditems?")) {
+        return jsonResponse({ id: "opaque-deleted-items-id" });
+      }
+      if (url.includes("/mailFolders/recoverableitemsdeletions?")) {
+        return jsonResponse({ id: "opaque-recoverable-items-id" });
+      }
+      return jsonResponse({ id: "unexpected-move", parentFolderId: "unexpected" }, 201);
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.organize"]);
+
+    for (const destinationFolderId of ["opaque-deleted-items-id", "opaque-recoverable-items-id"]) {
+      await expect(
+        graph.invoke(
+          "microsoft365.mail.message.move",
+          { messageId: "message-1", destinationFolderId },
+          invocation(),
+        ),
+      ).rejects.toThrow(/deletion folder/u);
+    }
+
+    expect(graphCalls.filter(({ init }) => init?.method === "POST")).toHaveLength(0);
   });
 
   it("requires Harness commit admission before a valid external write", async () => {
