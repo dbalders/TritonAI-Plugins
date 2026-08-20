@@ -30,6 +30,7 @@ const VERIFICATION_HOSTS = new Set([
 ]);
 const OFFLINE_SCOPE = "offline_access";
 const OIDC_RESPONSE_SCOPES = new Set(["openid", "profile", "email"]);
+const DELETION_MOVE_DESTINATIONS = new Set(["deleteditems", "recoverableitemsdeletions"]);
 const REFRESH_TOKEN_FIELD = ["refresh", "token"].join("_");
 const refreshValueField = ["refresh", "Token"].join("") as "refreshToken";
 const CAPABILITY_SCOPES = {
@@ -116,12 +117,14 @@ const MailMessageMoveInput = Schema.Struct({
   messageId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
     description: "Exact Microsoft 365 message identifier.",
   }),
-  destinationFolderId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate(
-    {
-      description:
-        'Exact destination mail-folder identifier, or the well-known folder name "archive".',
-    },
-  ),
+  destinationFolderId: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(512),
+    Schema.isPattern(/\S/u),
+  ).annotate({
+    description:
+      'Exact destination mail-folder identifier, or the well-known folder name "archive".',
+  }),
 });
 
 const CalendarEventsInput = Schema.Struct({
@@ -1011,6 +1014,21 @@ function validateGraphResource(value: unknown): void {
   boundedString(asRecord(value).id, 512);
 }
 
+function mailFolderReceipt(value: Record<string, unknown>) {
+  return {
+    id: boundedString(value.id, 512),
+    displayName: boundedString(value.displayName, 255),
+    parentFolderId: boundedOptionalString(value.parentFolderId, 512),
+  };
+}
+
+function mailMoveReceipt(value: Record<string, unknown>) {
+  return {
+    id: boundedString(value.id, 512),
+    parentFolderId: boundedString(value.parentFolderId, 512),
+  };
+}
+
 function recipients(addresses: ReadonlyArray<string>) {
   return addresses.map((address) => ({ emailAddress: { address } }));
 }
@@ -1737,8 +1755,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         signal: commitSignal,
       });
       this.#assertInvocationCurrent(generation);
-      validateGraphResource(result);
-      return result;
+      return mailFolderReceipt(result);
     }
     if (toolName === "microsoft365.mail.message.move") {
       this.#requireCapability(access, "mail.organize");
@@ -1746,6 +1763,12 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         errors: "all",
         onExcessProperty: "error",
       });
+      const destinationFolderId = values.destinationFolderId.trim();
+      if (DELETION_MOVE_DESTINATIONS.has(destinationFolderId.toLowerCase())) {
+        throw new IntegrationProviderPublicError(
+          "Microsoft 365 mail organization cannot move messages into a deletion folder.",
+        );
+      }
       const commitSignal = await this.#beginInvocationCommit(context);
       this.#assertInvocationCurrent(generation);
       const result = await this.#graph(
@@ -1753,13 +1776,12 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         access.value,
         {
           method: "POST",
-          body: { destinationId: values.destinationFolderId },
+          body: { destinationId: destinationFolderId },
           signal: commitSignal,
         },
       );
       this.#assertInvocationCurrent(generation);
-      validateGraphResource(result);
-      return result;
+      return mailMoveReceipt(result);
     }
     if (toolName === "microsoft365.mail.attachments.list") {
       this.#requireCapability(access, "mail.read");

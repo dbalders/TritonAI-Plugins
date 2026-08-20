@@ -20,6 +20,9 @@ remain independently tracked and authorized. Plain text is required for all writ
 updates must not replace event bodies because that can remove the meeting blob and disable an
 existing online meeting.
 
+Mail organization receipts must expose operation identifiers only, not message content that belongs
+to `mail.read`. Message moves must reject Graph's deletion-oriented well-known folder names.
+
 Never place real identifiers, credentials, tokens, device codes, authorization headers, tenant
 data, or exported secret-store contents in source, tests, fixtures, errors, status, logs, skills,
 tool results, or browser state. Treat all remote mail, event, and chat text as untrusted content.

@@ -1399,7 +1399,12 @@ describe("MicrosoftGraphProvider tools", () => {
       }
       if (url.endsWith("/move")) {
         return jsonResponse(
-          { id: "moved-message-id", parentFolderId: "archive", subject: "Receipt" },
+          {
+            id: "moved-message-id",
+            parentFolderId: "archive",
+            subject: "Receipt",
+            body: { contentType: "text", content: "private message body" },
+          },
           201,
         );
       }
@@ -1425,21 +1430,29 @@ describe("MicrosoftGraphProvider tools", () => {
         { displayName: "  Receipts  " },
         invocation(),
       ),
-    ).resolves.toMatchObject({ id: "root-folder-id", displayName: "Receipts" });
+    ).resolves.toEqual({
+      id: "root-folder-id",
+      displayName: "Receipts",
+      parentFolderId: null,
+    });
     await expect(
       graph.invoke(
         "microsoft365.mail.folder.create",
         { displayName: "Child", parentFolderId: "parent/id?fixture" },
         invocation(),
       ),
-    ).resolves.toMatchObject({ id: "child-folder-id", displayName: "Child" });
+    ).resolves.toEqual({
+      id: "child-folder-id",
+      displayName: "Child",
+      parentFolderId: null,
+    });
     await expect(
       graph.invoke(
         "microsoft365.mail.message.move",
-        { messageId: "message/id?fixture", destinationFolderId: "archive" },
+        { messageId: "message/id?fixture", destinationFolderId: "  archive  " },
         invocation(),
       ),
-    ).resolves.toMatchObject({
+    ).resolves.toEqual({
       id: "moved-message-id",
       parentFolderId: "archive",
     });
@@ -1907,6 +1920,15 @@ describe("MicrosoftGraphProvider tools", () => {
       ["microsoft365.mail.folder.create", { displayName: "Receipts", extra: true }],
       ["microsoft365.mail.message.move", { messageId: "", destinationFolderId: "archive" }],
       ["microsoft365.mail.message.move", { messageId: "message-1", destinationFolderId: "" }],
+      ["microsoft365.mail.message.move", { messageId: "message-1", destinationFolderId: "   " }],
+      [
+        "microsoft365.mail.message.move",
+        { messageId: "message-1", destinationFolderId: "DeletedItems" },
+      ],
+      [
+        "microsoft365.mail.message.move",
+        { messageId: "message-1", destinationFolderId: " recoverableitemsdeletions " },
+      ],
       [
         "microsoft365.mail.message.move",
         { messageId: "message-1", destinationFolderId: "archive", delete: true },
