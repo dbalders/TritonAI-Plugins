@@ -1425,6 +1425,14 @@ describe("MicrosoftGraphProvider tools", () => {
       value: [{ id: "folder/id?fixture", displayName: "Receipts" }],
     });
     await expect(
+      graph.invoke("microsoft365.mail.folders.list", {
+        parentFolderId: "parent/id?fixture",
+        limit: 2,
+      }),
+    ).resolves.toMatchObject({
+      value: [{ id: "folder/id?fixture", displayName: "Receipts" }],
+    });
+    await expect(
       graph.invoke(
         "microsoft365.mail.folder.create",
         { displayName: "  Receipts  " },
@@ -1460,15 +1468,18 @@ describe("MicrosoftGraphProvider tools", () => {
     expect(graphCalls[0]?.url).toBe(
       "https://graph.microsoft.com/v1.0/me/mailFolders?%24top=5&%24select=id%2CdisplayName%2CparentFolderId%2CchildFolderCount%2CtotalItemCount%2CunreadItemCount%2CisHidden&includeHiddenFolders=true",
     );
-    expect(graphCalls[1]?.url).toBe("https://graph.microsoft.com/v1.0/me/mailFolders");
-    expect(JSON.parse(String(graphCalls[1]?.init?.body))).toEqual({ displayName: "Receipts" });
-    expect(graphCalls[2]?.url).toBe(
+    expect(graphCalls[1]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture/childFolders?%24top=2&%24select=id%2CdisplayName%2CparentFolderId%2CchildFolderCount%2CtotalItemCount%2CunreadItemCount%2CisHidden&includeHiddenFolders=true",
+    );
+    expect(graphCalls[2]?.url).toBe("https://graph.microsoft.com/v1.0/me/mailFolders");
+    expect(JSON.parse(String(graphCalls[2]?.init?.body))).toEqual({ displayName: "Receipts" });
+    expect(graphCalls[3]?.url).toBe(
       "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture/childFolders",
     );
-    expect(graphCalls[3]?.url).toBe(
+    expect(graphCalls[4]?.url).toBe(
       "https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture/move",
     );
-    expect(JSON.parse(String(graphCalls[3]?.init?.body))).toEqual({ destinationId: "archive" });
+    expect(JSON.parse(String(graphCalls[4]?.init?.body))).toEqual({ destinationId: "archive" });
   });
 
   it("requires Harness commit admission before a valid external write", async () => {
