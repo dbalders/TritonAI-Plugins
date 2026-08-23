@@ -46,7 +46,8 @@ presence. Exact message reads request a narrow field set and prefer a plain-text
 result uses an explicit, byte-bounded projection. A projected body's `truncated` field reports
 provider truncation, while `previewIsPartial` is true for every non-null Graph preview because the
 upstream preview is semantically partial. Unknown Graph fields and server-provided continuation
-URLs are not included.
+URLs are not included. Chat messages with no returned content use `body: null`; oversized chat
+collections retain the leading projected messages that fit and set `hasMore`.
 
 Attachment list tools request metadata only so file bytes cannot make the list unusable. The matching
 single-attachment tool temporarily preserves validated, bounded Graph `contentBytes` for a small

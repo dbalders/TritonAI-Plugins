@@ -133,7 +133,7 @@
     {
       "name": "microsoft365.chat.messages",
       "displayName": "Read chat messages",
-      "description": "Read a bounded number of projected messages from one Microsoft 365 chat with body truncation metadata.",
+      "description": "Read a bounded number of projected messages from one Microsoft 365 chat with nullable bodies and truncation metadata.",
       "capabilities": ["chat.read"],
       "effect": "read"
     },

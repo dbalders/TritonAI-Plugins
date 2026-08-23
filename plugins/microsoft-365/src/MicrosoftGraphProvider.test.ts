@@ -1924,6 +1924,86 @@ describe("MicrosoftGraphProvider tools", () => {
     });
   });
 
+  it("projects content-less chat messages as null bodies in collections and exact results", async () => {
+    const secrets = memorySecrets();
+    const deletedMessage = {
+      id: "message-deleted",
+      createdDateTime: "2026-07-16T12:00:00Z",
+      lastModifiedDateTime: "2026-07-16T12:01:00Z",
+      from: null,
+      body: null,
+      webUrl: null,
+      deletedDateTime: "2026-07-16T12:02:00Z",
+    };
+    const systemMessage = {
+      id: "message-system",
+      createdDateTime: "2026-07-16T12:03:00Z",
+      lastModifiedDateTime: null,
+      from: null,
+      webUrl: null,
+      messageType: "systemEventMessage",
+      eventDetail: { fixtureProperty: true },
+    };
+    const nullContentMessage = {
+      id: "message-null-content",
+      createdDateTime: "2026-07-16T12:04:00Z",
+      lastModifiedDateTime: null,
+      from: { application: { id: "application-1", displayName: "Application" } },
+      body: { contentType: "text", content: null, fixtureProperty: true },
+      webUrl: null,
+    };
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) {
+        return jsonResponse(tokenBody("offline_access Chat.Read Chat.ReadWrite"));
+      }
+      return init?.method === "POST"
+        ? jsonResponse(nullContentMessage, 201)
+        : jsonResponse({ value: [deletedMessage, systemMessage, nullContentMessage] });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["chat.read", "chat.write"]);
+
+    const projectedDeletedMessage = {
+      id: "message-deleted",
+      createdDateTime: "2026-07-16T12:00:00Z",
+      lastModifiedDateTime: "2026-07-16T12:01:00Z",
+      from: null,
+      body: null,
+      webUrl: null,
+    };
+    const projectedSystemMessage = {
+      id: "message-system",
+      createdDateTime: "2026-07-16T12:03:00Z",
+      lastModifiedDateTime: null,
+      from: null,
+      body: null,
+      webUrl: null,
+    };
+    const projectedNullContentMessage = {
+      id: "message-null-content",
+      createdDateTime: "2026-07-16T12:04:00Z",
+      lastModifiedDateTime: null,
+      from: null,
+      body: null,
+      webUrl: null,
+    };
+    await expect(
+      graph.invoke("microsoft365.chat.messages", { chatId: "chat-1", limit: 3 }),
+    ).resolves.toEqual({
+      messages: [projectedDeletedMessage, projectedSystemMessage, projectedNullContentMessage],
+      hasMore: false,
+    });
+    await expect(
+      graph.invoke(
+        "microsoft365.chat.message.send",
+        { chatId: "chat-1", body: "Fixture" },
+        invocation(),
+      ),
+    ).resolves.toEqual(projectedNullContentMessage);
+  });
+
   it("preserves empty optional fields in projected responses", async () => {
     const secrets = memorySecrets();
     const fetchImplementation = (async (input: RequestInfo | URL) => {
@@ -2302,29 +2382,68 @@ describe("MicrosoftGraphProvider tools", () => {
     expect(message.body.content.at(-1)).toBe("a");
   });
 
-  it("rejects projected collections above the serialized host budget", async () => {
+  it("returns the leading chat messages that fit exactly within the serialized host budget", async () => {
     const secrets = memorySecrets();
+    const resultBudget = 384 * 1_024;
+    const rawMessage = (id: string, content: string) => ({
+      id,
+      createdDateTime: "2026-07-16T12:00:00Z",
+      lastModifiedDateTime: null,
+      from: null,
+      body: { contentType: "text", content },
+      webUrl: null,
+    });
+    const projectedMessage = (id: string, content: string) => ({
+      id,
+      createdDateTime: "2026-07-16T12:00:00Z",
+      lastModifiedDateTime: null,
+      from: null,
+      body: { contentType: "text", content, truncated: false },
+      webUrl: null,
+    });
+    const leadingRaw = Array.from({ length: 7 }, (_, index) =>
+      rawMessage(`message-${index}`, "x".repeat(50_000)),
+    );
+    const leadingProjected = Array.from({ length: 7 }, (_, index) =>
+      projectedMessage(`message-${index}`, "x".repeat(50_000)),
+    );
+    const emptyBoundary = projectedMessage("message-boundary", "");
+    const emptyBoundaryBytes = new TextEncoder().encode(
+      JSON.stringify({ messages: [...leadingProjected, emptyBoundary], hasMore: true }),
+    ).byteLength;
+    const boundaryContentBytes = resultBudget - emptyBoundaryBytes;
+    expect(boundaryContentBytes).toBeGreaterThan(0);
+    expect(boundaryContentBytes).toBeLessThanOrEqual(50_000);
+    const boundaryContent = `${"😀".repeat(Math.floor(boundaryContentBytes / 4))}${"x".repeat(
+      boundaryContentBytes % 4,
+    )}`;
+    expect(new TextEncoder().encode(boundaryContent).byteLength).toBe(boundaryContentBytes);
+    const boundaryMessage = projectedMessage("message-boundary", boundaryContent);
     const fetchImplementation = (async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
       if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Chat.Read"));
       return jsonResponse({
-        value: Array.from({ length: 8 }, (_, index) => ({
-          id: `message-${index}`,
-          createdDateTime: "2026-07-16T12:00:00Z",
-          lastModifiedDateTime: null,
-          from: null,
-          body: { contentType: "text", content: "x".repeat(50_000) },
-          webUrl: null,
-        })),
+        value: [
+          ...leadingRaw,
+          rawMessage("message-boundary", boundaryContent),
+          rawMessage("message-omitted", "😀"),
+        ],
       });
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
     await authorize(graph, ["chat.read"]);
 
-    await expect(
-      graph.invoke("microsoft365.chat.messages", { chatId: "chat-1", limit: 8 }),
-    ).rejects.toThrow(/result exceeded the allowed size/u);
+    const result = await graph.invoke("microsoft365.chat.messages", {
+      chatId: "chat-1",
+      limit: 9,
+    });
+    expect(result).toEqual({
+      messages: [...leadingProjected, boundaryMessage],
+      hasMore: true,
+    });
+    expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBe(resultBudget);
+    expect(JSON.stringify(result)).not.toContain("message-omitted");
   });
 
   it("rejects malformed continuation metadata and attachment content", async () => {

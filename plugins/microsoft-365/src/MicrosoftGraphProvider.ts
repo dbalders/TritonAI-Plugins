@@ -418,7 +418,7 @@ export const MICROSOFT_GRAPH_TOOLS = [
   {
     name: "microsoft365.chat.messages",
     description:
-      "Read bounded message history from one exact Microsoft 365 chat; body.truncated reports provider truncation.",
+      "Read bounded message history from one exact Microsoft 365 chat; body is null without content, otherwise body.truncated reports provider truncation.",
     input: ChatMessagesInput,
     readOnly: true,
     destructive: false,
@@ -532,7 +532,8 @@ function truncatedUtf8String(
   let codePoints = 0;
   let end = 0;
   for (const codePoint of value) {
-    const codePointBytes = utf8Length(codePoint);
+    const point = codePoint.codePointAt(0) as number;
+    const codePointBytes = point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x1_00_00 ? 3 : 4;
     if (bytes + codePointBytes > maximumBytes || codePoints === maximumCodePoints) {
       return { value: value.slice(0, end), truncated: true };
     }
@@ -772,6 +773,12 @@ function projectedBody(value: unknown) {
   return { contentType, content: content.value, truncated: content.truncated };
 }
 
+function projectedChatBody(value: unknown) {
+  if (value === null || value === undefined) return null;
+  const body = asRecord(value);
+  return body.content === null || body.content === undefined ? null : projectedBody(body);
+}
+
 function projectedPreview(value: unknown) {
   if (value === null || value === undefined) {
     return { preview: null, previewIsPartial: false };
@@ -925,15 +932,28 @@ function projectChatMessage(value: Record<string, unknown>) {
             id: boundedOptionalString(user.id, 512),
             displayName: boundedOptionalString(user.displayName, 512),
           },
-    body: projectedBody(value.body),
+    body: projectedChatBody(value.body),
     webUrl: boundedOptionalHttpsUrl(value.webUrl, 2_048, TEAMS_WEB_HOSTS),
   };
 }
 
 function chatMessagesResult(value: Record<string, unknown>, limit: number) {
   const collection = collectionResult(value, limit);
-  const messages = collection.items.map((raw) => projectChatMessage(asRecord(raw)));
-  return boundedResult({ messages, hasMore: collection.hasMore });
+  const messages: Array<ReturnType<typeof projectChatMessage>> = [];
+  let locallyOmitted = false;
+  for (const [index, raw] of collection.items.entries()) {
+    const message = projectChatMessage(asRecord(raw));
+    const candidate = {
+      messages: [...messages, message],
+      hasMore: collection.hasMore || index < collection.items.length - 1,
+    };
+    if (utf8Length(JSON.stringify(candidate)) > MAX_RESULT_BYTES) {
+      locallyOmitted = true;
+      break;
+    }
+    messages.push(message);
+  }
+  return boundedResult({ messages, hasMore: collection.hasMore || locallyOmitted });
 }
 
 function chatMessageResult(value: Record<string, unknown>) {
