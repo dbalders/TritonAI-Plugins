@@ -1,3 +1,4 @@
+import * as Crypto from "node:crypto";
 import * as Fs from "node:fs/promises";
 import * as Path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -12,6 +13,8 @@ const root = Path.resolve(import.meta.dirname, "..");
 const pluginsRoot = Path.join(root, "plugins");
 const slug = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u;
 const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
+const EXPECTED_MIT_LICENSE_SHA256 =
+  "6203d12e65d7beeb8fda48ffffe22f7a0c545f2e40730f58eca9f98f8a7bbb0a";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -36,6 +39,10 @@ const rootPackageJson = await json(Path.join(root, "package.json"));
 const rootLicense = await Fs.readFile(Path.join(root, "LICENSE"), "utf8");
 assert(rootPackageJson.private === true, "Root package must remain private.");
 assert(rootPackageJson.license === "MIT", "Root package license must be MIT.");
+assert(
+  Crypto.createHash("sha256").update(rootLicense).digest("hex") === EXPECTED_MIT_LICENSE_SHA256,
+  "Root LICENSE must contain the approved MIT license text.",
+);
 
 const workspace = await Fs.readFile(Path.join(root, "pnpm-workspace.yaml"), "utf8");
 assert(/^\s*- plugins\/\*\s*$/mu.test(workspace), "Workspace must include plugins/*.");
