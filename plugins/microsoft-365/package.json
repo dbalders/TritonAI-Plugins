@@ -2,10 +2,12 @@
   "name": "@tritonai/plugin-microsoft-365",
   "version": "1.1.0",
   "private": true,
+  "license": "MIT",
   "files": [
     ".tritonai-plugin",
     "skills",
     "dist",
+    "LICENSE",
     "README.md",
     "SECURITY.md"
   ],

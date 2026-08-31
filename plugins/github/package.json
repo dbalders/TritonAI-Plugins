@@ -2,10 +2,12 @@
   "name": "@tritonai/plugin-github",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "files": [
     ".tritonai-plugin",
     "skills",
     "dist",
+    "LICENSE",
     "README.md",
     "SECURITY.md"
   ],
