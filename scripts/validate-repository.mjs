@@ -32,6 +32,11 @@ async function regularTree(path) {
   }
 }
 
+const rootPackageJson = await json(Path.join(root, "package.json"));
+const rootLicense = await Fs.readFile(Path.join(root, "LICENSE"), "utf8");
+assert(rootPackageJson.private === true, "Root package must remain private.");
+assert(rootPackageJson.license === "MIT", "Root package license must be MIT.");
+
 const workspace = await Fs.readFile(Path.join(root, "pnpm-workspace.yaml"), "utf8");
 assert(/^\s*- plugins\/\*\s*$/mu.test(workspace), "Workspace must include plugins/*.");
 assert(!workspace.includes("integrations/"), "Workspace still references integrations/.");
@@ -53,6 +58,12 @@ for (const directory of entries) {
     await json(Path.join(packageRoot, ".tritonai-plugin", "plugin.json")),
   );
   assert(packageJson.name === `@tritonai/plugin-${directory}`, `${directory}: package name drift.`);
+  assert(packageJson.private === true, `${directory}: package must remain private.`);
+  assert(packageJson.license === "MIT", `${directory}: package license must be MIT.`);
+  assert(
+    (await Fs.readFile(Path.join(packageRoot, "LICENSE"), "utf8")) === rootLicense,
+    `${directory}: package license must match the root MIT license.`,
+  );
   assert(semver.test(packageJson.version), `${directory}: package version is not stable semver.`);
   assert(packageJson.version === manifest.version, `${directory}: package/manifest version drift.`);
   assert(manifest.id === directory, `${directory}: manifest id must equal its directory.`);
@@ -69,7 +80,7 @@ for (const directory of entries) {
     );
   }
   assert(Array.isArray(packageJson.files), `${directory}: package files must be an array.`);
-  for (const required of [".tritonai-plugin", "skills", "README.md", "SECURITY.md"]) {
+  for (const required of [".tritonai-plugin", "skills", "LICENSE", "README.md", "SECURITY.md"]) {
     assert(packageJson.files.includes(required), `${directory}: package files omit ${required}.`);
   }
   assert(

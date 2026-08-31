@@ -3,6 +3,8 @@
 Framework and curated source packages for TritonAI Harness plugins. The root framework supports
 zero plugins; each production package is introduced through its own reviewed change.
 
+Created and maintained by David Balderston for UC San Diego.
+
 These are trusted Harness backend components, not Codex marketplace packages. A Harness build pins
 an immutable commit or tag from this repository and includes only packages named by its exact signed
 composition and digest allowlist. Provider construction stays inside each selected package through
