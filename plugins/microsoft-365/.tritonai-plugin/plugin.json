@@ -55,14 +55,14 @@
     {
       "name": "microsoft365.mail.search",
       "displayName": "Search mail",
-      "description": "Search recent Microsoft 365 mail with a bounded read-only query.",
+      "description": "Search recent Microsoft 365 mail with a bounded read-only query and explicitly partial previews.",
       "capabilities": ["mail.read"],
       "effect": "read"
     },
     {
       "name": "microsoft365.mail.get",
       "displayName": "Read mail message",
-      "description": "Read one Microsoft 365 mail message.",
+      "description": "Read one Microsoft 365 mail message through a bounded body projection with truncation metadata.",
       "capabilities": ["mail.read"],
       "effect": "read"
     },
@@ -97,28 +97,28 @@
     {
       "name": "microsoft365.mail.attachments.list",
       "displayName": "List mail attachments",
-      "description": "List attachments on one Microsoft 365 mail message.",
+      "description": "List bounded attachment metadata on one Microsoft 365 mail message.",
       "capabilities": ["mail.read"],
       "effect": "read"
     },
     {
       "name": "microsoft365.mail.attachment.get",
       "displayName": "Read mail attachment",
-      "description": "Read one attachment from one Microsoft 365 mail message within a 5 MB response.",
+      "description": "Read one attachment from one Microsoft 365 mail message through a fixed projection below the host result ceiling.",
       "capabilities": ["mail.read"],
       "effect": "read"
     },
     {
       "name": "microsoft365.calendar.events",
       "displayName": "Read calendar events",
-      "description": "Read Microsoft 365 calendar events in a bounded date range.",
+      "description": "Read Microsoft 365 calendar events in a bounded date range with explicitly partial previews.",
       "capabilities": ["calendar.read"],
       "effect": "read"
     },
     {
       "name": "microsoft365.calendar.event.get",
       "displayName": "Read calendar event",
-      "description": "Read one Microsoft 365 calendar event.",
+      "description": "Read one Microsoft 365 calendar event through a bounded body projection with truncation metadata.",
       "capabilities": ["calendar.read"],
       "effect": "read"
     },
@@ -132,14 +132,14 @@
     {
       "name": "microsoft365.calendar.event.attachments.list",
       "displayName": "List event attachments",
-      "description": "List attachments on one Microsoft 365 calendar event.",
+      "description": "List bounded attachment metadata on one Microsoft 365 calendar event.",
       "capabilities": ["calendar.read"],
       "effect": "read"
     },
     {
       "name": "microsoft365.calendar.event.attachment.get",
       "displayName": "Read event attachment",
-      "description": "Read one attachment from one Microsoft 365 calendar event within a 5 MB response.",
+      "description": "Read one attachment from one Microsoft 365 calendar event through a fixed projection below the host result ceiling.",
       "capabilities": ["calendar.read"],
       "effect": "read"
     },
@@ -160,7 +160,7 @@
     {
       "name": "microsoft365.chat.messages",
       "displayName": "Read chat messages",
-      "description": "Read a bounded number of messages from one Microsoft 365 chat.",
+      "description": "Read a bounded number of projected messages from one Microsoft 365 chat with nullable bodies and truncation metadata.",
       "capabilities": ["chat.read"],
       "effect": "read"
     },

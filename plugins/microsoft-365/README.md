@@ -43,17 +43,27 @@ The fixed endpoints follow the Microsoft Graph contracts for [reading a message]
 and [sending to an existing chat](https://learn.microsoft.com/en-us/graph/api/chat-post-messages?view=graph-rest-1.0).
 
 Inputs, result counts, date ranges, response bytes, strings, OAuth scopes, and request duration are
-bounded. Pagination links are not followed by the provider. Draft bodies and chat messages use plain
-text; draft file contents use base64 as required by Microsoft Graph.
+bounded. Pagination links are neither followed nor returned; collection results expose only a
+`hasMore` boolean. Draft bodies and chat messages use plain text; draft file contents use base64 as
+required by Microsoft Graph.
 
 Mail search and calendar-view requests only identification fields, previews, and attachment
-presence. Exact message and event reads return the complete Graph resource. Tool result fields
-remain at the top level for compatibility, and the unmodified Graph result is included under
-`graphResponse`.
+presence. Exact message reads request a narrow field set and prefer a plain-text body. Every tool
+result uses an explicit, byte-bounded projection. A projected body's `truncated` field reports
+provider truncation, while `previewIsPartial` is true for every non-null Graph preview because the
+upstream preview is semantically partial. Unknown Graph fields and server-provided continuation
+URLs are not included. Chat messages with no returned content use `body: null`; oversized chat
+collections retain the leading projected messages that fit and set `hasMore`.
 
 Attachment list tools request metadata only so file bytes cannot make the list unusable. The matching
-single-attachment tool returns Graph's file `contentBytes` or expands an attached Outlook item, up to
-a 5 MB JSON response. Larger attachment transfer requires a separate streaming/download surface.
+single-attachment tool temporarily preserves validated, bounded Graph `contentBytes` for a small
+file or a fixed projection of an attached Outlook item under a sub-512 KiB serialized result
+ceiling. Reference attachments return metadata only. This compatibility path does not expose
+arbitrary attachment fields or provide file-system delivery; attachment-file delivery requires a
+separate Harness-owned surface.
+
+Version 1.1.1 removes the legacy raw-response compatibility field. Callers must use the normalized
+top-level projection fields documented above.
 
 ## Provider entrypoint and configuration
 

@@ -9,7 +9,7 @@ export interface MicrosoftGraphConfiguration {
 }
 export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly name: "microsoft365.mail.search";
-    readonly description: "Search Microsoft 365 mail through the fixed read-only messages endpoint with bounded input and output.";
+    readonly description: "Search Microsoft 365 mail through a fixed bounded projection; every non-null preview is marked previewIsPartial.";
     readonly input: Schema.Struct<{
         readonly query: Schema.optionalKey<Schema.String>;
         readonly limit: Schema.optionalKey<Schema.Int>;
@@ -20,7 +20,7 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly openWorld: true;
 }, {
     readonly name: "microsoft365.mail.get";
-    readonly description: "Read one exact Microsoft 365 mail message through the fixed messages endpoint.";
+    readonly description: "Read one exact Microsoft 365 mail message through a fixed bounded projection; body.truncated reports provider truncation.";
     readonly input: Schema.Struct<{
         readonly messageId: Schema.String;
     }>;
@@ -93,7 +93,7 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly openWorld: true;
 }, {
     readonly name: "microsoft365.mail.attachment.get";
-    readonly description: "Read one exact attachment from one exact Microsoft 365 mail message, including file bytes or an expanded attached item, within a 5 MB response.";
+    readonly description: "Read one exact attachment from one exact Microsoft 365 mail message through a fixed projection below the host result ceiling.";
     readonly input: Schema.Struct<{
         readonly messageId: Schema.String;
         readonly attachmentId: Schema.String;
@@ -104,7 +104,7 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly openWorld: true;
 }, {
     readonly name: "microsoft365.calendar.events";
-    readonly description: "Read Microsoft 365 calendar events through the fixed calendar-view endpoint in a bounded timestamp range.";
+    readonly description: "Read Microsoft 365 calendar events through a fixed bounded projection; every non-null preview is marked previewIsPartial.";
     readonly input: Schema.Struct<{
         readonly start: Schema.optionalKey<Schema.String>;
         readonly end: Schema.optionalKey<Schema.String>;
@@ -115,7 +115,7 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly openWorld: true;
 }, {
     readonly name: "microsoft365.calendar.event.get";
-    readonly description: "Read one exact Microsoft 365 calendar event through the fixed events endpoint.";
+    readonly description: "Read one exact Microsoft 365 calendar event through a fixed bounded projection; body.truncated reports provider truncation.";
     readonly input: Schema.Struct<{
         readonly eventId: Schema.String;
     }>;
@@ -155,7 +155,7 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly openWorld: true;
 }, {
     readonly name: "microsoft365.calendar.event.attachment.get";
-    readonly description: "Read one exact attachment from one exact Microsoft 365 calendar event, including file bytes or an expanded attached item, within a 5 MB response.";
+    readonly description: "Read one exact attachment from one exact Microsoft 365 calendar event through a fixed projection below the host result ceiling.";
     readonly input: Schema.Struct<{
         readonly eventId: Schema.String;
         readonly attachmentId: Schema.String;
@@ -195,7 +195,7 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly openWorld: true;
 }, {
     readonly name: "microsoft365.chat.messages";
-    readonly description: "Read bounded message history from one exact Microsoft 365 chat.";
+    readonly description: "Read bounded message history from one exact Microsoft 365 chat; body is null without content, otherwise body.truncated reports provider truncation.";
     readonly input: Schema.Struct<{
         readonly chatId: Schema.String;
         readonly limit: Schema.optionalKey<Schema.Int>;
@@ -222,7 +222,7 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
     readonly id = "microsoft-graph";
     readonly tools: readonly [{
         readonly name: "microsoft365.mail.search";
-        readonly description: "Search Microsoft 365 mail through the fixed read-only messages endpoint with bounded input and output.";
+        readonly description: "Search Microsoft 365 mail through a fixed bounded projection; every non-null preview is marked previewIsPartial.";
         readonly input: Schema.Struct<{
             readonly query: Schema.optionalKey<Schema.String>;
             readonly limit: Schema.optionalKey<Schema.Int>;
@@ -233,7 +233,7 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.mail.get";
-        readonly description: "Read one exact Microsoft 365 mail message through the fixed messages endpoint.";
+        readonly description: "Read one exact Microsoft 365 mail message through a fixed bounded projection; body.truncated reports provider truncation.";
         readonly input: Schema.Struct<{
             readonly messageId: Schema.String;
         }>;
@@ -306,7 +306,7 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.mail.attachment.get";
-        readonly description: "Read one exact attachment from one exact Microsoft 365 mail message, including file bytes or an expanded attached item, within a 5 MB response.";
+        readonly description: "Read one exact attachment from one exact Microsoft 365 mail message through a fixed projection below the host result ceiling.";
         readonly input: Schema.Struct<{
             readonly messageId: Schema.String;
             readonly attachmentId: Schema.String;
@@ -317,7 +317,7 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.calendar.events";
-        readonly description: "Read Microsoft 365 calendar events through the fixed calendar-view endpoint in a bounded timestamp range.";
+        readonly description: "Read Microsoft 365 calendar events through a fixed bounded projection; every non-null preview is marked previewIsPartial.";
         readonly input: Schema.Struct<{
             readonly start: Schema.optionalKey<Schema.String>;
             readonly end: Schema.optionalKey<Schema.String>;
@@ -328,7 +328,7 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.calendar.event.get";
-        readonly description: "Read one exact Microsoft 365 calendar event through the fixed events endpoint.";
+        readonly description: "Read one exact Microsoft 365 calendar event through a fixed bounded projection; body.truncated reports provider truncation.";
         readonly input: Schema.Struct<{
             readonly eventId: Schema.String;
         }>;
@@ -368,7 +368,7 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.calendar.event.attachment.get";
-        readonly description: "Read one exact attachment from one exact Microsoft 365 calendar event, including file bytes or an expanded attached item, within a 5 MB response.";
+        readonly description: "Read one exact attachment from one exact Microsoft 365 calendar event through a fixed projection below the host result ceiling.";
         readonly input: Schema.Struct<{
             readonly eventId: Schema.String;
             readonly attachmentId: Schema.String;
@@ -408,7 +408,7 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.chat.messages";
-        readonly description: "Read bounded message history from one exact Microsoft 365 chat.";
+        readonly description: "Read bounded message history from one exact Microsoft 365 chat; body is null without content, otherwise body.truncated reports provider truncation.";
         readonly input: Schema.Struct<{
             readonly chatId: Schema.String;
             readonly limit: Schema.optionalKey<Schema.Int>;
