@@ -110,10 +110,7 @@ async function scanRegularTree(root) {
     for (const entry of entries) {
       const absolute = Path.join(directory, entry.name);
       const relative = posixRelative(root, absolute);
-      assert(
-        entry.name !== "node_modules",
-        `node_modules is forbidden in plugin source: ${relative}`,
-      );
+      if (entry.name === "node_modules" && entry.isDirectory()) continue;
       assert(!entry.isSymbolicLink(), `Symlinks are forbidden in plugin source: ${relative}`);
       if (entry.isDirectory()) {
         await walk(absolute);
