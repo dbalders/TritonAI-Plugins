@@ -9,7 +9,7 @@ import { buildPluginArtifact, verifyPluginArtifact } from "../scripts/sdk-artifa
 const source = Path.resolve(import.meta.dirname, "..", "plugins", "synthetic-api-key");
 
 async function instantiateTestArtifact(artifact, context) {
-  const verified = await verifyPluginArtifact(artifact);
+  const verified = await verifyPluginArtifact(artifact, { hostNodeVersion: "24.13.1" });
   const url = `data:text/javascript;base64,${verified.entryBytes.toString("base64")}#artifact-sha256=${verified.descriptorSha256}`;
   const module = await import(url);
   assert.deepEqual(Object.keys(module), ["createIntegrationProvider"]);
