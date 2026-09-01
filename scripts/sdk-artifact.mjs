@@ -41,6 +41,9 @@ const LIFECYCLE_SCRIPTS = new Set([
   "prepublish",
   "prepublishOnly",
 ]);
+const WINDOWS_DEVICE_NAME =
+  /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout\$)(?:\.|$)/iu;
+const WINDOWS_FORBIDDEN_CHARACTERS = '<>:"|?*';
 const DESCRIPTOR_KEYS = new Set([
   "artifactVersion",
   "format",
@@ -102,6 +105,18 @@ export function assertSafeRelativePaths(paths) {
     assert(
       segments.every((segment) => segment.length > 0 && segment !== "." && segment !== ".."),
       `Artifact path contains traversal or an empty segment: ${path}`,
+    );
+    assert(
+      segments.every(
+        (segment) =>
+          ![...segment].some(
+            (character) =>
+              character.codePointAt(0) <= 0x1f || WINDOWS_FORBIDDEN_CHARACTERS.includes(character),
+          ) &&
+          !/[ .]$/u.test(segment) &&
+          !WINDOWS_DEVICE_NAME.test(segment),
+      ),
+      `Artifact path is not portable: ${path}`,
     );
     assert(!exact.has(path), `Duplicate artifact path: ${path}`);
     exact.add(path);

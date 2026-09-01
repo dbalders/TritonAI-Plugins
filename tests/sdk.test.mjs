@@ -531,12 +531,18 @@ test("path and size guards reject adversarial inventories", async (t) => {
     ["../plugin.mjs"],
     ["dist//plugin.mjs"],
     ["/plugin.mjs"],
+    ["CON.txt"],
+    ["skills/a:b/SKILL.md"],
+    ["skills/trailing./SKILL.md"],
+    ["skills/trailing /SKILL.md"],
+    ["skills/question?/SKILL.md"],
   ]) {
     assert.throws(
       () => assertSafeRelativePaths(paths),
-      /(duplicate|colliding|traversal|relative)/iu,
+      /(duplicate|colliding|traversal|relative|portable)/iu,
     );
   }
+  assert.doesNotThrow(() => assertSafeRelativePaths(["plugin.mjs", "skills/console/SKILL.md"]));
   const root = Path.join(await temporaryDirectory(t), "large");
   await writeFixture(root);
   await Fs.writeFile(Path.join(root, "oversized.bin"), Buffer.alloc(ARTIFACT_LIMITS.fileBytes + 1));
