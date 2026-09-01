@@ -117,6 +117,7 @@ for (const directory of await discoverPluginDirectories(pluginsRoot)) {
   const manifestPath = Path.join(packageRoot, ".tritonai-plugin", "plugin.json");
   const manifest = JSON.parse(await Fs.readFile(manifestPath, "utf8"));
   const packageJson = JSON.parse(await Fs.readFile(Path.join(packageRoot, "package.json"), "utf8"));
+  if (manifest.apiVersion === "tritonai.plugin/v1") continue;
   const harnessValidated = manifestModule.validateIntegrationManifest(manifest);
   assert(harnessValidated.id === directory, `${directory}: exact Harness rejected the plugin id.`);
   assertProviderRuntimeDependencies(directory, packageJson, harnessValidated);

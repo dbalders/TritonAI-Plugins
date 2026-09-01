@@ -7,7 +7,7 @@ export const HOST_CONTRACT_LEVEL = 1;
 const ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u;
 const TOOL_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/u;
 const VERSION =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const MANIFEST_KEYS = new Set([
   "apiVersion",
   "kind",
@@ -41,6 +41,21 @@ const SKILL_KEYS = new Set(["name", "description", "capabilities"]);
 const SKILL = /^[a-z][a-z0-9-]{0,63}$/u;
 const MAX_JSON_NODES = 20_000;
 const MAX_SCHEMA_BYTES = 128 * 1_024;
+const SCHEMA_VALUE_KEYWORDS = [
+  "additionalProperties",
+  "contains",
+  "contentSchema",
+  "else",
+  "if",
+  "items",
+  "not",
+  "propertyNames",
+  "then",
+  "unevaluatedItems",
+  "unevaluatedProperties",
+];
+const SCHEMA_ARRAY_KEYWORDS = ["allOf", "anyOf", "oneOf", "prefixItems"];
+const SCHEMA_MAP_KEYWORDS = ["$defs", "dependentSchemas", "patternProperties", "properties"];
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -116,18 +131,21 @@ function assertSchema(schema, label) {
     `${label} must fail closed with additionalProperties false.`,
   );
   assert(plainObject(schema.properties), `${label} properties must be an object.`);
-  const references = new Set();
   function resolveReference(reference, path) {
+    let pointer;
+    try {
+      pointer = decodeURIComponent(reference.slice(1));
+    } catch {
+      throw new Error(`${path} must be a local fragment JSON Pointer.`);
+    }
     assert(
-      /^#(?:\/(?:[^~/]|~[01])*)*$/u.test(reference),
+      reference.startsWith("#") && /^(?:\/(?:[^~/]|~[01])*)*$/u.test(pointer),
       `${path} must be a local fragment JSON Pointer.`,
     );
     let target = schema;
-    for (const token of reference
-      .slice(2)
-      .split("/")
-      .filter((part) => part.length > 0)
-      .map((part) => part.replaceAll("~1", "/").replaceAll("~0", "~"))) {
+    const tokens = pointer.length === 0 ? [] : pointer.slice(1).split("/");
+    for (const part of tokens) {
+      const token = part.replaceAll("~1", "/").replaceAll("~0", "~");
       assert(
         (plainObject(target) || Array.isArray(target)) && Object.hasOwn(target, token),
         `${path} does not resolve.`,
@@ -137,12 +155,46 @@ function assertSchema(schema, label) {
     assert(plainObject(target) || typeof target === "boolean", `${path} must resolve to a schema.`);
     return target;
   }
-  function inspect(current, path) {
-    if (Array.isArray(current)) {
-      current.forEach((item, index) => inspect(item, `${path}[${index}]`));
-      return;
+  function visitSubschemas(current, path, visit) {
+    for (const keyword of SCHEMA_VALUE_KEYWORDS) {
+      const value = current[keyword];
+      if (value === undefined) continue;
+      assert(
+        plainObject(value) || typeof value === "boolean",
+        `${path}.${keyword} must be a schema.`,
+      );
+      visit(value, `${path}.${keyword}`);
     }
+    for (const keyword of SCHEMA_ARRAY_KEYWORDS) {
+      const values = current[keyword];
+      if (values === undefined) continue;
+      assert(Array.isArray(values), `${path}.${keyword} must be a schema array.`);
+      values.forEach((value, index) => {
+        assert(
+          plainObject(value) || typeof value === "boolean",
+          `${path}.${keyword}[${index}] must be a schema.`,
+        );
+        visit(value, `${path}.${keyword}[${index}]`);
+      });
+    }
+    for (const keyword of SCHEMA_MAP_KEYWORDS) {
+      const values = current[keyword];
+      if (values === undefined) continue;
+      assert(plainObject(values), `${path}.${keyword} must be a schema map.`);
+      for (const [name, value] of Object.entries(values)) {
+        assert(
+          plainObject(value) || typeof value === "boolean",
+          `${path}.${keyword}.${name} must be a schema.`,
+        );
+        visit(value, `${path}.${keyword}.${name}`);
+      }
+    }
+  }
+  const inspected = new Set();
+  function inspect(current, path) {
     if (!plainObject(current)) return;
+    if (inspected.has(current)) return;
+    inspected.add(current);
     for (const keyword of [
       "$anchor",
       "$dynamicAnchor",
@@ -184,10 +236,9 @@ function assertSchema(schema, label) {
         typeof current.$ref === "string" && current.$ref.startsWith("#"),
         `${path} may reference only this schema document.`,
       );
-      resolveReference(current.$ref, `${path}.$ref`);
-      references.add(current.$ref);
+      inspect(resolveReference(current.$ref, `${path}.$ref`), `${path}.$ref target`);
     }
-    for (const [key, value] of Object.entries(current)) inspect(value, `${path}.${key}`);
+    visitSubschemas(current, path, inspect);
   }
   inspect(schema, label);
   const visiting = new Set();
@@ -198,13 +249,9 @@ function assertSchema(schema, label) {
     visiting.add(target);
     const nested = new Set();
     function collect(current) {
-      if (Array.isArray(current)) {
-        current.forEach(collect);
-        return;
-      }
       if (!plainObject(current)) return;
       if (typeof current.$ref === "string") nested.add(current.$ref);
-      for (const value of Object.values(current)) collect(value);
+      visitSubschemas(current, label, collect);
     }
     collect(target);
     for (const reference of nested) {
