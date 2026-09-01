@@ -313,7 +313,7 @@ test("fixed read tools emit only reviewed GraphQL operations and never cross the
           name: "Travel",
           documentConnection: {
             totalCount: 1,
-            edges: [{ node: { id: DOCUMENT_ID, data: {}, meta: { workflowStatus: "Complete" } } }],
+            edges: [{ node: { id: DOCUMENT_ID } }],
             pageInfo: { hasNextPage: false, hasPreviousPage: false, skip: 0, limit: 25 },
           },
         },
@@ -371,6 +371,7 @@ test("fixed read tools emit only reviewed GraphQL operations and never cross the
     invocation(events),
   );
   assert.equal(listed.totalCount, 1);
+  assert.deepEqual(listed.documents, [{ id: DOCUMENT_ID }]);
   assert.equal(
     (
       await provider.invoke(
@@ -410,6 +411,9 @@ test("fixed read tools emit only reviewed GraphQL operations and never cross the
     assert.deepEqual(Object.keys(body).sort(), ["query", "variables"]);
   }
   const listVariables = JSON.parse(mock.requests[3].init.body).variables;
+  const listRequest = JSON.parse(mock.requests[3].init.body);
+  assert.match(listRequest.query, /edges \{ node \{ id \} \}/u);
+  assert.doesNotMatch(listRequest.query, /\b(?:data|meta)\b/u);
   assert.deepEqual(listVariables.fields, {
     type: "AND",
     operators: [
@@ -424,6 +428,18 @@ test("fixed read tools emit only reviewed GraphQL operations and never cross the
   const workflowRequest = JSON.parse(mock.requests[6].init.body);
   assert.deepEqual(workflowRequest.variables, { id: DOCUMENT_ID });
   assert.doesNotMatch(workflowRequest.query, /\bdata\b/u);
+});
+
+test("workflow status rejects a response without a valid document ID", async (t) => {
+  const secrets = memorySecrets(storedCredential());
+  const provider = factory(t, secrets.service, async () =>
+    json({ data: { document: { meta: { workflowStatus: "Complete" } } } }),
+  );
+
+  await assert.rejects(
+    provider.invoke("kuali-build.workflows.status", { documentId: DOCUMENT_ID }, invocation()),
+    (error) => error.code === "invalid_response",
+  );
 });
 
 test("strict input rejects exotic objects, extra keys, pollution keys, and bounds", async (t) => {

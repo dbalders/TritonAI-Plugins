@@ -26,7 +26,7 @@ const queries = Object.freeze({
   appsList: `query KualiBuildApps { apps { id name } }`,
   appGet: `query KualiBuildApp($id: ID) { app(id: $id) { id name } }`,
   formSchema: `query KualiBuildFormSchema($id: ID) { app(id: $id) { id name formVersion { schema { formKey label } } } }`,
-  documentsList: `query KualiBuildDocuments($appId: ID!, $skip: Int!, $limit: Int!, $sort: [String!], $query: String, $fields: Operator) { app(id: $appId) { id name documentConnection(args: { skip: $skip limit: $limit sort: $sort query: $query fields: $fields } keyBy: ID) { totalCount edges { node { id data meta } } pageInfo { hasNextPage hasPreviousPage skip limit } } } }`,
+  documentsList: `query KualiBuildDocuments($appId: ID!, $skip: Int!, $limit: Int!, $sort: [String!], $query: String, $fields: Operator) { app(id: $appId) { id name documentConnection(args: { skip: $skip limit: $limit sort: $sort query: $query fields: $fields } keyBy: ID) { totalCount edges { node { id } } pageInfo { hasNextPage hasPreviousPage skip limit } } } }`,
   documentGet: `query KualiBuildDocument($id: ID!) { document(id: $id) { id data meta } }`,
   usersLookup: `query KualiBuildUsers($query: String, $limit: Int!) { usersConnection(args: { query: $query, limit: $limit }) { edges { node { id displayName email username firstName lastName schoolId } } } }`,
   workflowStatus: `query KualiBuildWorkflowStatus($id: ID!) { document(id: $id) { id meta } }`,
@@ -473,6 +473,13 @@ function projectDocument(value) {
   return { id: value.id, data: value.data ?? null, meta: value.meta ?? null };
 }
 
+function projectDocumentSummary(value) {
+  if (!isPlainObject(value) || typeof value.id !== "string" || !objectIdPattern.test(value.id)) {
+    throw failure("invalid_response", "Kuali returned an invalid document summary.");
+  }
+  return { id: value.id.toLowerCase() };
+}
+
 function projectPageInfo(value) {
   if (
     !isPlainObject(value) ||
@@ -748,7 +755,7 @@ export function createIntegrationProvider(context) {
             if (!isPlainObject(edge)) {
               throw failure("invalid_response", "Kuali returned an invalid document edge.");
             }
-            return projectDocument(edge.node);
+            return projectDocumentSummary(edge.node);
           });
           return {
             app: { id: app.id, name: app.name },
@@ -802,10 +809,17 @@ export function createIntegrationProvider(context) {
             "document",
           );
           if (document === null) return { document: null };
-          if (!isPlainObject(document) || !isPlainObject(document.meta)) throw failure("invalid_response", "Kuali returned invalid workflow metadata.");
+          if (
+            !isPlainObject(document) ||
+            typeof document.id !== "string" ||
+            !objectIdPattern.test(document.id) ||
+            !isPlainObject(document.meta)
+          ) {
+            throw failure("invalid_response", "Kuali returned invalid workflow metadata.");
+          }
           return {
             document: {
-              id: document.id,
+              id: document.id.toLowerCase(),
               workflowStatus: document.meta.workflowStatus ?? null,
               workflowData: document.meta.workflowData ?? null,
               submittedAt: document.meta.submittedAt ?? null,

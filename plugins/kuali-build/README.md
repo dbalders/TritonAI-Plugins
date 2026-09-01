@@ -20,8 +20,10 @@ and alternate ports are rejected.
 ## Scope
 
 The plugin exposes fixed operations for Build apps, form schemas, Build documents, users, and a
-document's workflow metadata. It deliberately excludes Kuali Curriculum, Sponsored Programs,
-product datasets, arbitrary GraphQL, attachments, exports, administrative APIs, and mutations.
+document's workflow metadata. Document lists return IDs and pagination only; fetching form data or
+workflow metadata requires an exact document ID. It deliberately excludes Kuali Curriculum,
+Sponsored Programs, product datasets, arbitrary GraphQL, attachments, exports, administrative APIs,
+and mutations.
 
 Kuali's documented workflow start requires multiple externally visible requests. This first
 version remains read-only because that sequence cannot be treated as one atomic commit under the
