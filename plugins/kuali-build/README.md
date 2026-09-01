@@ -6,9 +6,12 @@ directly over HTTPS and does not install or launch Kuali Connector.
 
 ## Connection
 
-Create an API key in Kuali Build **My Account → API Keys**, then enable the plugin and enter the key
-when prompted. The key is stored only through the Harness package-scoped secret store. Kuali ties
-each key to a user and applies that user's existing permissions.
+Open the UCSD Kuali Build [API Keys page](https://ucsd.kualibuild.com/build/space/favorites/account/api-keys),
+sign in if prompted, create a new API key, and copy the full key when Kuali displays it. Then enable
+the plugin, select **Open API key settings** if you still need the page, paste the key, and select
+**Connect**. The key is validated against the UCSD tenant before it is stored through the Harness
+package-scoped secret store. Kuali ties each key to a user and applies that user's existing
+permissions.
 
 The only accepted tenant configuration is `https://ucsd.kualibuild.com`; an omitted `tenantUrl`
 defaults to that exact origin. Paths, query strings, credentials, non-HTTPS URLs, lookalike hosts,
@@ -28,6 +31,7 @@ network outcome.
 References:
 
 - https://developers.kualibuild.com/
+- https://developers.kualibuild.com/authentication
 - https://connector.kuali.co/
 
 From the repository root, run `pnpm --filter @tritonai/plugin-kuali-build test` and

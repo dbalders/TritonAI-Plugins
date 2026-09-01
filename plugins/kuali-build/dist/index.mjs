@@ -2,6 +2,7 @@ const PROVIDER_ID = "kuali-build";
 const CAPABILITY = "kuali-build.read";
 const SECRET_NAME = "api-key";
 const TENANT_ORIGIN = "https://ucsd.kualibuild.com";
+const API_KEY_SETTINGS_URL = `${TENANT_ORIGIN}/build/space/favorites/account/api-keys`;
 const GRAPHQL_URL = `${TENANT_ORIGIN}/app/api/v0/graphql`;
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_REQUEST_BYTES = 64 * 1024;
@@ -593,7 +594,13 @@ export function createIntegrationProvider(context) {
           flowId,
           label: "UCSD Kuali Build API key",
           placeholder: null,
-          message: "Enter an API key created in UC San Diego Kuali Build My Account. It is stored only in the package-scoped secret store.",
+          message: "Create a user-scoped API key in UC San Diego Kuali Build, then paste it below. The key uses your existing Kuali permissions and is stored only in the package-scoped secret store.",
+          setupUrl: API_KEY_SETTINGS_URL,
+          setupInstructions: [
+            "Open API key settings and sign in with your UC San Diego account if prompted.",
+            "Create a new API key and copy the full key when Kuali displays it.",
+            "Return here, paste the key below, and select Connect. TritonAI validates it against the UCSD tenant before saving it.",
+          ],
         };
       }
       const submitted = ownKeys(submission, new Set(["kind", "flowId", "value"]), "Connection submission");

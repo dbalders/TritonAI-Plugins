@@ -154,7 +154,18 @@ test("API-key lifecycle validates remotely and commits only after host admission
   const mock = sequence([json({ data: { apps: [] } }), json({ data: { apps: [] } })]);
   const provider = factory(t, secrets.service, mock.implementation);
   const events = [];
-  const result = await connect(provider, events);
+  const flow = await provider.connect(["kuali-build.read"], lifecycle(events));
+  assert.equal(flow.setupUrl, "https://ucsd.kualibuild.com/build/space/favorites/account/api-keys");
+  assert.deepEqual(flow.setupInstructions, [
+    "Open API key settings and sign in with your UC San Diego account if prompted.",
+    "Create a new API key and copy the full key when Kuali displays it.",
+    "Return here, paste the key below, and select Connect. TritonAI validates it against the UCSD tenant before saving it.",
+  ]);
+  const result = await provider.connect(["kuali-build.read"], lifecycle(events), {
+    kind: "api_key",
+    flowId: flow.flowId,
+    value: API_KEY,
+  });
   assert.equal(result.kind, "connected");
   assert.deepEqual(events, ["beginCommit"]);
   assert.deepEqual(secrets.calls, ["set:api-key"]);
