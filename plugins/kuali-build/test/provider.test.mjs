@@ -145,7 +145,7 @@ test("lifecycle contexts require commit admission while read invocation does not
   );
   assert.deepEqual(
     await provider.invoke("kuali-build.apps.list", {}, { signal, writeApproved: false }),
-    { apps: [] },
+    { apps: [], returned: 0, truncated: false },
   );
 });
 
@@ -272,7 +272,14 @@ test("status reports absent, corrupt, and rejected credentials without exposing 
 test("fixed read tools emit only reviewed GraphQL operations and never cross the write gate", async (t) => {
   const secrets = memorySecrets(storedCredential());
   const responses = [
-    json({ data: { apps: [{ id: APP_ID, name: "Travel" }] } }),
+    json({
+      data: {
+        apps: [
+          { id: APP_ID, name: "Travel" },
+          { id: "000000000000000000000000", name: "Hidden by limit" },
+        ],
+      },
+    }),
     json({ data: { app: { id: APP_ID, name: "Travel" } } }),
     json({
       data: {
@@ -330,10 +337,14 @@ test("fixed read tools emit only reviewed GraphQL operations and never cross the
   const mock = sequence(responses);
   const provider = factory(t, secrets.service, mock.implementation);
   const events = [];
-  assert.equal(
-    (await provider.invoke("kuali-build.apps.list", {}, invocation(events))).apps[0].name,
-    "Travel",
+  const apps = await provider.invoke(
+    "kuali-build.apps.list",
+    { limit: 1 },
+    invocation(events),
   );
+  assert.equal(apps.apps[0].name, "Travel");
+  assert.equal(apps.returned, 1);
+  assert.equal(apps.truncated, true);
   assert.equal(
     (await provider.invoke("kuali-build.apps.get", { appId: APP_ID }, invocation(events))).app.id,
     APP_ID,
@@ -415,6 +426,7 @@ test("strict input rejects exotic objects, extra keys, pollution keys, and bound
     ["kuali-build.apps.list", []],
     ["kuali-build.apps.list", new Date()],
     ["kuali-build.apps.list", { extra: true }],
+    ["kuali-build.apps.list", { limit: 101 }],
     ["kuali-build.apps.get", { appId: "../../etc/passwd" }],
     ["kuali-build.documents.list", { appId: APP_ID, limit: 51 }],
     ["kuali-build.documents.list", { appId: APP_ID, skip: -1 }],

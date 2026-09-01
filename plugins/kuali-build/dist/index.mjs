@@ -12,6 +12,7 @@ const MAX_OBJECT_KEYS = 1_000;
 const MAX_ARRAY_ITEMS = 5_000;
 const MAX_STRING_CHARS = 1_048_576;
 const MAX_PENDING_FLOWS = 8;
+const MAX_APP_RESULTS = 100;
 const MAX_SCHEMA_FIELDS = 500;
 const MAX_USER_RESULTS = 50;
 const FLOW_LIFETIME_MS = 10 * 60 * 1_000;
@@ -143,8 +144,8 @@ function validateInteger(value, label, minimum, maximum, fallback) {
 function validateInput(toolName, value) {
   switch (toolName) {
     case "kuali-build.apps.list": {
-      ownKeys(value, new Set(), "Input");
-      return {};
+      const input = ownKeys(value, new Set(["limit"]), "Input");
+      return { limit: validateInteger(input.limit, "limit", 1, MAX_APP_RESULTS, MAX_APP_RESULTS) };
     }
     case "kuali-build.apps.get":
     case "kuali-build.forms.schema": {
@@ -656,7 +657,13 @@ export function createIntegrationProvider(context) {
       switch (toolName) {
         case "kuali-build.apps.list": {
           const data = await execute(credential.apiKey, "appsList", {}, invocationContext.signal);
-          return { apps: projectApps(extract(data, "apps")) };
+          const available = projectApps(extract(data, "apps"));
+          const apps = available.slice(0, parsed.limit);
+          return {
+            apps,
+            returned: apps.length,
+            truncated: available.length > apps.length,
+          };
         }
         case "kuali-build.apps.get": {
           const data = await execute(
