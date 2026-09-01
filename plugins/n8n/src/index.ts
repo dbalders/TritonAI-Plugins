@@ -1,46 +1,25 @@
-export { N8N_PROVIDER_ID, N8N_SECRET_SUFFIX, N8N_TOOLS, N8nProvider } from "./N8nProvider.js";
-export type { N8nConfiguration } from "./N8nProvider.js";
-import { N8nProvider } from "./N8nProvider.js";
-import type { IntegrationProvider, IntegrationProviderFactoryContext } from "./host-contract.js";
-export type {
-  IntegrationAuthorizationUrlConnectResult,
-  IntegrationConnectedConnectResult,
-  IntegrationConnectResult,
-  IntegrationConnectionSubmission,
-  IntegrationInvocationContext,
-  IntegrationLifecycleContext,
+import type {
+  CreateIntegrationProvider,
   IntegrationProvider,
-  IntegrationProviderFactoryContext,
-  IntegrationProviderPollResult,
-  IntegrationProviderStatus,
-  IntegrationProviderTool,
-  IntegrationSecretStore,
-} from "./host-contract.js";
-export { IntegrationProviderPublicError } from "./host-contract.js";
-export { default as manifest } from "../.tritonai-plugin/plugin.json" with { type: "json" };
+  JsonObject,
+} from "@tritonai/plugin-sdk";
 
-function configuration(value: unknown): { readonly serverUrl: string } {
+import { N8nProvider } from "./N8nProvider.js";
+
+const SERVER_URL = "https://n8n.tritonai.ucsd.edu/mcp-server/http";
+
+function configuration(value: JsonObject): { readonly serverUrl: string } {
   if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+    ![Object.prototype, null].includes(Object.getPrototypeOf(value)) ||
+    Object.keys(value).toSorted().join(",") !== "serverUrl" ||
+    value.serverUrl !== SERVER_URL
   ) {
-    throw new Error("n8n configuration must be a plain object.");
+    throw new Error("n8n configuration must contain only the reviewed server URL.");
   }
-  const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).toSorted().join(",") !== "serverUrl" ||
-    typeof record.serverUrl !== "string"
-  ) {
-    throw new Error("n8n configuration must contain exactly one serverUrl string.");
-  }
-  return { serverUrl: record.serverUrl };
+  return { serverUrl: value.serverUrl };
 }
 
-export function createIntegrationProvider({
+export const createIntegrationProvider: CreateIntegrationProvider = ({
   secrets,
   configuration: input,
-}: IntegrationProviderFactoryContext): IntegrationProvider {
-  return new N8nProvider(secrets, configuration(input));
-}
+}) => new N8nProvider(secrets, configuration(input)) as unknown as IntegrationProvider;

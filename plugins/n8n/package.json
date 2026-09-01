@@ -2,32 +2,28 @@
   "name": "@tritonai/plugin-n8n",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "files": [
     ".tritonai-plugin",
     "skills",
     "dist",
+    "LICENSE",
     "README.md",
     "SECURITY.md"
   ],
   "type": "module",
-  "types": "./dist/index.d.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
+    ".": "./dist/index.mjs"
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json",
-    "contract:harness": "node scripts/verify-harness-contract.mjs",
+    "build": "node -e \"for (const path of ['dist','.sdk-build']) require('node:fs').rmSync(path,{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node scripts/generate-sdk-manifest.mjs && esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/index.mjs && node -e \"require('node:fs').rmSync('.sdk-build',{recursive:true,force:true})\"",
     "prepack": "pnpm build",
     "test": "vp test run",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "effect": "4.0.0-beta.102"
-  },
-  "peerDependencies": {
-    "effect": ">=4.0.0-beta.78 <4.0.0"
+    "@tritonai/plugin-sdk": "workspace:^",
+    "effect": "4.0.0-beta.102",
+    "esbuild": "0.28.2"
   }
 }

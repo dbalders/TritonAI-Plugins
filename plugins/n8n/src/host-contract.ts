@@ -1,61 +1,49 @@
-import type * as Effect from "effect/Effect";
-import type * as Option from "effect/Option";
+import type {
+  IntegrationAuthorizationUrlConnectResult,
+  IntegrationConnectedConnectResult,
+  IntegrationConnectionSubmission,
+  IntegrationInvocationContext,
+  IntegrationLifecycleContext,
+  IntegrationProviderPollResult,
+  IntegrationProviderStatus,
+  IntegrationSecretStore,
+  JsonObject,
+  JsonValue,
+} from "@tritonai/plugin-sdk";
 import type * as Schema from "effect/Schema";
 
-export interface IntegrationInvocationContext {
-  readonly signal: AbortSignal;
-  readonly writeApproved?: boolean;
-  beginCommit?(): Promise<AbortSignal>;
-}
-
-export interface IntegrationLifecycleContext extends IntegrationInvocationContext {
-  beginCommit(): Promise<AbortSignal>;
-}
-
-export interface IntegrationConnectionSubmission {
-  readonly kind: "api_key";
-  readonly flowId: string;
-  readonly value: string;
-}
-
-export interface IntegrationAuthorizationUrlConnectResult {
-  readonly kind: "authorization_url";
-  readonly flowId: string;
-  readonly authorizationUrl: string;
-  readonly message: string;
-  readonly expiresAt: string;
-  readonly intervalSeconds: number;
-}
-
-export interface IntegrationConnectedConnectResult {
-  readonly kind: "connected";
-  readonly flowId: string;
-  readonly message: string;
-}
-
-export type IntegrationConnectResult =
-  | IntegrationAuthorizationUrlConnectResult
-  | IntegrationConnectedConnectResult;
-
-export interface IntegrationProviderPollResult {
-  readonly state: "pending" | "connected" | "expired" | "failed";
-  readonly retryAfterSeconds: number | null;
-  readonly message: string | null;
-}
-
-export interface IntegrationProviderStatus {
-  readonly state: "not_connected" | "connecting" | "connected" | "error";
-  readonly accountLabel: string | null;
-  readonly grantedCapabilities: ReadonlyArray<string>;
-  readonly message: string | null;
-}
+export type {
+  IntegrationAuthorizationUrlConnectResult,
+  IntegrationConnectedConnectResult,
+  IntegrationConnectionSubmission,
+  IntegrationInvocationContext,
+  IntegrationLifecycleContext,
+  IntegrationProviderPollResult,
+  IntegrationProviderStatus,
+  IntegrationSecretStore,
+  JsonObject,
+  JsonValue,
+};
 
 export class IntegrationProviderPublicError extends Error {
-  readonly _tag = "IntegrationProviderPublicError";
+  readonly _tag = "PluginFailure";
+  readonly code = "n8n_operation_failed";
+  readonly retryable = false;
 
   constructor(message: string) {
-    super(message.trim() || "Integration provider operation failed.");
-    this.name = "IntegrationProviderPublicError";
+    super(message.trim() || "n8n operation failed.");
+    this.name = "PluginFailure";
+  }
+}
+
+export class ExternalCommitOutcomeUnknownError extends Error {
+  readonly _tag = "ExternalCommitOutcomeUnknown";
+  readonly code = "external_commit_outcome_unknown";
+  readonly retryable = false;
+
+  constructor(message = "The external commit may have completed. Do not retry automatically.") {
+    super(message);
+    this.name = "ExternalCommitOutcomeUnknown";
   }
 }
 
@@ -64,21 +52,21 @@ export interface IntegrationProviderTool {
   readonly description: string;
   readonly input: Schema.Decoder<unknown>;
   readonly readOnly: boolean;
-  readonly destructive?: boolean;
-  readonly idempotent?: boolean;
+  readonly destructive: boolean;
+  readonly idempotent: boolean;
   readonly openWorld: boolean;
 }
 
 export interface IntegrationProvider {
   readonly id: string;
   readonly tools: ReadonlyArray<IntegrationProviderTool>;
-  status(context?: IntegrationInvocationContext): Promise<IntegrationProviderStatus>;
-  prepare?(context: IntegrationLifecycleContext): Promise<void>;
+  status(context?: { readonly signal: AbortSignal }): Promise<IntegrationProviderStatus>;
+  prepare?(context?: IntegrationLifecycleContext): Promise<void>;
   connect?(
     capabilities: ReadonlyArray<string>,
     context?: IntegrationLifecycleContext,
     submission?: IntegrationConnectionSubmission,
-  ): Promise<IntegrationConnectResult>;
+  ): Promise<IntegrationAuthorizationUrlConnectResult | IntegrationConnectedConnectResult>;
   poll?(
     flowId: string,
     context?: IntegrationLifecycleContext,
@@ -86,19 +74,8 @@ export interface IntegrationProvider {
   disconnect?(context?: IntegrationLifecycleContext): Promise<void>;
   invoke(
     toolName: string,
-    input: unknown,
+    input: JsonObject,
     context?: IntegrationInvocationContext,
-  ): Promise<unknown>;
+  ): Promise<JsonValue>;
   close?(): Promise<void>;
-}
-
-export interface IntegrationSecretStore {
-  get(name: string): Effect.Effect<Option.Option<Uint8Array>, unknown>;
-  set(name: string, value: Uint8Array): Effect.Effect<void, unknown>;
-  remove(name: string): Effect.Effect<void, unknown>;
-}
-
-export interface IntegrationProviderFactoryContext {
-  readonly secrets: IntegrationSecretStore;
-  readonly configuration: unknown;
 }

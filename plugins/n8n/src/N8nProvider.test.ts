@@ -1,5 +1,3 @@
-import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -28,22 +26,20 @@ function memorySecrets(options: { failSet?: boolean } = {}) {
   const values = new Map<string, Uint8Array>();
   const calls: string[] = [];
   const service: IntegrationSecretStore = {
-    get: (name) =>
-      Effect.sync(() => {
-        calls.push(`get:${name}`);
-        return Option.fromUndefinedOr(values.get(name));
-      }),
-    set: (name, bytes) =>
-      Effect.sync(() => {
-        calls.push(`set:${name}`);
-        if (options.failSet) throw new Error("fixture persistence failed");
-        values.set(name, Uint8Array.from(bytes));
-      }),
-    remove: (name) =>
-      Effect.sync(() => {
-        calls.push(`remove:${name}`);
-        values.delete(name);
-      }),
+    get: async (name) => {
+      calls.push(`get:${name}`);
+      const value = values.get(name);
+      return value === undefined ? null : new TextDecoder().decode(value);
+    },
+    set: async (name, value) => {
+      calls.push(`set:${name}`);
+      if (options.failSet) throw new Error("fixture persistence failed");
+      values.set(name, new TextEncoder().encode(value));
+    },
+    remove: async (name) => {
+      calls.push(`remove:${name}`);
+      values.delete(name);
+    },
   };
   return { service, values, calls };
 }
@@ -351,6 +347,33 @@ describe("N8nProvider", () => {
       method: "tools/call",
       params: { name: "archive_workflow" },
     });
+    await provider.close();
+  });
+
+  it("faults after an admitted write has an unknown external outcome", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch();
+    let failWrite = false;
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+      if (failWrite && body?.method === "tools/call") throw new Error("fixture connection lost");
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
+    await authorize(provider, mock.requests);
+
+    failWrite = true;
+    await expect(
+      provider.invoke("n8n.archive_workflow", { workflowId: "wf" }, invocation(true)),
+    ).rejects.toMatchObject({
+      _tag: "ExternalCommitOutcomeUnknown",
+      code: "external_commit_outcome_unknown",
+      retryable: false,
+    });
+    await expect(provider.status()).resolves.toMatchObject({ state: "error" });
+
+    failWrite = false;
+    await provider.disconnect(lifecycle());
     await provider.close();
   });
 

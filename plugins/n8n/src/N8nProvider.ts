@@ -1,6 +1,4 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off cryptoRandomUUID:off
-import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as NodeCrypto from "node:crypto";
 import * as NodeHttp from "node:http";
@@ -11,11 +9,14 @@ import {
   type IntegrationInvocationContext,
   type IntegrationLifecycleContext,
   type IntegrationProvider,
+  ExternalCommitOutcomeUnknownError,
   IntegrationProviderPublicError,
   type IntegrationProviderPollResult,
   type IntegrationProviderStatus,
   type IntegrationProviderTool,
   type IntegrationSecretStore,
+  type JsonObject,
+  type JsonValue,
 } from "./host-contract.js";
 
 export const N8N_PROVIDER_ID = "n8n";
@@ -888,10 +889,10 @@ function capabilitiesFromScopes(scopes: ReadonlyArray<string>): ReadonlyArray<st
   return [...capabilities].toSorted();
 }
 
-function parseCredential(bytes: Uint8Array, serverUrl: string): Credential {
+function parseCredential(encoded: string, serverUrl: string): Credential {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(decoder.decode(bytes));
+    parsed = JSON.parse(encoded);
   } catch {
     throw new Error("Stored n8n credential is invalid.");
   }
@@ -1165,6 +1166,7 @@ function validateToolInventory(value: unknown): ReadonlySet<string> {
 }
 
 class SessionInvalidError extends Error {}
+class ConfirmedRemoteFailure extends IntegrationProviderPublicError {}
 
 export class N8nProvider implements IntegrationProvider {
   readonly id = N8N_PROVIDER_ID;
@@ -1399,7 +1401,7 @@ export class N8nProvider implements IntegrationProvider {
       METADATA_RESPONSE_BYTES,
     );
     if (response.status !== 200 && response.status !== 201) {
-      throw new IntegrationProviderPublicError("n8n could not register this local OAuth client.");
+      throw new ConfirmedRemoteFailure("n8n could not register this local OAuth client.");
     }
     if (
       json.client_secret !== undefined ||
@@ -1422,15 +1424,16 @@ export class N8nProvider implements IntegrationProvider {
   }
 
   async #readCredential(signal?: AbortSignal): Promise<Credential | null> {
-    const value = await Effect.runPromise(this.#secrets.get(N8N_SECRET_SUFFIX), { signal });
-    return Option.isSome(value) ? parseCredential(value.value, this.#server.toString()) : null;
+    if (signal?.aborted) throw new IntegrationProviderPublicError("n8n request was cancelled.");
+    const value = await this.#secrets.get(N8N_SECRET_SUFFIX);
+    if (signal?.aborted) throw new IntegrationProviderPublicError("n8n request was cancelled.");
+    return value === null ? null : parseCredential(value, this.#server.toString());
   }
 
-  #writeCredential(credential: Credential, signal: AbortSignal): Promise<void> {
-    return Effect.runPromise(
-      this.#secrets.set(N8N_SECRET_SUFFIX, encoder.encode(JSON.stringify(credential))),
-      { signal },
-    );
+  async #writeCredential(credential: Credential, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    await this.#secrets.set(N8N_SECRET_SUFFIX, JSON.stringify(credential));
+    signal.throwIfAborted();
   }
 
   async #beginCommit(context?: IntegrationLifecycleContext): Promise<AbortSignal> {
@@ -1680,9 +1683,7 @@ export class N8nProvider implements IntegrationProvider {
       this.#sessionId = null;
       this.#sessionVerified = false;
       this.#availableTools = new Set();
-      throw new IntegrationProviderPublicError(
-        "n8n authorization expired. Reconnect if refresh fails.",
-      );
+      throw new ConfirmedRemoteFailure("n8n authorization expired. Reconnect if refresh fails.");
     }
     if (response.status === 404 && this.#sessionId) {
       this.#sessionId = null;
@@ -1697,16 +1698,12 @@ export class N8nProvider implements IntegrationProvider {
     }
     if (!response.ok) {
       if (response.status === 429) {
-        throw new IntegrationProviderPublicError(
-          "n8n is rate limiting MCP requests. Try again later.",
-        );
+        throw new ConfirmedRemoteFailure("n8n is rate limiting MCP requests. Try again later.");
       }
       if (response.status === 403) {
-        throw new IntegrationProviderPublicError(
-          "n8n denied this operation for the connected user.",
-        );
+        throw new ConfirmedRemoteFailure("n8n denied this operation for the connected user.");
       }
-      throw new IntegrationProviderPublicError("n8n MCP could not complete the request.");
+      throw new ConfirmedRemoteFailure("n8n MCP could not complete the request.");
     }
     const returnedSession = response.headers.get("mcp-session-id");
     if (returnedSession !== null) {
@@ -1729,7 +1726,7 @@ export class N8nProvider implements IntegrationProvider {
     if (raw.error !== undefined) {
       const error = asRecord(raw.error, "n8n MCP JSON-RPC error");
       if (!Number.isInteger(error.code)) throw new Error("n8n MCP returned an invalid error.");
-      throw new IntegrationProviderPublicError("n8n MCP rejected the request.");
+      throw new ConfirmedRemoteFailure("n8n MCP rejected the request.");
     }
     if (!("result" in raw)) throw new Error("n8n MCP response omitted its result.");
     return raw.result;
@@ -1813,7 +1810,7 @@ export class N8nProvider implements IntegrationProvider {
       METADATA_RESPONSE_BYTES,
     );
     if (!response.ok) {
-      throw new IntegrationProviderPublicError("n8n could not revoke the credential. Try again.");
+      throw new ConfirmedRemoteFailure("n8n could not revoke the credential. Try again.");
     }
   }
 
@@ -1946,8 +1943,10 @@ export class N8nProvider implements IntegrationProvider {
       { flowId, state, codeVerifier, discovery, expiresAt, generation },
       context?.signal,
     );
+    let admitted = false;
     try {
       const commitSignal = await this.#beginCommit(context);
+      admitted = true;
       const clientId = await this.#registerClient(discovery, flow.redirectUri, commitSignal);
       if (
         generation !== this.#generation ||
@@ -1962,6 +1961,12 @@ export class N8nProvider implements IntegrationProvider {
       this.#pending.set(flowId, flow);
     } catch (error) {
       await this.#closeFlowListener(flow, true);
+      if (admitted && !(error instanceof ConfirmedRemoteFailure)) {
+        this.#uncertainCredentialState = true;
+        throw new ExternalCommitOutcomeUnknownError(
+          "The n8n OAuth client registration may have completed. Disconnect before retrying.",
+        );
+      }
       throw error;
     }
     const authorizationUrl = new URL(discovery.authorizationEndpoint);
@@ -2041,6 +2046,7 @@ export class N8nProvider implements IntegrationProvider {
         let admitted = false;
         let responseSettled = false;
         let credentialIssued = false;
+        let credentialCompensated = false;
         try {
           const commitSignal = await this.#beginCommit(context);
           admitted = true;
@@ -2082,13 +2088,12 @@ export class N8nProvider implements IntegrationProvider {
           try {
             await this.#initializeSession(parsed.access, commitSignal);
           } catch (error) {
-            await this.#revokeToken(
-              flow.discovery,
-              parsed.credential.refreshToken,
-              commitSignal,
-            ).catch(() => {
+            try {
+              await this.#revokeToken(flow.discovery, parsed.credential.refreshToken, commitSignal);
+              credentialCompensated = true;
+            } catch {
               this.#uncertainCredentialState = true;
-            });
+            }
             this.#accessToken = null;
             this.#sessionId = null;
             this.#sessionVerified = false;
@@ -2115,8 +2120,11 @@ export class N8nProvider implements IntegrationProvider {
             message: "n8n is connected for this user.",
           };
         } catch (error) {
-          if (admitted && (!responseSettled || credentialIssued) && this.#accessToken !== null) {
+          if (admitted && (!responseSettled || (credentialIssued && !credentialCompensated))) {
             this.#uncertainCredentialState = true;
+            throw new ExternalCommitOutcomeUnknownError(
+              "The n8n sign-in commit may have completed. Disconnect before retrying.",
+            );
           }
           throw error;
         }
@@ -2192,8 +2200,12 @@ export class N8nProvider implements IntegrationProvider {
         await this.#writeCredential(parsed.credential, commitSignal);
         this.#credentialRevision += 1;
       } catch (error) {
-        if (admitted && (!responseSettled || credentialIssued))
+        if (admitted && (!responseSettled || credentialIssued)) {
           this.#uncertainCredentialState = true;
+          throw new ExternalCommitOutcomeUnknownError(
+            "The n8n credential refresh may have completed. Disconnect before retrying.",
+          );
+        }
         throw error;
       }
     });
@@ -2209,6 +2221,7 @@ export class N8nProvider implements IntegrationProvider {
       this.#availableTools = new Set();
       await this.#clearPendingFlows();
       let admitted = false;
+      let removalStarted = false;
       try {
         const credential = await this.#readCredential(context?.signal);
         const commitSignal = await this.#beginCommit(context);
@@ -2217,12 +2230,19 @@ export class N8nProvider implements IntegrationProvider {
           const discovery = await this.#discover(commitSignal);
           await this.#revokeToken(discovery, credential.refreshToken, commitSignal);
         }
-        await Effect.runPromise(this.#secrets.remove(N8N_SECRET_SUFFIX), { signal: commitSignal });
+        removalStarted = true;
+        await this.#secrets.remove(N8N_SECRET_SUFFIX);
+        commitSignal.throwIfAborted();
         this.#accessToken = null;
         this.#credentialRevision += 1;
         this.#uncertainCredentialState = false;
       } catch (error) {
-        if (admitted) this.#uncertainCredentialState = true;
+        if (admitted && (removalStarted || !(error instanceof ConfirmedRemoteFailure))) {
+          this.#uncertainCredentialState = true;
+          throw new ExternalCommitOutcomeUnknownError(
+            "The n8n disconnect may have completed. Verify the connection state before retrying.",
+          );
+        }
         throw error;
       } finally {
         this.#disconnecting = false;
@@ -2232,9 +2252,9 @@ export class N8nProvider implements IntegrationProvider {
 
   async invoke(
     toolName: string,
-    input: unknown,
+    input: JsonObject,
     context?: IntegrationInvocationContext,
-  ): Promise<unknown> {
+  ): Promise<JsonValue> {
     const reviewed = REVIEWED_TOOLS.find((tool) => tool.name === toolName);
     if (!reviewed) throw new IntegrationProviderPublicError("Unknown n8n tool.");
     if (!reviewed.readOnly && context?.writeApproved !== true) {
@@ -2264,10 +2284,14 @@ export class N8nProvider implements IntegrationProvider {
         "This n8n tool is not available under the connected user's grant or instance configuration.",
       );
     }
+    let admitted = false;
     const signal = reviewed.readOnly
       ? context?.signal
       : typeof context?.beginCommit === "function"
-        ? await context.beginCommit()
+        ? await context.beginCommit().then((commitSignal) => {
+            admitted = true;
+            return commitSignal;
+          })
         : (() => {
             throw new Error("n8n writes require Harness commit admission.");
           })();
@@ -2287,19 +2311,19 @@ export class N8nProvider implements IntegrationProvider {
         "n8n MCP tool result",
       );
       if (result.isError === true) {
-        throw new IntegrationProviderPublicError("n8n reported that the tool operation failed.");
+        throw new ConfirmedRemoteFailure("n8n reported that the tool operation failed.");
       }
       const structured = result.structuredContent;
       if (structured && typeof structured === "object" && !Array.isArray(structured)) {
         const record = structured as Record<string, unknown>;
         if (record.status === "error" || typeof record.error === "string") {
-          throw new IntegrationProviderPublicError("n8n reported that the tool operation failed.");
+          throw new ConfirmedRemoteFailure("n8n reported that the tool operation failed.");
         }
       }
       if (generation !== this.#generation || this.#closed || this.#disconnecting) {
         throw new Error("n8n access changed during the tool call.");
       }
-      return result;
+      return result as JsonValue;
     };
     try {
       return await call();
@@ -2307,6 +2331,12 @@ export class N8nProvider implements IntegrationProvider {
       if (error instanceof SessionInvalidError && reviewed.readOnly) {
         await this.#initializeSession(access, signal);
         return call();
+      }
+      if (!reviewed.readOnly && admitted && !(error instanceof ConfirmedRemoteFailure)) {
+        this.#uncertainCredentialState = true;
+        throw new ExternalCommitOutcomeUnknownError(
+          "The n8n operation may have completed. Verify its result before retrying.",
+        );
       }
       throw error;
     }
