@@ -2332,7 +2332,7 @@ export class N8nProvider implements IntegrationProvider {
         await this.#initializeSession(access, signal);
         return call();
       }
-      if (!reviewed.readOnly && admitted && !(error instanceof ConfirmedRemoteFailure)) {
+      if (!reviewed.readOnly && admitted) {
         this.#uncertainCredentialState = true;
         throw new ExternalCommitOutcomeUnknownError(
           "The n8n operation may have completed. Verify its result before retrying.",

@@ -377,6 +377,52 @@ describe("N8nProvider", () => {
     await provider.close();
   });
 
+  it.each([
+    [
+      "non-success HTTP",
+      (_request: Record<string, unknown>) => json({ error: "fixture remote failure" }, 503),
+    ],
+    [
+      "JSON-RPC error",
+      (request: Record<string, unknown>) =>
+        json({
+          jsonrpc: "2.0",
+          id: request.id,
+          error: { code: -32_000, message: "fixture remote failure" },
+        }),
+    ],
+    [
+      "tool-level error",
+      (request: Record<string, unknown>) =>
+        mcpResponse(request, {
+          isError: true,
+          content: [{ type: "text", text: "fixture remote failure" }],
+        }),
+    ],
+  ])("treats an admitted write followed by a %s as outcome-unknown", async (_label, response) => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch();
+    let failWrite = false;
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+      if (failWrite && body?.method === "tools/call") return response(body);
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
+    await authorize(provider, mock.requests);
+
+    failWrite = true;
+    await expect(
+      provider.invoke("n8n.archive_workflow", { workflowId: "wf" }, invocation(true)),
+    ).rejects.toMatchObject({
+      _tag: "ExternalCommitOutcomeUnknown",
+      code: "external_commit_outcome_unknown",
+      retryable: false,
+    });
+    await expect(provider.status()).resolves.toMatchObject({ state: "error" });
+    await provider.close();
+  });
+
   it("accepts CRLF event streams with keep-alive comment blocks", async () => {
     const secrets = memorySecrets();
     const mock = oauthMcpFetch({ eventStream: true });
