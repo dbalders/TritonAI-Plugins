@@ -13,8 +13,8 @@ import {
 import {
   ARTIFACT_LIMITS,
   assertSafeRelativePaths,
-  assertSelfContainedModule,
   buildPluginArtifact,
+  inspectPluginModule,
   verifyPluginArtifact,
 } from "../scripts/sdk-artifact.mjs";
 
@@ -183,6 +183,20 @@ test("SDK v1 validates strict data-only manifests and structural boundary errors
         },
       },
     }),
+  );
+  assert.throws(
+    () =>
+      validateManifestV1({
+        ...value,
+        configurationSchema: {
+          ...value.configurationSchema,
+          properties: {
+            pattern: { $ref: "#/properties/metadata/default" },
+            metadata: { type: "object", default: { $dynamicRef: "#" } },
+          },
+        },
+      }),
+    /may not use \$dynamicRef/u,
   );
   assert.throws(
     () =>
@@ -469,37 +483,34 @@ test("host contract levels are monotonic", async (t) => {
 
 test("source inspection admits declared Node builtins and rejects unresolved dependencies", async (t) => {
   assert.deepEqual(
-    await assertSelfContainedModule(
+    await inspectPluginModule(
       'import fs from "node:fs"; export function createIntegrationProvider() {}\n',
     ),
     ["node:fs"],
   );
   await assert.rejects(
-    () => assertSelfContainedModule("export const url = import.meta.url;\n"),
+    () => inspectPluginModule("export const url = import.meta.url;\n"),
     /import\.meta/u,
   );
   await assert.doesNotReject(() =>
-    assertSelfContainedModule(
+    inspectPluginModule(
       'const help = "call require("; export function createIntegrationProvider() { return help; }\n',
     ),
   );
   await assert.rejects(
-    () => assertSelfContainedModule('export const runtime = import("effect");\n'),
+    () => inspectPluginModule('export const runtime = import("effect");\n'),
     /dynamically/u,
   );
-  await assert.rejects(
-    () => assertSelfContainedModule('export { x } from "./x.mjs";\n'),
-    /unresolved/u,
-  );
+  await assert.rejects(() => inspectPluginModule('export { x } from "./x.mjs";\n'), /unresolved/u);
   await assert.rejects(
     () =>
-      assertSelfContainedModule(
+      inspectPluginModule(
         'import "node:not-a-real-module"; export function createIntegrationProvider() {}\n',
       ),
     /unresolved/u,
   );
   await assert.rejects(
-    () => assertSelfContainedModule("export const unrelated = true;\n"),
+    () => inspectPluginModule("export const unrelated = true;\n"),
     /export only createIntegrationProvider/u,
   );
   for (const [name, mutation, expected] of [

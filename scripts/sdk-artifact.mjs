@@ -221,7 +221,7 @@ function assertSafePackageJson(value) {
   );
 }
 
-export async function assertSelfContainedModule(source) {
+export async function inspectPluginModule(source) {
   assert(typeof source === "string", "Plugin entry must be UTF-8 source text.");
   try {
     parseModule(source, { ecmaVersion: "latest", sourceType: "module" });
@@ -301,7 +301,7 @@ async function assertPayloadInvariants(manifest, payloads) {
   assert(entryBytes.length <= ARTIFACT_LIMITS.entryBytes, "Plugin entry exceeds its size limit.");
   const entrySource = entryBytes.toString("utf8");
   assert(Buffer.from(entrySource, "utf8").equals(entryBytes), "Plugin entry must be valid UTF-8.");
-  const nodeBuiltins = await assertSelfContainedModule(entrySource);
+  const nodeBuiltins = await inspectPluginModule(entrySource);
 
   const declaredSkills = new Set(manifest.skills.map((skill) => skill.name));
   for (const path of payloads.keys()) {

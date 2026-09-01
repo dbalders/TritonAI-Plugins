@@ -9,7 +9,7 @@ import { validateManifestV1 } from "../packages/plugin-sdk/index.mjs";
 import { discoverPluginDirectories } from "./plugin-directories.mjs";
 import { assertProviderRuntimeDependencies } from "./provider-runtime-dependencies.mjs";
 import { parseSkillFrontmatter } from "./skill-frontmatter.mjs";
-import { assertSelfContainedModule } from "./sdk-artifact.mjs";
+import { inspectPluginModule } from "./sdk-artifact.mjs";
 
 const root = Path.resolve(import.meta.dirname, "..");
 const pluginsRoot = Path.join(root, "plugins");
@@ -121,8 +121,8 @@ for (const directory of entries) {
     const entry = await Fs.stat(Path.join(packageRoot, manifest.entry)).catch(() => undefined);
     assert(entry?.isFile(), `${directory}: SDK v1 entry is missing ${manifest.entry}.`);
     const source = await Fs.readFile(Path.join(packageRoot, manifest.entry), "utf8");
-    await assertSelfContainedModule(source).catch((error) => {
-      throw new Error(`${directory}: SDK v1 entry must be self-contained.`, { cause: error });
+    await inspectPluginModule(source).catch((error) => {
+      throw new Error(`${directory}: SDK v1 entry module is invalid.`, { cause: error });
     });
   } else if (manifest.provider !== undefined) {
     assert(

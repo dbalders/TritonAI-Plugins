@@ -86,11 +86,12 @@ connection lifecycle, invocation and closure are Promise-based. Logging, network
 catalogs and process isolation are deliberately outside v1.
 
 The builder inspects the full source tree, then emits the canonical manifest, declared skills and
-one self-contained Node 24 ESM entry. It rejects links, special and native-addon files, traversal,
-duplicate or case-colliding paths, lifecycle installers, unresolved runtime dependencies, dynamic
-imports, and bounded-size violations. Third-party helpers are bundled; declared `node:` imports are
-bound in the descriptor. `artifact.json` has no timestamp or environment-dependent field; it
+one reviewed Node 24 ESM entry. It rejects links, special and native-addon files, traversal,
+duplicate or case-colliding paths, lifecycle installers, unresolved static ESM dependencies,
+dynamic imports, and bounded-size violations. Third-party helpers are bundled; static `node:`
+imports are bound in the descriptor. `artifact.json` has no timestamp or environment-dependent field; it
 records the sorted payload inventory with byte sizes and SHA-256, exact runtime target, and
 canonical schema digests. Verification repeats every check, retains the verified entry bytes,
 validates compatibility, and imports those bytes only after admission. Artifact admission remains
-a host responsibility; verification does not sandbox trusted plugin code after import.
+a host responsibility; verification does not sandbox trusted plugin code or police dynamic access
+through JavaScript runtime globals after import.

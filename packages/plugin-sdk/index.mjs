@@ -179,8 +179,11 @@ function assertSchema(schema, label) {
       }
     }
   }
+  const inspected = new Set();
   function inspect(current, path) {
     if (!plainObject(current)) return;
+    if (inspected.has(current)) return;
+    inspected.add(current);
     for (const keyword of [
       "$anchor",
       "$dynamicAnchor",
@@ -222,7 +225,7 @@ function assertSchema(schema, label) {
         typeof current.$ref === "string" && current.$ref.startsWith("#"),
         `${path} may reference only this schema document.`,
       );
-      resolveReference(current.$ref, `${path}.$ref`);
+      inspect(resolveReference(current.$ref, `${path}.$ref`), `${path}.$ref target`);
     }
     visitSubschemas(current, path, inspect);
   }
