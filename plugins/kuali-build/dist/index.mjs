@@ -26,7 +26,8 @@ const queries = Object.freeze({
   formSchema: `query KualiBuildFormSchema($id: ID) { app(id: $id) { id name formVersion { schema { formKey label } } } }`,
   documentsList: `query KualiBuildDocuments($appId: ID!, $skip: Int!, $limit: Int!, $sort: [String!], $query: String, $fields: Operator) { app(id: $appId) { id name documentConnection(args: { skip: $skip limit: $limit sort: $sort query: $query fields: $fields } keyBy: ID) { totalCount edges { node { id data meta } } pageInfo { hasNextPage hasPreviousPage skip limit } } } }`,
   documentGet: `query KualiBuildDocument($id: ID!) { document(id: $id) { id data meta } }`,
-  usersLookup: `query KualiBuildUsers($query: String) { usersConnection(args: { query: $query }) { edges { node { id displayName email username firstName lastName schoolId } } } }`,
+  usersLookup: `query KualiBuildUsers($query: String, $limit: Int!) { usersConnection(args: { query: $query, limit: $limit }) { edges { node { id displayName email username firstName lastName schoolId } } } }`,
+  workflowStatus: `query KualiBuildWorkflowStatus($id: ID!) { document(id: $id) { id meta } }`,
 });
 
 function failure(code, message, retryable = false, details) {
@@ -87,11 +88,17 @@ function validateConfiguration(value) {
   }
 }
 
-function validateOperationContext(context, invocation = false) {
+function validateOperationContext(
+  context,
+  { requiresCommit = false, invocation = false } = {},
+) {
   if (!isPlainObject(context) || !(context.signal instanceof AbortSignal)) {
     throw failure("invalid_context", "The host operation context is invalid.");
   }
-  if (invocation && (typeof context.writeApproved !== "boolean" || typeof context.beginCommit !== "function")) {
+  if (requiresCommit && typeof context.beginCommit !== "function") {
+    throw failure("invalid_context", "The host lifecycle context is invalid.");
+  }
+  if (invocation && typeof context.writeApproved !== "boolean") {
     throw failure("invalid_context", "The host invocation context is invalid.");
   }
   context.signal.throwIfAborted();
@@ -418,13 +425,16 @@ function parseSecret(value) {
   }
 }
 
-async function readCredential(secrets) {
-  let value;
+async function readSecret(secrets) {
   try {
-    value = await secrets.get(SECRET_NAME);
+    return await secrets.get(SECRET_NAME);
   } catch {
     throw failure("secret_store_error", "The package-scoped credential store could not be read.");
   }
+}
+
+async function readCredential(secrets) {
+  const value = await readSecret(secrets);
   const credential = parseSecret(value);
   if (credential === undefined) throw failure("credential_corrupt", "The stored Kuali credential is invalid.");
   return credential;
@@ -573,7 +583,7 @@ export function createIntegrationProvider(context) {
     },
     async connect(capabilities, lifecycleContext, submission) {
       ensureOpen();
-      validateOperationContext(lifecycleContext);
+      validateOperationContext(lifecycleContext, { requiresCommit: true });
       const granted = exactCapabilities(capabilities);
       if (submission === undefined) {
         const flowId = createFlow(flows, granted);
@@ -618,9 +628,9 @@ export function createIntegrationProvider(context) {
     },
     async disconnect(lifecycleContext) {
       ensureOpen();
-      validateOperationContext(lifecycleContext);
-      const credential = await readCredential(factory.secrets);
-      if (credential === null) return;
+      validateOperationContext(lifecycleContext, { requiresCommit: true });
+      const storedCredential = await readSecret(factory.secrets);
+      if (storedCredential === null) return;
       lifecycleContext.signal.throwIfAborted();
       const commitSignal = await lifecycleContext.beginCommit();
       if (!(commitSignal instanceof AbortSignal)) throw failure("invalid_context", "The host commit signal is invalid.");
@@ -639,7 +649,7 @@ export function createIntegrationProvider(context) {
     },
     async invoke(toolName, input, invocationContext) {
       ensureOpen();
-      validateOperationContext(invocationContext, true);
+      validateOperationContext(invocationContext, { invocation: true });
       const parsed = validateInput(toolName, input);
       const credential = await readCredential(factory.secrets);
       if (credential === null) throw failure("not_connected", "Connect the UCSD Kuali Build plugin first.");
@@ -747,7 +757,15 @@ export function createIntegrationProvider(context) {
           return { document: document === null ? null : projectDocument(document) };
         }
         case "kuali-build.users.lookup": {
-          const connection = extract(await execute(credential.apiKey, "usersLookup", { query: parsed.query }, invocationContext.signal), "usersConnection");
+          const connection = extract(
+            await execute(
+              credential.apiKey,
+              "usersLookup",
+              { query: parsed.query, limit: MAX_USER_RESULTS + 1 },
+              invocationContext.signal,
+            ),
+            "usersConnection",
+          );
           if (!isPlainObject(connection) || !Array.isArray(connection.edges)) throw failure("invalid_response", "Kuali returned an invalid user connection.");
           const users = connection.edges.slice(0, MAX_USER_RESULTS).map((edge) => {
             if (!isPlainObject(edge)) throw failure("invalid_response", "Kuali returned an invalid user edge.");
@@ -760,7 +778,15 @@ export function createIntegrationProvider(context) {
           };
         }
         case "kuali-build.workflows.status": {
-          const document = extract(await execute(credential.apiKey, "documentGet", { id: parsed.documentId }, invocationContext.signal), "document");
+          const document = extract(
+            await execute(
+              credential.apiKey,
+              "workflowStatus",
+              { id: parsed.documentId },
+              invocationContext.signal,
+            ),
+            "document",
+          );
           if (document === null) return { document: null };
           if (!isPlainObject(document) || !isPlainObject(document.meta)) throw failure("invalid_response", "Kuali returned invalid workflow metadata.");
           return {

@@ -7,6 +7,11 @@ const API_KEY = "eyJhbGciOiJIUzI1NiJ9.fixture.signature";
 const APP_ID = "5d5f337395a039001e48a649";
 const DOCUMENT_ID = "5f6a389d77d701400f543a29";
 const endpoint = "https://ucsd.kualibuild.com/app/api/v0/graphql";
+const originalFetch = globalThis.fetch;
+
+test.after(() => {
+  globalThis.fetch = originalFetch;
+});
 
 function memorySecrets(initial = null, options = {}) {
   let value = initial;
@@ -74,12 +79,8 @@ function invocation(events = []) {
   return { ...lifecycle(events), writeApproved: false };
 }
 
-function factory(t, secrets, fetchImplementation, configuration = {}) {
-  const original = globalThis.fetch;
+function factory(_t, secrets, fetchImplementation, configuration = {}) {
   globalThis.fetch = fetchImplementation;
-  t.after(() => {
-    globalThis.fetch = original;
-  });
   return createIntegrationProvider({ secrets, configuration });
 }
 
@@ -94,45 +95,58 @@ async function connect(provider, events = []) {
 
 test("factory pins the exact UCSD HTTPS origin and rejects malformed contexts", () => {
   const secrets = memorySecrets();
-  const original = globalThis.fetch;
   globalThis.fetch = async () => json({ data: { apps: [] } });
-  try {
+  assert.throws(
+    () =>
+      createIntegrationProvider({
+        secrets: secrets.service,
+        configuration: { tenantUrl: "https://evil.example" },
+      }),
+    (error) => error.code === "invalid_configuration",
+  );
+  for (const tenantUrl of [
+    "http://ucsd.kualibuild.com",
+    "https://ucsd.kualibuild.com.evil.example",
+    "https://ucsd.kualibuild.com:444",
+    "https://user@ucsd.kualibuild.com",
+    "https://ucsd.kualibuild.com/app/api/v0/graphql",
+    "https://ucsd.kualibuild.com?next=http://127.0.0.1",
+  ]) {
     assert.throws(
-      () =>
-        createIntegrationProvider({
-          secrets: secrets.service,
-          configuration: { tenantUrl: "https://evil.example" },
-        }),
+      () => createIntegrationProvider({ secrets: secrets.service, configuration: { tenantUrl } }),
       (error) => error.code === "invalid_configuration",
     );
-    for (const tenantUrl of [
-      "http://ucsd.kualibuild.com",
-      "https://ucsd.kualibuild.com.evil.example",
-      "https://ucsd.kualibuild.com:444",
-      "https://user@ucsd.kualibuild.com",
-      "https://ucsd.kualibuild.com/app/api/v0/graphql",
-      "https://ucsd.kualibuild.com?next=http://127.0.0.1",
-    ]) {
-      assert.throws(
-        () => createIntegrationProvider({ secrets: secrets.service, configuration: { tenantUrl } }),
-        (error) => error.code === "invalid_configuration",
-      );
-    }
-    assert.throws(
-      () =>
-        createIntegrationProvider({
-          secrets: secrets.service,
-          configuration: JSON.parse('{"__proto__":null}'),
-        }),
-      (error) => error.code === "invalid_input",
-    );
-    assert.equal(
-      createIntegrationProvider({ secrets: secrets.service, configuration: {} }).id,
-      "kuali-build",
-    );
-  } finally {
-    globalThis.fetch = original;
   }
+  assert.throws(
+    () =>
+      createIntegrationProvider({
+        secrets: secrets.service,
+        configuration: JSON.parse('{"__proto__":null}'),
+      }),
+    (error) => error.code === "invalid_input",
+  );
+  assert.equal(
+    createIntegrationProvider({ secrets: secrets.service, configuration: {} }).id,
+    "kuali-build",
+  );
+});
+
+test("lifecycle contexts require commit admission while read invocation does not", async (t) => {
+  const secrets = memorySecrets(storedCredential());
+  const provider = factory(t, secrets.service, async () => json({ data: { apps: [] } }));
+  const signal = new AbortController().signal;
+  await assert.rejects(
+    () => provider.connect(["kuali-build.read"], { signal }),
+    (error) => error.code === "invalid_context",
+  );
+  await assert.rejects(
+    () => provider.disconnect({ signal }),
+    (error) => error.code === "invalid_context",
+  );
+  assert.deepEqual(
+    await provider.invoke("kuali-build.apps.list", {}, { signal, writeApproved: false }),
+    { apps: [] },
+  );
 });
 
 test("API-key lifecycle validates remotely and commits only after host admission", async (t) => {
@@ -226,6 +240,14 @@ test("credential write/removal recovery recognizes after-write success", async (
   await provider.disconnect(lifecycle(events));
   assert.deepEqual(events, ["beginCommit"]);
   assert.equal(secrets.value(), null);
+
+  const corrupt = memorySecrets('{"apiKey":"corrupt"}');
+  const provider2 = factory(t, corrupt.service, async () => json({ data: { apps: [] } }));
+  const corruptEvents = [];
+  await provider2.disconnect(lifecycle(corruptEvents));
+  assert.deepEqual(corruptEvents, ["beginCommit"]);
+  assert.deepEqual(corrupt.calls, ["get:api-key", "remove:api-key"]);
+  assert.equal(corrupt.value(), null);
 });
 
 test("status reports absent, corrupt, and rejected credentials without exposing keys", async (t) => {
@@ -295,7 +317,6 @@ test("fixed read tools emit only reviewed GraphQL operations and never cross the
       data: {
         document: {
           id: DOCUMENT_ID,
-          data: {},
           meta: {
             workflowStatus: "In Progress",
             workflowData: { step: "Dean" },
@@ -378,6 +399,13 @@ test("fixed read tools emit only reviewed GraphQL operations and never cross the
       { field: "meta.updatedAt", type: "RANGE", min: "1" },
     ],
   });
+  assert.deepEqual(JSON.parse(mock.requests[5].init.body).variables, {
+    query: "ada@ucsd.edu",
+    limit: 51,
+  });
+  const workflowRequest = JSON.parse(mock.requests[6].init.body);
+  assert.deepEqual(workflowRequest.variables, { id: DOCUMENT_ID });
+  assert.doesNotMatch(workflowRequest.query, /\bdata\b/u);
 });
 
 test("strict input rejects exotic objects, extra keys, pollution keys, and bounds", async (t) => {
