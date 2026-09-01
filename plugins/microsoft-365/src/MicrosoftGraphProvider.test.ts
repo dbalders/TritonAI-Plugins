@@ -924,9 +924,9 @@ describe("MicrosoftGraphProvider tools", () => {
 
     await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(/empty response/u);
     await graph.prepare(lifecycle());
-    await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toMatchObject({
+    await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toEqual({
       messages: [],
-      graphResponse: { value: [] },
+      hasMore: false,
     });
     expect(tokenRequests).toBe(2);
   });
@@ -979,22 +979,19 @@ describe("MicrosoftGraphProvider tools", () => {
       vi.setSystemTime(Date.now() + 3_550_000);
       await graph.prepare(lifecycle());
       releaseGraph();
-      await expect(invocation).resolves.toMatchObject({
-        messages: [],
-        graphResponse: { value: [] },
-      });
+      await expect(invocation).resolves.toEqual({ messages: [], hasMore: false });
     } finally {
       releaseGraph?.();
       vi.useRealTimers();
     }
   });
 
-  it("keeps compatible mail search fields and reads one complete message efficiently", async () => {
+  it("projects mail discovery and exact bodies without retaining Graph fields", async () => {
     const secrets = memorySecrets();
-    const calls: string[] = [];
-    const fetchImplementation = (async (input: RequestInfo | URL) => {
+    const calls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      calls.push(url);
+      calls.push({ url, init });
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
       if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
       if (url.includes("/me/messages?")) {
@@ -1040,43 +1037,60 @@ describe("MicrosoftGraphProvider tools", () => {
       query: 'budget "Q4"',
       limit: 5,
     });
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       messages: [
         {
           id: "message-1",
+          subject: "Budget",
+          from: { name: "Person", address: "person@example.edu" },
+          receivedDateTime: "2026-07-15T10:00:00Z",
+          isRead: false,
           preview: "Quarterly budget review",
+          previewIsPartial: true,
           hasAttachments: true,
         },
-        { id: "message-2", from: null, preview: null, hasAttachments: false },
+        {
+          id: "message-2",
+          subject: "System notice",
+          from: null,
+          receivedDateTime: "2026-07-15T11:00:00Z",
+          isRead: true,
+          preview: null,
+          previewIsPartial: false,
+          hasAttachments: false,
+        },
       ],
       hasMore: true,
-      graphResponse: {
-        value: [{ id: "message-1", fixtureProperty: { preserved: true } }, { id: "message-2" }],
-        "@odata.nextLink": "https://graph.microsoft.com/v1.0/ignored",
-      },
     });
     await expect(
       graph.invoke("microsoft365.mail.get", { messageId: "message/id?fixture" }),
-    ).resolves.toMatchObject({
+    ).resolves.toEqual({
       id: "message-1",
+      subject: "Budget",
       from: { name: "Person", address: "person@example.edu" },
-      body: { content: "<p>Complete email body</p>" },
-      graphResponse: {
-        toRecipients: [{ emailAddress: { address: "recipient@example.edu" } }],
-        fixtureProperty: { preserved: true },
+      receivedDateTime: "2026-07-15T10:00:00Z",
+      isRead: false,
+      body: {
+        contentType: "html",
+        content: "<p>Complete email body</p>",
+        truncated: false,
       },
     });
-    expect(calls.filter((url) => url.includes("/me/messages?"))).toHaveLength(1);
-    const graphUrl = calls.find((url) => url.includes("/me/messages?")) ?? "";
+    expect(calls.filter(({ url }) => url.includes("/me/messages?"))).toHaveLength(1);
+    const graphUrl = calls.find(({ url }) => url.includes("/me/messages?"))?.url ?? "";
     expect(graphUrl.startsWith("https://graph.microsoft.com/v1.0/me/messages?")).toBe(true);
     expect(graphUrl).toContain("%24top=5");
     expect(decodeURIComponent(graphUrl)).toContain(
       "$select=id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments",
     );
     expect(graphUrl).not.toContain("Q4%22");
-    expect(calls.at(-1)).toBe(
-      "https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture",
+    expect(calls.at(-1)?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture?%24select=id%2Csubject%2Cfrom%2CreceivedDateTime%2CisRead%2Cbody",
     );
+    expect(new Headers(calls.at(-1)?.init?.headers).get("Prefer")).toBe(
+      'outlook.body-content-type="text"',
+    );
+    expect(calls.at(-1)?.init?.method).toBe("GET");
   });
 
   it("keeps calendar discovery light and reads one complete event", async () => {
@@ -1117,6 +1131,7 @@ describe("MicrosoftGraphProvider tools", () => {
             organizer: { emailAddress: { name: "Person", address: "person@example.edu" } },
             bodyPreview: "Complete agenda",
             hasAttachments: true,
+            fixtureProperty: { preserved: true },
           },
           {
             id: "event-2",
@@ -1125,8 +1140,11 @@ describe("MicrosoftGraphProvider tools", () => {
             end: { dateTime: "2026-07-15T12:00:00", timeZone: "Pacific Standard Time" },
             location: null,
             organizer: { emailAddress: null },
+            bodyPreview: null,
+            hasAttachments: false,
           },
         ],
+        "@odata.nextLink": "https://graph.microsoft.com/v1.0/ignored-calendar-page",
       });
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
@@ -1135,22 +1153,32 @@ describe("MicrosoftGraphProvider tools", () => {
       start: "2026-07-15T00:00:00-07:00",
       end: "2026-07-16T00:00:00-07:00",
     });
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       events: [
-        { id: "event-1", subject: "Review", location: "Online" },
-        { id: "event-2", organizer: null },
+        {
+          id: "event-1",
+          subject: "Review",
+          start: { dateTime: "2026-07-15T09:00:00", timeZone: "Pacific Standard Time" },
+          end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
+          location: "Online",
+          organizer: { name: "Person", address: "person@example.edu" },
+          preview: "Complete agenda",
+          previewIsPartial: true,
+          hasAttachments: true,
+        },
+        {
+          id: "event-2",
+          subject: "System event",
+          start: { dateTime: "2026-07-15T11:00:00", timeZone: "Pacific Standard Time" },
+          end: { dateTime: "2026-07-15T12:00:00", timeZone: "Pacific Standard Time" },
+          location: null,
+          organizer: null,
+          preview: null,
+          previewIsPartial: false,
+          hasAttachments: false,
+        },
       ],
-      hasMore: false,
-      graphResponse: {
-        value: [
-          {
-            id: "event-1",
-            bodyPreview: "Complete agenda",
-            hasAttachments: true,
-          },
-          { id: "event-2", organizer: { emailAddress: null } },
-        ],
-      },
+      hasMore: true,
     });
     const calendarUrl = calls.find((url) => url.includes("/me/calendarView?")) ?? "";
     expect(calendarUrl.startsWith("https://graph.microsoft.com/v1.0/me/calendarView?")).toBe(true);
@@ -1159,19 +1187,29 @@ describe("MicrosoftGraphProvider tools", () => {
     );
     await expect(
       graph.invoke("microsoft365.calendar.event.get", { eventId: "event/id?fixture" }),
-    ).resolves.toMatchObject({
+    ).resolves.toEqual({
       id: "event-1",
-      attendees: [{ emailAddress: { address: "person@example.edu" }, type: "required" }],
-      graphResponse: {
-        body: { content: "<p>Complete agenda</p>" },
-        attendees: [{ status: { response: "accepted" } }],
-        fixtureProperty: { preserved: true },
+      subject: "Review",
+      start: { dateTime: "2026-07-15T09:00:00", timeZone: "Pacific Standard Time" },
+      end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
+      location: "Online",
+      attendees: [
+        {
+          emailAddress: { name: "Person", address: "person@example.edu" },
+          type: "required",
+        },
+      ],
+      webLink: "https://outlook.office.com/calendar/event-1",
+      body: {
+        contentType: "html",
+        content: "<p>Complete agenda</p>",
+        truncated: false,
       },
     });
     expect(calls.at(-1)).toBe("https://graph.microsoft.com/v1.0/me/events/event%2Fid%3Ffixture");
   });
 
-  it("reads mail and calendar attachments under the existing read capabilities", async () => {
+  it("projects attachment metadata and bounded content under the existing read capabilities", async () => {
     const secrets = memorySecrets();
     const graphCalls: string[] = [];
     const attachment = {
@@ -1179,6 +1217,9 @@ describe("MicrosoftGraphProvider tools", () => {
       id: "attachment/id?fixture",
       name: "review.txt",
       contentType: "text/plain",
+      size: 6,
+      isInline: false,
+      lastModifiedDateTime: "2026-07-15T12:00:00Z",
       contentBytes: "cmV2aWV3",
       fixtureProperty: { preserved: true },
     };
@@ -1191,15 +1232,24 @@ describe("MicrosoftGraphProvider tools", () => {
       graphCalls.push(url);
       if (url.includes("/events/") && url.includes("$expand=")) {
         return jsonResponse({
-          "@odata.type": "#microsoft.graph.itemAttachment",
+          "@odata.type": "microsoft.graph.itemAttachment",
           id: "attachment/id?fixture",
           name: "Attached event",
+          contentType: null,
+          size: 1_024,
+          isInline: false,
+          lastModifiedDateTime: "2026-07-15T13:00:00Z",
           item: {
-            "@odata.type": "#microsoft.graph.event",
+            "@odata.type": "microsoft.graph.event",
             id: "attached-event",
             subject: "Full attached event",
+            start: { dateTime: "2026-07-16T09:00:00", timeZone: "UTC" },
+            end: { dateTime: "2026-07-16T10:00:00", timeZone: "UTC" },
+            location: { displayName: "Room 1" },
             body: { contentType: "html", content: "<p>Attached event body</p>" },
+            fixtureProperty: { preserved: true },
           },
+          fixtureProperty: { preserved: true },
         });
       }
       return url.includes("/attachments?")
@@ -1214,37 +1264,79 @@ describe("MicrosoftGraphProvider tools", () => {
         messageId: "message/id?fixture",
         limit: 3,
       }),
-    ).resolves.toMatchObject({
-      value: [{ id: "attachment/id?fixture", contentBytes: "cmV2aWV3" }],
-      "@odata.nextLink": "https://example.invalid/next",
+    ).resolves.toEqual({
+      attachments: [
+        {
+          kind: "file",
+          id: "attachment/id?fixture",
+          name: "review.txt",
+          contentType: "text/plain",
+          size: 6,
+          isInline: false,
+          lastModifiedDateTime: "2026-07-15T12:00:00Z",
+        },
+      ],
+      hasMore: true,
     });
     await expect(
       graph.invoke("microsoft365.mail.attachment.get", {
         messageId: "message/id?fixture",
         attachmentId: "attachment/id?fixture",
       }),
-    ).resolves.toMatchObject({
+    ).resolves.toEqual({
+      kind: "file",
       id: "attachment/id?fixture",
+      name: "review.txt",
+      contentType: "text/plain",
+      size: 6,
+      isInline: false,
+      lastModifiedDateTime: "2026-07-15T12:00:00Z",
       contentBytes: "cmV2aWV3",
-      fixtureProperty: { preserved: true },
     });
     await expect(
       graph.invoke("microsoft365.calendar.event.attachments.list", {
         eventId: "event/id?fixture",
         limit: 4,
       }),
-    ).resolves.toMatchObject({ value: [{ name: "review.txt" }] });
+    ).resolves.toEqual({
+      attachments: [
+        {
+          kind: "file",
+          id: "attachment/id?fixture",
+          name: "review.txt",
+          contentType: "text/plain",
+          size: 6,
+          isInline: false,
+          lastModifiedDateTime: "2026-07-15T12:00:00Z",
+        },
+      ],
+      hasMore: true,
+    });
     await expect(
       graph.invoke("microsoft365.calendar.event.attachment.get", {
         eventId: "event/id?fixture",
         attachmentId: "attachment/id?fixture",
       }),
-    ).resolves.toMatchObject({
+    ).resolves.toEqual({
+      kind: "item",
       id: "attachment/id?fixture",
+      name: "Attached event",
+      contentType: null,
+      size: 1_024,
+      isInline: false,
+      lastModifiedDateTime: "2026-07-15T13:00:00Z",
       item: {
+        kind: "event",
         id: "attached-event",
         subject: "Full attached event",
-        body: { content: "<p>Attached event body</p>" },
+        start: { dateTime: "2026-07-16T09:00:00", timeZone: "UTC" },
+        end: { dateTime: "2026-07-16T10:00:00", timeZone: "UTC" },
+        location: "Room 1",
+        body: {
+          contentType: "html",
+          content: "<p>Attached event body</p>",
+          truncated: false,
+        },
       },
     });
 
@@ -1256,7 +1348,224 @@ describe("MicrosoftGraphProvider tools", () => {
     ]);
   });
 
-  it("creates an unsent draft with attachments and preserves its compatible result", async () => {
+  it("accepts both documented attachment discriminator spellings on every read path", async () => {
+    const secrets = memorySecrets();
+    let attachmentType = "#microsoft.graph.fileAttachment";
+    const metadata = {
+      kind: "file" as const,
+      id: "attachment-1",
+      name: "fixture.bin",
+      contentType: "application/octet-stream",
+      size: 1,
+      isInline: false,
+      lastModifiedDateTime: "2026-07-15T12:00:00Z",
+    };
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) {
+        return jsonResponse(tokenBody("offline_access Mail.Read Calendars.Read"));
+      }
+      const attachment = {
+        "@odata.type": attachmentType,
+        id: metadata.id,
+        name: metadata.name,
+        contentType: metadata.contentType,
+        size: metadata.size,
+        isInline: metadata.isInline,
+        lastModifiedDateTime: metadata.lastModifiedDateTime,
+        contentBytes: "eA==",
+        fixtureProperty: { preserved: true },
+      };
+      return url.includes("/attachments?")
+        ? jsonResponse({ value: [attachment] })
+        : jsonResponse(attachment);
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.read", "calendar.read"]);
+
+    const reads = [
+      {
+        tool: "microsoft365.mail.attachments.list",
+        input: { messageId: "message-1", limit: 1 },
+        expected: { attachments: [metadata], hasMore: false },
+      },
+      {
+        tool: "microsoft365.mail.attachment.get",
+        input: { messageId: "message-1", attachmentId: "attachment-1" },
+        expected: { ...metadata, contentBytes: "eA==" },
+      },
+      {
+        tool: "microsoft365.calendar.event.attachments.list",
+        input: { eventId: "event-1", limit: 1 },
+        expected: { attachments: [metadata], hasMore: false },
+      },
+      {
+        tool: "microsoft365.calendar.event.attachment.get",
+        input: { eventId: "event-1", attachmentId: "attachment-1" },
+        expected: { ...metadata, contentBytes: "eA==" },
+      },
+    ] as const;
+    for (attachmentType of ["#microsoft.graph.fileAttachment", "microsoft.graph.fileAttachment"]) {
+      for (const { tool, input, expected } of reads) {
+        await expect(graph.invoke(tool, input)).resolves.toEqual(expected);
+      }
+    }
+  });
+
+  it("projects attached message variants and empty item IDs through the fixed shape", async () => {
+    const secrets = memorySecrets();
+    let attachedItemType = "#microsoft.graph.eventMessageRequest";
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
+      return jsonResponse({
+        "@odata.type": "#microsoft.graph.itemAttachment",
+        id: "attachment-1",
+        name: "Meeting request",
+        contentType: null,
+        size: 2_048,
+        isInline: false,
+        lastModifiedDateTime: "2026-07-15T13:00:00Z",
+        item: {
+          "@odata.type": attachedItemType,
+          id: "",
+          subject: "Planning session",
+          from: { emailAddress: { name: "Person", address: "person@example.edu" } },
+          receivedDateTime: "2026-07-15T12:30:00Z",
+          isRead: false,
+          body: { contentType: "text", content: "Please review." },
+          event: { privateNestedField: true },
+          fixtureProperty: { preserved: true },
+        },
+        fixtureProperty: { preserved: true },
+      });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph);
+
+    const projectedAttachment = {
+      kind: "item",
+      id: "attachment-1",
+      name: "Meeting request",
+      contentType: null,
+      size: 2_048,
+      isInline: false,
+      lastModifiedDateTime: "2026-07-15T13:00:00Z",
+      item: {
+        kind: "message",
+        id: null,
+        subject: "Planning session",
+        from: { name: "Person", address: "person@example.edu" },
+        receivedDateTime: "2026-07-15T12:30:00Z",
+        isRead: false,
+        body: { contentType: "text", content: "Please review.", truncated: false },
+      },
+    };
+    await expect(
+      graph.invoke("microsoft365.mail.attachment.get", {
+        messageId: "message-1",
+        attachmentId: "attachment-1",
+      }),
+    ).resolves.toEqual(projectedAttachment);
+    attachedItemType = "microsoft.graph.calendarSharingMessage";
+    await expect(
+      graph.invoke("microsoft365.mail.attachment.get", {
+        messageId: "message-1",
+        attachmentId: "attachment-1",
+      }),
+    ).resolves.toEqual(projectedAttachment);
+  });
+
+  it("projects attached contacts through a fixed shape", async () => {
+    const secrets = memorySecrets();
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
+      return jsonResponse({
+        "@odata.type": "#microsoft.graph.itemAttachment",
+        id: "attachment-1",
+        name: "Contact",
+        contentType: null,
+        size: 512,
+        isInline: false,
+        lastModifiedDateTime: "2026-07-15T13:00:00Z",
+        item: {
+          "@odata.type": "microsoft.graph.contact",
+          id: null,
+          displayName: "Example Person",
+          emailAddresses: [
+            {
+              name: "Example Person",
+              address: "person@example.edu",
+              fixtureNestedProperty: true,
+            },
+          ],
+          fixtureProperty: { preserved: true },
+        },
+        fixtureProperty: { preserved: true },
+      });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph);
+
+    await expect(
+      graph.invoke("microsoft365.mail.attachment.get", {
+        messageId: "message-1",
+        attachmentId: "attachment-1",
+      }),
+    ).resolves.toEqual({
+      kind: "item",
+      id: "attachment-1",
+      name: "Contact",
+      contentType: null,
+      size: 512,
+      isInline: false,
+      lastModifiedDateTime: "2026-07-15T13:00:00Z",
+      item: {
+        kind: "contact",
+        id: null,
+        displayName: "Example Person",
+        emailAddresses: [{ name: "Example Person", address: "person@example.edu" }],
+      },
+    });
+  });
+
+  it("rejects unknown attached item discriminators", async () => {
+    const secrets = memorySecrets();
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
+      return jsonResponse({
+        "@odata.type": "microsoft.graph.itemAttachment",
+        id: "attachment-1",
+        name: "Future item",
+        contentType: null,
+        size: 512,
+        isInline: false,
+        lastModifiedDateTime: null,
+        item: {
+          "@odata.type": "#microsoft.graph.futureItem",
+          id: "nested-1",
+          fixtureProperty: { preserved: true },
+        },
+      });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph);
+
+    await expect(
+      graph.invoke("microsoft365.mail.attachment.get", {
+        messageId: "message-1",
+        attachmentId: "attachment-1",
+      }),
+    ).rejects.toThrow(/unsupported attached item type/u);
+  });
+
+  it("creates an unsent draft with attachments and projects its receipt", async () => {
     const secrets = memorySecrets();
     const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
     const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1272,7 +1581,7 @@ describe("MicrosoftGraphProvider tools", () => {
           ccRecipients: [],
           bccRecipients: [],
           isDraft: true,
-          webLink: "https://outlook.office.com/mail/draft-1",
+          webLink: " \nhttps://outlook.office.com/mail/draft-1\t",
           fixtureProperty: { preserved: true },
         },
         201,
@@ -1299,14 +1608,14 @@ describe("MicrosoftGraphProvider tools", () => {
         },
         invocation(),
       ),
-    ).resolves.toMatchObject({
+    ).resolves.toEqual({
       id: "draft-1",
+      subject: "Review",
       isDraft: true,
       webLink: "https://outlook.office.com/mail/draft-1",
-      to: [{ address: "person@example.edu" }],
+      to: [{ name: null, address: "person@example.edu" }],
       cc: [],
       bcc: [],
-      graphResponse: { fixtureProperty: { preserved: true } },
     });
     expect(graphCalls).toHaveLength(1);
     expect(graphCalls[0]?.url).toBe("https://graph.microsoft.com/v1.0/me/messages");
@@ -1474,15 +1783,19 @@ describe("MicrosoftGraphProvider tools", () => {
       },
       invocation(),
     );
-    expect(created).toMatchObject({
+    const projectedEvent = {
       id: "event/id?fixture",
       subject: "Planning",
+      start: { dateTime: "2026-07-20T16:00:00.0000000", timeZone: "UTC" },
+      end: { dateTime: "2026-07-20T17:00:00.0000000", timeZone: "UTC" },
       location: "Online",
-      graphResponse: {
-        location: { displayName: "Online" },
-        fixtureProperty: { preserved: true },
-      },
-    });
+      attendees: Array.from({ length: 51 }, () => ({
+        emailAddress: { name: "Person", address: "person@example.edu" },
+        type: "required",
+      })),
+      webLink: "https://outlook.office.com/calendar/event",
+    };
+    expect(created).toEqual(projectedEvent);
     expect((created as { attendees: ReadonlyArray<unknown> }).attendees).toHaveLength(51);
     await expect(
       graph.invoke(
@@ -1494,7 +1807,7 @@ describe("MicrosoftGraphProvider tools", () => {
         },
         invocation(),
       ),
-    ).resolves.toMatchObject({ id: "event/id?fixture" });
+    ).resolves.toEqual(projectedEvent);
 
     expect(graphCalls.map(({ init }) => init?.method)).toEqual(["POST", "PATCH"]);
     expect(graphCalls[0]?.url).toBe("https://graph.microsoft.com/v1.0/me/events");
@@ -1549,37 +1862,46 @@ describe("MicrosoftGraphProvider tools", () => {
               createdDateTime: "2026-07-01T00:00:00Z",
               lastUpdatedDateTime: "2026-07-16T12:00:00Z",
               webUrl: "https://teams.microsoft.com/chat",
+              fixtureProperty: { preserved: true },
             },
           ],
+          "@odata.nextLink": "https://graph.microsoft.com/v1.0/ignored-chat-page",
         });
       }
       return init?.method === "POST"
         ? jsonResponse(message, 201)
-        : jsonResponse({ value: [message] });
+        : jsonResponse({
+            value: [message],
+            "@odata.nextLink": "https://graph.microsoft.com/v1.0/ignored-message-page",
+          });
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
     await authorize(graph, ["chat.read", "chat.write"]);
 
-    await expect(graph.invoke("microsoft365.chat.list", { limit: 5 })).resolves.toMatchObject({
-      chats: [{ id: "chat/id?fixture", topic: "Project" }],
-      graphResponse: { value: [{ id: "chat/id?fixture", topic: "Project" }] },
+    await expect(graph.invoke("microsoft365.chat.list", { limit: 5 })).resolves.toEqual({
+      chats: [
+        {
+          id: "chat/id?fixture",
+          topic: "Project",
+          chatType: "group",
+          createdDateTime: "2026-07-01T00:00:00Z",
+          lastUpdatedDateTime: "2026-07-16T12:00:00Z",
+          webUrl: "https://teams.microsoft.com/chat",
+        },
+      ],
+      hasMore: true,
     });
+    const projectedMessage = {
+      id: "message-1",
+      createdDateTime: "2026-07-16T12:00:00Z",
+      lastModifiedDateTime: null,
+      from: { id: "user-1", displayName: "Person" },
+      body: { contentType: "text", content: "Hello", truncated: false },
+      webUrl: "https://teams.microsoft.com/message-1",
+    };
     await expect(
       graph.invoke("microsoft365.chat.messages", { chatId: "chat/id?fixture", limit: 5 }),
-    ).resolves.toMatchObject({
-      messages: [{ id: "message-1", body: { content: "Hello" } }],
-      graphResponse: {
-        value: [
-          {
-            id: "message-1",
-            body: { content: "Hello" },
-            attachments: [{ id: "attachment-1" }],
-            mentions: [{ mentionText: "Person" }],
-            fixtureProperty: { preserved: true },
-          },
-        ],
-      },
-    });
+    ).resolves.toEqual({ messages: [projectedMessage], hasMore: true });
     await expect(
       graph.invoke(
         "microsoft365.chat.message.send",
@@ -1589,14 +1911,7 @@ describe("MicrosoftGraphProvider tools", () => {
         },
         invocation(),
       ),
-    ).resolves.toMatchObject({
-      id: "message-1",
-      body: { contentType: "text" },
-      graphResponse: {
-        attachments: [{ id: "attachment-1" }],
-        fixtureProperty: { preserved: true },
-      },
-    });
+    ).resolves.toEqual(projectedMessage);
 
     expect(graphCalls[0]?.url).not.toContain("%24select");
     expect(graphCalls[1]?.url).toContain("/chats/chat%2Fid%3Ffixture/messages?");
@@ -1609,7 +1924,87 @@ describe("MicrosoftGraphProvider tools", () => {
     });
   });
 
-  it("preserves empty optional fields in compatible and Graph responses", async () => {
+  it("projects content-less chat messages as null bodies in collections and exact results", async () => {
+    const secrets = memorySecrets();
+    const deletedMessage = {
+      id: "message-deleted",
+      createdDateTime: "2026-07-16T12:00:00Z",
+      lastModifiedDateTime: "2026-07-16T12:01:00Z",
+      from: null,
+      body: null,
+      webUrl: null,
+      deletedDateTime: "2026-07-16T12:02:00Z",
+    };
+    const systemMessage = {
+      id: "message-system",
+      createdDateTime: "2026-07-16T12:03:00Z",
+      lastModifiedDateTime: null,
+      from: null,
+      webUrl: null,
+      messageType: "systemEventMessage",
+      eventDetail: { fixtureProperty: true },
+    };
+    const nullContentMessage = {
+      id: "message-null-content",
+      createdDateTime: "2026-07-16T12:04:00Z",
+      lastModifiedDateTime: null,
+      from: { application: { id: "application-1", displayName: "Application" } },
+      body: { contentType: "text", content: null, fixtureProperty: true },
+      webUrl: null,
+    };
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) {
+        return jsonResponse(tokenBody("offline_access Chat.Read Chat.ReadWrite"));
+      }
+      return init?.method === "POST"
+        ? jsonResponse(nullContentMessage, 201)
+        : jsonResponse({ value: [deletedMessage, systemMessage, nullContentMessage] });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["chat.read", "chat.write"]);
+
+    const projectedDeletedMessage = {
+      id: "message-deleted",
+      createdDateTime: "2026-07-16T12:00:00Z",
+      lastModifiedDateTime: "2026-07-16T12:01:00Z",
+      from: null,
+      body: null,
+      webUrl: null,
+    };
+    const projectedSystemMessage = {
+      id: "message-system",
+      createdDateTime: "2026-07-16T12:03:00Z",
+      lastModifiedDateTime: null,
+      from: null,
+      body: null,
+      webUrl: null,
+    };
+    const projectedNullContentMessage = {
+      id: "message-null-content",
+      createdDateTime: "2026-07-16T12:04:00Z",
+      lastModifiedDateTime: null,
+      from: null,
+      body: null,
+      webUrl: null,
+    };
+    await expect(
+      graph.invoke("microsoft365.chat.messages", { chatId: "chat-1", limit: 3 }),
+    ).resolves.toEqual({
+      messages: [projectedDeletedMessage, projectedSystemMessage, projectedNullContentMessage],
+      hasMore: false,
+    });
+    await expect(
+      graph.invoke(
+        "microsoft365.chat.message.send",
+        { chatId: "chat-1", body: "Fixture" },
+        invocation(),
+      ),
+    ).resolves.toEqual(projectedNullContentMessage);
+  });
+
+  it("preserves empty optional fields in projected responses", async () => {
     const secrets = memorySecrets();
     const fetchImplementation = (async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -1624,6 +2019,8 @@ describe("MicrosoftGraphProvider tools", () => {
             end: { dateTime: "2026-07-15T10:00:00", timeZone: "UTC" },
             location: { displayName: "" },
             organizer: { emailAddress: { name: "", address: "" } },
+            bodyPreview: "",
+            hasAttachments: false,
           },
         ],
       });
@@ -1635,12 +2032,51 @@ describe("MicrosoftGraphProvider tools", () => {
         start: "2026-07-15T00:00:00Z",
         end: "2026-07-16T00:00:00Z",
       }),
-    ).resolves.toMatchObject({
-      events: [{ id: "event-empty-fields", subject: "", location: "" }],
-      graphResponse: {
-        value: [{ id: "event-empty-fields", subject: "", location: { displayName: "" } }],
-      },
+    ).resolves.toEqual({
+      events: [
+        {
+          id: "event-empty-fields",
+          subject: "",
+          start: { dateTime: "2026-07-15T09:00:00", timeZone: "UTC" },
+          end: { dateTime: "2026-07-15T10:00:00", timeZone: "UTC" },
+          location: "",
+          organizer: { name: "", address: "" },
+          preview: "",
+          previewIsPartial: true,
+          hasAttachments: false,
+        },
+      ],
+      hasMore: false,
     });
+  });
+
+  it("allowlists projected URL hosts and rechecks bounds after canonical serialization", async () => {
+    const secrets = memorySecrets();
+    let webLink = "https://example.invalid/calendar";
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Calendars.Read"));
+      return jsonResponse({
+        id: "event-1",
+        subject: "Review",
+        start: { dateTime: "2026-07-15T09:00:00", timeZone: "UTC" },
+        end: { dateTime: "2026-07-15T10:00:00", timeZone: "UTC" },
+        location: null,
+        attendees: [],
+        webLink,
+      });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["calendar.read"]);
+
+    await expect(
+      graph.invoke("microsoft365.calendar.event.get", { eventId: "event-1" }),
+    ).rejects.toThrow(/invalid response/u);
+    webLink = `https://outlook.office.com/${"é".repeat(500)}`;
+    await expect(
+      graph.invoke("microsoft365.calendar.event.get", { eventId: "event-1" }),
+    ).rejects.toThrow(/invalid response/u);
   });
 
   it("rejects malformed, extra, NaN, overlong, and out-of-range tool input before Graph", async () => {
@@ -1853,7 +2289,7 @@ describe("MicrosoftGraphProvider tools", () => {
     expect(graphCalls).toBe(0);
   });
 
-  it("keeps a bounded compatible body and the complete Graph message", async () => {
+  it("keeps a usable bounded body without retaining the Graph message", async () => {
     const secrets = memorySecrets();
     const bodyContent = "x".repeat(50_001);
     const response = {
@@ -1875,15 +2311,248 @@ describe("MicrosoftGraphProvider tools", () => {
     await authorize(graph);
 
     const result = await graph.invoke("microsoft365.mail.get", { messageId: "message-1" });
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       id: "message-1",
+      subject: "Future property",
       from: { name: "Person", address: "person@example.edu" },
-      graphResponse: { futureGraphProperty: { nested: [1, 2, 3] } },
+      receivedDateTime: "2026-07-15T10:00:00Z",
+      isRead: false,
+      body: {
+        contentType: "html",
+        content: bodyContent.slice(0, 50_000),
+        truncated: true,
+      },
     });
-    expect((result as { body: { content: string } }).body.content).toBe(
-      bodyContent.slice(0, 50_000),
+    expect(JSON.stringify(result)).not.toContain("futureGraphProperty");
+  });
+
+  it("truncates previews and bodies at whole UTF-8 boundaries", async () => {
+    const secrets = memorySecrets();
+    const previewContent = "😀".repeat(257);
+    const bodyContent = `${"a".repeat(49_999)}😀tail`;
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
+      if (url.includes("/me/messages?")) {
+        return jsonResponse({
+          value: [
+            {
+              id: "message-1",
+              subject: "Unicode preview",
+              from: null,
+              receivedDateTime: "2026-07-15T10:00:00Z",
+              isRead: false,
+              bodyPreview: previewContent,
+              hasAttachments: false,
+            },
+          ],
+        });
+      }
+      return jsonResponse({
+        id: "message-1",
+        subject: "Unicode body",
+        from: null,
+        receivedDateTime: "2026-07-15T10:00:00Z",
+        isRead: false,
+        body: { contentType: "text", content: bodyContent },
+      });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph);
+
+    const search = (await graph.invoke("microsoft365.mail.search", {})) as {
+      readonly messages: ReadonlyArray<{
+        readonly preview: string;
+        readonly previewIsPartial: boolean;
+      }>;
+    };
+    expect(search.messages[0]?.preview).toBe("😀".repeat(255));
+    expect(search.messages[0]?.previewIsPartial).toBe(true);
+    expect(new TextEncoder().encode(search.messages[0]?.preview).byteLength).toBeLessThanOrEqual(
+      1_024,
     );
-    expect((result as { graphResponse: unknown }).graphResponse).toEqual(response);
+
+    const message = (await graph.invoke("microsoft365.mail.get", {
+      messageId: "message-1",
+    })) as { readonly body: { readonly content: string; readonly truncated: boolean } };
+    expect(message.body.content).toBe("a".repeat(49_999));
+    expect(message.body.truncated).toBe(true);
+    expect(new TextEncoder().encode(message.body.content).byteLength).toBeLessThanOrEqual(50_000);
+    expect(message.body.content.at(-1)).toBe("a");
+  });
+
+  it("returns the leading chat messages that fit exactly within the serialized host budget", async () => {
+    const secrets = memorySecrets();
+    const resultBudget = 384 * 1_024;
+    const rawMessage = (id: string, content: string) => ({
+      id,
+      createdDateTime: "2026-07-16T12:00:00Z",
+      lastModifiedDateTime: null,
+      from: null,
+      body: { contentType: "text", content },
+      webUrl: null,
+    });
+    const projectedMessage = (id: string, content: string) => ({
+      id,
+      createdDateTime: "2026-07-16T12:00:00Z",
+      lastModifiedDateTime: null,
+      from: null,
+      body: { contentType: "text", content, truncated: false },
+      webUrl: null,
+    });
+    const leadingRaw = Array.from({ length: 7 }, (_, index) =>
+      rawMessage(`message-${index}`, "x".repeat(50_000)),
+    );
+    const leadingProjected = Array.from({ length: 7 }, (_, index) =>
+      projectedMessage(`message-${index}`, "x".repeat(50_000)),
+    );
+    const emptyBoundary = projectedMessage("message-boundary", "");
+    const emptyBoundaryBytes = new TextEncoder().encode(
+      JSON.stringify({ messages: [...leadingProjected, emptyBoundary], hasMore: true }),
+    ).byteLength;
+    const boundaryContentBytes = resultBudget - emptyBoundaryBytes;
+    expect(boundaryContentBytes).toBeGreaterThan(0);
+    expect(boundaryContentBytes).toBeLessThanOrEqual(50_000);
+    const boundaryContent = `${"😀".repeat(Math.floor(boundaryContentBytes / 4))}${"x".repeat(
+      boundaryContentBytes % 4,
+    )}`;
+    expect(new TextEncoder().encode(boundaryContent).byteLength).toBe(boundaryContentBytes);
+    const boundaryMessage = projectedMessage("message-boundary", boundaryContent);
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Chat.Read"));
+      return jsonResponse({
+        value: [
+          ...leadingRaw,
+          rawMessage("message-boundary", boundaryContent),
+          rawMessage("message-omitted", "😀"),
+        ],
+      });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["chat.read"]);
+
+    const result = await graph.invoke("microsoft365.chat.messages", {
+      chatId: "chat-1",
+      limit: 9,
+    });
+    expect(result).toEqual({
+      messages: [...leadingProjected, boundaryMessage],
+      hasMore: true,
+    });
+    expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBe(resultBudget);
+    expect(JSON.stringify(result)).not.toContain("message-omitted");
+  });
+
+  it("rejects malformed continuation metadata and attachment content", async () => {
+    const secrets = memorySecrets();
+    let remoteResponse: unknown = { value: [] };
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
+      return jsonResponse(remoteResponse);
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph);
+
+    remoteResponse = { value: [], "@odata.nextLink": { unsafe: true } };
+    await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(/invalid response/u);
+    remoteResponse = { value: [], "@odata.nextLink": "" };
+    await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(/invalid response/u);
+
+    const attachment = {
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      id: "attachment-1",
+      name: "fixture.bin",
+      contentType: "application/octet-stream",
+      size: 1,
+      isInline: false,
+      lastModifiedDateTime: "2026-07-15T12:00:00Z",
+    };
+    remoteResponse = { ...attachment, contentBytes: "not base64" };
+    await expect(
+      graph.invoke("microsoft365.mail.attachment.get", {
+        messageId: "message-1",
+        attachmentId: "attachment-1",
+      }),
+    ).rejects.toThrow(/invalid attachment content/u);
+    const nearLimitContent = "A".repeat(350 * 1_024);
+    remoteResponse = { ...attachment, contentBytes: nearLimitContent };
+    const nearLimitResult = (await graph.invoke("microsoft365.mail.attachment.get", {
+      messageId: "message-1",
+      attachmentId: "attachment-1",
+    })) as Record<string, unknown>;
+    expect(Object.keys(nearLimitResult).toSorted()).toEqual(
+      [
+        "kind",
+        "id",
+        "name",
+        "contentType",
+        "size",
+        "isInline",
+        "lastModifiedDateTime",
+        "contentBytes",
+      ].toSorted(),
+    );
+    expect(nearLimitResult.contentBytes).toBe(nearLimitContent);
+    expect(new TextEncoder().encode(JSON.stringify(nearLimitResult)).byteLength).toBeLessThan(
+      512 * 1_024,
+    );
+    remoteResponse = { ...attachment, contentBytes: "A".repeat(350 * 1_024 + 4) };
+    await expect(
+      graph.invoke("microsoft365.mail.attachment.get", {
+        messageId: "message-1",
+        attachmentId: "attachment-1",
+      }),
+    ).rejects.toThrow(/invalid attachment content/u);
+    remoteResponse = { ...attachment, "@odata.type": "#microsoft.graph.futureAttachment" };
+    await expect(
+      graph.invoke("microsoft365.mail.attachment.get", {
+        messageId: "message-1",
+        attachmentId: "attachment-1",
+      }),
+    ).rejects.toThrow(/unsupported attachment type/u);
+  });
+
+  it("projects reference attachments without returning server URLs or unknown fields", async () => {
+    const secrets = memorySecrets();
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
+      return jsonResponse({
+        "@odata.type": "#microsoft.graph.referenceAttachment",
+        id: "attachment-1",
+        name: "Cloud file",
+        contentType: null,
+        size: 4_096,
+        isInline: false,
+        lastModifiedDateTime: "2026-07-15T12:00:00Z",
+        sourceUrl: "https://example.invalid/private",
+        previewUrl: "https://example.invalid/preview",
+        fixtureProperty: { preserved: true },
+      });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph);
+
+    await expect(
+      graph.invoke("microsoft365.mail.attachment.get", {
+        messageId: "message-1",
+        attachmentId: "attachment-1",
+      }),
+    ).resolves.toEqual({
+      kind: "reference",
+      id: "attachment-1",
+      name: "Cloud file",
+      contentType: null,
+      size: 4_096,
+      isInline: false,
+      lastModifiedDateTime: "2026-07-15T12:00:00Z",
+    });
   });
 
   it("rejects a Graph collection larger than the requested result bound", async () => {
@@ -1942,6 +2611,9 @@ describe("MicrosoftGraphProvider tools", () => {
     const graph = provider(secrets.service, fetchImplementation);
     await authorize(graph);
     await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(/exceeded/u);
+    await expect(graph.invoke("microsoft365.mail.get", { messageId: "message-1" })).rejects.toThrow(
+      /exceeded/u,
+    );
   });
 
   it("propagates cancellation and enforces request timeout", async () => {
