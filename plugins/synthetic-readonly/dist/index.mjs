@@ -25,7 +25,7 @@ function inputRecord(value) {
   if (!TOPICS.has(value.topic)) {
     throw failure("invalid_input", "topic must be alpha or beta.");
   }
-  const limit = value.limit ?? 3;
+  const limit = Object.hasOwn(value, "limit") ? value.limit : 3;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10) {
     throw failure("invalid_input", "limit must be an integer from 1 through 10.");
   }
