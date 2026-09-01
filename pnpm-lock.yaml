@@ -11,9 +11,15 @@ importers:
       '@types/node':
         specifier: 24.12.4
         version: 24.12.4
+      acorn:
+        specifier: 8.16.0
+        version: 8.16.0
       effect:
-        specifier: 4.0.0-beta.102
-        version: 4.0.0-beta.102
+        specifier: 4.0.0-beta.103
+        version: 4.0.0-beta.103
+      es-module-lexer:
+        specifier: 2.3.1
+        version: 2.3.1
       semver:
         specifier: 7.7.2
         version: 7.7.2
@@ -27,23 +33,27 @@ importers:
         specifier: 2.9.0
         version: 2.9.0
 
+  packages/plugin-sdk: {}
+
   plugins/github:
     devDependencies:
       effect:
-        specifier: 4.0.0-beta.102
-        version: 4.0.0-beta.102
+        specifier: 4.0.0-beta.103
+        version: 4.0.0-beta.103
 
   plugins/google-workspace:
     devDependencies:
       effect:
-        specifier: 4.0.0-beta.102
-        version: 4.0.0-beta.102
+        specifier: 4.0.0-beta.103
+        version: 4.0.0-beta.103
 
   plugins/microsoft-365:
     devDependencies:
       effect:
-        specifier: 4.0.0-beta.102
-        version: 4.0.0-beta.102
+        specifier: 4.0.0-beta.103
+        version: 4.0.0-beta.103
+
+  plugins/synthetic-readonly: {}
 
 packages:
 
@@ -658,6 +668,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  acorn@8.16.0:
+    resolution: {integrity: sha512-UVJyE9MttOsBQIDKw1skb9nAwQuR5wuGD3+82K6JgJlm/Y+KI92oNsMNGZCYdDsVtRHSak0pcV5Dno5+4jh9sw==}
+    engines: {node: '>=0.4.0'}
+    hasBin: true
+
   ansi-regex@5.0.1:
     resolution: {integrity: sha512-quJQXlTSUGL2LH9SUXo8VwsY4soanhgo6LNSm84E1LBcE8s3O0wpdiRzyR9z/ZZJMlMWv37qOOb9pdJlMUEKFQ==}
     engines: {node: '>=8'}
@@ -691,8 +706,8 @@ packages:
   dom-accessibility-api@0.5.16:
     resolution: {integrity: sha512-X7BJ2yElsnOJ30pZF4uIIDfBEVgF4XEBxL9Bxhy6dnrm5hkzqmsWHGTiHqRiITNhMyFLyAiWndIJP7Z1NTteDg==}
 
-  effect@4.0.0-beta.102:
-    resolution: {integrity: sha512-z8Y+Q76Hh/kjLFZrXu8tGn6e+tDsg45R+UHhxd190pXxD53OGwf/G/zDxXTkse4HJ5mobNZfitLfUCp4fMvu6w==}
+  effect@4.0.0-beta.103:
+    resolution: {integrity: sha512-pE8TxF4m2tQzVI+77dIlm3s+81TACV1AiX1JEkvY+zVuxgQQ8aGSkqXNJF6b/ST+coCSk5cUdbULpQ7sm4oHyw==}
 
   es-module-lexer@2.3.1:
     resolution: {integrity: sha512-shc1dbU90Yl/xq1QrC7QRtfcwURZuVRfPhZbDoldJ1cn1gzDvBaBWlv0eFolj5+0znnPJz5TXLxsN77X/12KTA==}
@@ -1478,6 +1493,8 @@ snapshots:
   '@voidzero-dev/vite-plus-win32-x64-msvc@0.2.1':
     optional: true
 
+  acorn@8.16.0: {}
+
   ansi-regex@5.0.1: {}
 
   ansi-styles@5.2.0: {}
@@ -1498,7 +1515,7 @@ snapshots:
 
   dom-accessibility-api@0.5.16: {}
 
-  effect@4.0.0-beta.102:
+  effect@4.0.0-beta.103:
     dependencies:
       '@standard-schema/spec': 1.1.0
       fast-check: 4.9.0

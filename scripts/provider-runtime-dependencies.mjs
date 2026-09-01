@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
-export const PROVIDER_EFFECT_DEV_VERSION = "4.0.0-beta.102";
+export const PROVIDER_EFFECT_DEV_VERSION = "4.0.0-beta.103";
 export const PROVIDER_EFFECT_PEER_RANGE = ">=4.0.0-beta.78 <4.0.0";
 
 function assert(condition, message) {

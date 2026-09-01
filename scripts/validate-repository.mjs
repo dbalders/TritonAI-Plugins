@@ -5,9 +5,11 @@ import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 
 import { validateManifestV2 } from "./manifest-v2.mjs";
+import { validateManifestV1 } from "../packages/plugin-sdk/index.mjs";
 import { discoverPluginDirectories } from "./plugin-directories.mjs";
 import { assertProviderRuntimeDependencies } from "./provider-runtime-dependencies.mjs";
 import { parseSkillFrontmatter } from "./skill-frontmatter.mjs";
+import { inspectPluginModule } from "./sdk-artifact.mjs";
 
 const root = Path.resolve(import.meta.dirname, "..");
 const pluginsRoot = Path.join(root, "plugins");
@@ -61,9 +63,9 @@ for (const directory of entries) {
   const packageRoot = Path.join(pluginsRoot, directory);
   await regularTree(packageRoot);
   const packageJson = await json(Path.join(packageRoot, "package.json"));
-  const manifest = validateManifestV2(
-    await json(Path.join(packageRoot, ".tritonai-plugin", "plugin.json")),
-  );
+  const manifestValue = await json(Path.join(packageRoot, ".tritonai-plugin", "plugin.json"));
+  const sdkV1 = manifestValue.apiVersion === "tritonai.plugin/v1";
+  const manifest = sdkV1 ? validateManifestV1(manifestValue) : validateManifestV2(manifestValue);
   assert(packageJson.name === `@tritonai/plugin-${directory}`, `${directory}: package name drift.`);
   assert(packageJson.private === true, `${directory}: package must remain private.`);
   assert(packageJson.license === "MIT", `${directory}: package license must be MIT.`);
@@ -74,7 +76,7 @@ for (const directory of entries) {
   assert(semver.test(packageJson.version), `${directory}: package version is not stable semver.`);
   assert(packageJson.version === manifest.version, `${directory}: package/manifest version drift.`);
   assert(manifest.id === directory, `${directory}: manifest id must equal its directory.`);
-  for (const skill of manifest.skills) {
+  for (const skill of manifest.skills ?? []) {
     const content = await Fs.readFile(
       Path.join(packageRoot, "skills", skill.name, "SKILL.md"),
       "utf8",
@@ -87,7 +89,13 @@ for (const directory of entries) {
     );
   }
   assert(Array.isArray(packageJson.files), `${directory}: package files must be an array.`);
-  for (const required of [".tritonai-plugin", "skills", "LICENSE", "README.md", "SECURITY.md"]) {
+  for (const required of [
+    ".tritonai-plugin",
+    ...(sdkV1 ? ["dist", ...(manifest.skills.length > 0 ? ["skills"] : [])] : ["skills"]),
+    "LICENSE",
+    "README.md",
+    "SECURITY.md",
+  ]) {
     assert(packageJson.files.includes(required), `${directory}: package files omit ${required}.`);
   }
   assert(
@@ -96,8 +104,27 @@ for (const directory of entries) {
     ),
     `${directory}: package file allowlist is unsafe.`,
   );
-  assertProviderRuntimeDependencies(directory, packageJson, manifest);
-  if (manifest.provider !== undefined) {
+  if (!sdkV1) assertProviderRuntimeDependencies(directory, packageJson, manifest);
+  if (sdkV1) {
+    assert(
+      packageJson.exports?.["."] === `./${manifest.entry}`,
+      `${directory}: SDK v1 package must export its manifest entry.`,
+    );
+    assert(
+      !packageJson.dependencies &&
+        !packageJson.optionalDependencies &&
+        !packageJson.peerDependencies &&
+        !packageJson.bundledDependencies &&
+        !packageJson.bundleDependencies,
+      `${directory}: SDK v1 package must remain dependency-free.`,
+    );
+    const entry = await Fs.stat(Path.join(packageRoot, manifest.entry)).catch(() => undefined);
+    assert(entry?.isFile(), `${directory}: SDK v1 entry is missing ${manifest.entry}.`);
+    const source = await Fs.readFile(Path.join(packageRoot, manifest.entry), "utf8");
+    await inspectPluginModule(source).catch((error) => {
+      throw new Error(`${directory}: SDK v1 entry module is invalid.`, { cause: error });
+    });
+  } else if (manifest.provider !== undefined) {
     assert(
       packageJson.files.includes("dist") &&
         packageJson.exports?.["."]?.types === "./dist/index.d.ts" &&
@@ -125,7 +152,7 @@ for (const directory of entries) {
       typeof providerModule.createIntegrationProvider === "function",
       `${directory}: compiled provider must export createIntegrationProvider.`,
     );
-  } else {
+  } else if (!sdkV1) {
     const hasSource = await Fs.stat(Path.join(packageRoot, "src")).then(
       (entry) => entry.isDirectory(),
       () => false,

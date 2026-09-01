@@ -11,7 +11,7 @@ import {
   resolveEffectRuntimeIdentity,
 } from "../scripts/harness-contract.mjs";
 
-const effectVersion = "4.0.0-beta.102";
+const effectVersion = "4.0.0-beta.103";
 const effectHash = "7".repeat(64);
 const effectSelector = `effect@${effectVersion}`;
 const effectPatchPath = `patches/effect@${effectVersion}.patch`;
@@ -108,7 +108,7 @@ test("binds installed package version and exact pnpm realpath", () => {
 
   const realpathDrift = runtimeFixture();
   realpathDrift.installedRealpath =
-    "/fixture/node_modules/.pnpm/effect@4.0.0-beta.102/node_modules/effect";
+    "/fixture/node_modules/.pnpm/effect@4.0.0-beta.103/node_modules/effect";
   assert.throws(() => resolveEffectRuntimeIdentity(realpathDrift), /realpath/u);
 });
 
