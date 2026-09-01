@@ -20,9 +20,14 @@ import {
 
 const repository = Path.resolve(import.meta.dirname, "..");
 const conformancePlugin = Path.join(repository, "plugins", "synthetic-readonly");
+const supportedHost = { hostNodeVersion: "24.13.1" };
+
+function verifyTestArtifact(artifactRoot, compatibility = {}) {
+  return verifyPluginArtifact(artifactRoot, { ...supportedHost, ...compatibility });
+}
 
 async function loadTestArtifact(artifactRoot, compatibility) {
-  const verified = await verifyPluginArtifact(artifactRoot, compatibility);
+  const verified = await verifyTestArtifact(artifactRoot, compatibility);
   const url = `data:text/javascript;base64,${verified.entryBytes.toString("base64")}#artifact-sha256=${verified.descriptorSha256}`;
   const module = await import(url);
   assert.deepEqual(Object.keys(module), ["createIntegrationProvider"]);
@@ -407,7 +412,7 @@ test("verification reapplies entry and skill payload invariants", async (t) => {
     Buffer.alloc(ARTIFACT_LIMITS.entryBytes + 1 - entry.length, 0x20),
   ]);
   await resealPayload(outputs[0], "plugin.mjs", oversized);
-  await assert.rejects(() => verifyPluginArtifact(outputs[0]), /entry exceeds its size limit/u);
+  await assert.rejects(() => verifyTestArtifact(outputs[0]), /entry exceeds its size limit/u);
 
   await resealPayload(
     outputs[1],
@@ -416,7 +421,7 @@ test("verification reapplies entry and skill payload invariants", async (t) => {
       "export function createIntegrationProvider() {} const duplicate = 1; const duplicate = 2;\n",
     ),
   );
-  await assert.rejects(() => verifyPluginArtifact(outputs[1]), /not valid ECMAScript/u);
+  await assert.rejects(() => verifyTestArtifact(outputs[1]), /not valid ECMAScript/u);
 
   const skillPath = "skills/synthetic-readonly/SKILL.md";
   const skill = await Fs.readFile(Path.join(outputs[2], skillPath), "utf8");
@@ -430,7 +435,7 @@ test("verification reapplies entry and skill payload invariants", async (t) => {
       ),
     ),
   );
-  await assert.rejects(() => verifyPluginArtifact(outputs[2]), /skill description does not match/u);
+  await assert.rejects(() => verifyTestArtifact(outputs[2]), /skill description does not match/u);
 
   const undeclaredPath = "skills/undeclared/SKILL.md";
   await resealPayload(
@@ -438,7 +443,7 @@ test("verification reapplies entry and skill payload invariants", async (t) => {
     undeclaredPath,
     Buffer.from("---\nname: undeclared\ndescription: Undeclared skill.\n---\n"),
   );
-  await assert.rejects(() => verifyPluginArtifact(outputs[3]), /undeclared payload/u);
+  await assert.rejects(() => verifyTestArtifact(outputs[3]), /undeclared payload/u);
 });
 
 test("artifact compatibility and byte integrity fail before module import", async (t) => {
@@ -488,12 +493,12 @@ test("host contract levels are monotonic", async (t) => {
   const output = Path.join(temporary, "artifact");
   await writeFixture(source, { manifest: { sdk: { apiMajor: 1, requiredHostContractLevel: 2 } } });
   await buildPluginArtifact(source, output);
-  await assert.rejects(() => verifyPluginArtifact(output), /newer host contract/u);
+  await assert.rejects(() => verifyTestArtifact(output), /newer host contract/u);
   await assert.doesNotReject(() =>
-    verifyPluginArtifact(output, { sdkApiMajor: 1, hostContractLevel: 2 }),
+    verifyTestArtifact(output, { sdkApiMajor: 1, hostContractLevel: 2 }),
   );
   await assert.doesNotReject(() =>
-    verifyPluginArtifact(output, { sdkApiMajor: 1, hostContractLevel: 3 }),
+    verifyTestArtifact(output, { sdkApiMajor: 1, hostContractLevel: 3 }),
   );
 });
 
@@ -665,7 +670,7 @@ test("artifact construction ignores the workspace dependency directory", async (
   await Fs.mkdir(Path.dirname(injected), { recursive: true });
   await Fs.writeFile(injected, "throw new Error('unsealed');\n");
   await assert.rejects(
-    () => verifyPluginArtifact(output),
+    () => verifyTestArtifact(output),
     /artifact contains forbidden dependencies/u,
   );
 });
