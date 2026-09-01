@@ -5,6 +5,7 @@ import * as Path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { validateManifestV2 } from "./manifest-v2.mjs";
+import { buildPluginArtifact, verifyPluginArtifact } from "./sdk-artifact.mjs";
 import {
   assertPackedMetadata,
   assertPackedStaticFiles,
@@ -89,7 +90,28 @@ if (pluginDirectories.length === 0) {
       const packagePath = Path.join(packageRoot, "package.json");
       const manifestPath = Path.join(packageRoot, ".tritonai-plugin", "plugin.json");
       const packageJson = JSON.parse(await Fs.readFile(packagePath, "utf8"));
-      const manifest = validateManifestV2(JSON.parse(await Fs.readFile(manifestPath, "utf8")));
+      const manifestValue = JSON.parse(await Fs.readFile(manifestPath, "utf8"));
+      if (manifestValue.apiVersion === "tritonai.plugin/v1") {
+        const outputs = [
+          Path.join(temporary, "one", directory),
+          Path.join(temporary, "two", directory),
+        ];
+        for (const output of outputs) {
+          await Fs.mkdir(Path.dirname(output), { recursive: true });
+          await buildPluginArtifact(packageRoot, output);
+          await verifyPluginArtifact(output);
+        }
+        const snapshots = await Promise.all(outputs.map(snapshotStaticFiles));
+        assertStaticSourceUnchanged(directory, snapshots[0], snapshots[1]);
+        assertStaticSourceUnchanged(
+          directory,
+          reviewedPackages.get(directory),
+          await snapshotStaticFiles(packageRoot),
+        );
+        console.log(`deterministic SDK artifact dry-run passed for ${packageJson.name}`);
+        continue;
+      }
+      const manifest = validateManifestV2(manifestValue);
       const sourceStaticFiles = reviewedPackages.get(directory);
       if (!sourceStaticFiles)
         throw new Error(`${directory}: reviewed package snapshot is missing.`);

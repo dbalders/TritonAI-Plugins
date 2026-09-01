@@ -1,7 +1,7 @@
 # TritonAI Plugins
 
-Framework and curated source packages for TritonAI Harness plugins. The root framework supports
-zero plugins; each production package is introduced through its own reviewed change.
+Framework, an additive platform-only SDK, and curated source packages for TritonAI Harness
+plugins. Existing Harness v2 packages remain supported without modification.
 
 Created and maintained by David Balderston for UC San Diego.
 
@@ -14,8 +14,8 @@ skills; they cannot download or install runtime code.
 ## Repository contract
 
 Each direct child of `plugins/` is an independent package. A plugin may contribute skills only, or
-it may also provide server-side tools through the Harness provider contract. Production packages
-must include:
+it may also provide server-side tools through the Harness provider contract. Harness v2 production
+packages must include:
 
 - a strict `.tritonai-plugin/plugin.json` Harness v2 manifest;
 - package and manifest versions that agree;
@@ -74,3 +74,18 @@ snapshot, and pnpm realpath identity, and reports the commit used for the proof.
 
 Publication, GitHub repository creation, tags, pushes, Harness composition, and releases remain
 explicit owner actions.
+
+## Additive plugin SDK v1
+
+`@tritonai/plugin-sdk` defines an Effect-free ABI using only promises, `AbortSignal`, readonly
+plain objects, JSON values and tagged structural failures. Its strict `tritonai.plugin/v1`
+manifest in `.tritonai-plugin/plugin.json` carries inline draft 2020-12 configuration and input
+schemas, skills, SDK API major, and minimum host contract level. The factory module has one stable export:
+`createIntegrationProvider`.
+
+Builds produce a sealed Node 24 ESM directory with a self-contained `plugin.mjs`, declared skill
+files, canonical manifest and canonical `artifact.json`. Third-party code is bundled; any remaining
+`node:` imports are enumerated in the descriptor. The descriptor binds every payload byte, target,
+configuration schema, and input schema by SHA-256. The verifier checks the complete inventory and
+compatibility before importing executable code. `plugins/synthetic-readonly` is the dependency-free
+conformance example.

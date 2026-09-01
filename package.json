@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "check": "vp check && pnpm validate",
+    "artifact:sdk": "node scripts/build-sdk-artifact.mjs",
     "contract:harness": "node scripts/verify-harness-contract.mjs",
     "package:dry-run": "node scripts/package-dry-run.mjs",
     "readiness": "pnpm check && pnpm typecheck && pnpm test && pnpm package:dry-run",
@@ -17,6 +18,7 @@
   "devDependencies": {
     "@types/node": "24.12.4",
     "effect": "4.0.0-beta.102",
+    "es-module-lexer": "2.3.1",
     "semver": "7.7.2",
     "typescript": "~6.0.3",
     "vite-plus": "0.2.1",

@@ -1,0 +1,24 @@
+{
+  "name": "@tritonai/plugin-sdk",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "files": [
+    "LICENSE",
+    "README.md",
+    "index.d.ts",
+    "index.mjs",
+    "tsconfig.json"
+  ],
+  "type": "module",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.mjs"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}
