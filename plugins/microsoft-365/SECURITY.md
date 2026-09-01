@@ -15,9 +15,13 @@ Reject malformed configuration without including its values in errors or logs.
 Do not add a generic request, raw URL, arbitrary OData, `.default`, client secret, application
 permission, mail send/delete, event delete, invitation response, chat creation, or message
 edit/delete surface. New Graph actions require a separate narrow tool, capability mapping, least
-privilege scope review, tests, and security review. Plain text is required for all writes. Calendar
+privilege scope review, tests, and security review. Capabilities that share an OAuth scope must
+remain independently tracked and authorized. Plain text is required for all writes. Calendar
 updates must not replace event bodies because that can remove the meeting blob and disable an
 existing online meeting.
+
+Mail organization receipts must expose operation identifiers only, not message content that belongs
+to `mail.read`. Message moves must reject Graph's deletion-oriented well-known folder names.
 
 Never place real identifiers, credentials, tokens, device codes, authorization headers, tenant
 data, or exported secret-store contents in source, tests, fixtures, errors, status, logs, skills,

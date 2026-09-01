@@ -201,6 +201,12 @@ describe("MicrosoftGraphProvider contract", () => {
     const expected = new Map([
       ["microsoft365.mail.search", { readOnly: true, destructive: false, idempotent: true }],
       ["microsoft365.mail.get", { readOnly: true, destructive: false, idempotent: true }],
+      ["microsoft365.mail.folders.list", { readOnly: true, destructive: false, idempotent: true }],
+      [
+        "microsoft365.mail.folder.create",
+        { readOnly: false, destructive: false, idempotent: false },
+      ],
+      ["microsoft365.mail.message.move", { readOnly: false, destructive: true, idempotent: false }],
       [
         "microsoft365.mail.attachments.list",
         { readOnly: true, destructive: false, idempotent: true },
@@ -266,6 +272,7 @@ describe("MicrosoftGraphProvider contract", () => {
       [
         "mail.read",
         "mail.draft.create",
+        "mail.organize",
         "calendar.read",
         "calendar.write",
         "chat.read",
@@ -415,6 +422,48 @@ describe("MicrosoftGraphProvider contract", () => {
     expect(persisted).not.toContain("email");
     expect(persisted).not.toContain("Mail.ReadWrite");
     expect(persisted).not.toContain("Calendars.ReadWrite");
+  });
+
+  it("keeps draft creation and mail organization separate despite their shared OAuth scope", async () => {
+    for (const [selected, unavailableTool, unavailableInput] of [
+      [
+        "mail.draft.create",
+        "microsoft365.mail.message.move",
+        { messageId: "message-1", destinationFolderId: "archive" },
+      ],
+      [
+        "mail.organize",
+        "microsoft365.mail.draft.create",
+        { to: ["person@example.edu"], subject: "Review", body: "Please review." },
+      ],
+    ] as const) {
+      const secrets = memorySecrets();
+      const fetchImplementation = (async (input: RequestInfo | URL) =>
+        String(input).endsWith("/devicecode")
+          ? jsonResponse(deviceBody(selected))
+          : jsonResponse(tokenBody("offline_access Mail.ReadWrite", selected))) as typeof fetch;
+      const graph = provider(secrets.service, fetchImplementation);
+
+      await authorize(graph, [selected]);
+      await expect(graph.status()).resolves.toMatchObject({
+        state: "connected",
+        grantedCapabilities: [selected],
+      });
+      await expect(graph.invoke(unavailableTool, unavailableInput, invocation())).rejects.toThrow(
+        /not granted/u,
+      );
+    }
+  });
+
+  it("migrates legacy Mail.ReadWrite credentials as draft-only authority", async () => {
+    const secrets = memorySecrets();
+    secrets.values.set(MICROSOFT_GRAPH_SECRET_SUFFIX, storedCredential(["Mail.ReadWrite"]));
+    const graph = provider(secrets.service, vi.fn() as unknown as typeof fetch);
+
+    await expect(graph.status()).resolves.toMatchObject({
+      state: "connected",
+      grantedCapabilities: ["mail.draft.create"],
+    });
   });
 
   it("fails closed on unexpected or missing OAuth scopes", async () => {
@@ -1642,6 +1691,218 @@ describe("MicrosoftGraphProvider tools", () => {
     });
   });
 
+  it("lists and creates mail folders, then moves or archives an exact message", async () => {
+    const secrets = memorySecrets();
+    const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) {
+        return jsonResponse(tokenBody("offline_access Mail.Read Mail.ReadWrite"));
+      }
+      graphCalls.push({ url, init });
+      if (url.includes("/mailFolders/deleteditems?")) {
+        return jsonResponse({ id: "deleted-items-folder-id" });
+      }
+      if (url.includes("/mailFolders/recoverableitemsdeletions?")) {
+        return jsonResponse({ id: "recoverable-items-deletions-folder-id" });
+      }
+      if (url.includes("/mailFolders/parent%2Fid%3Ffixture?")) {
+        return jsonResponse({ id: "parent/id?fixture", parentFolderId: null });
+      }
+      if (url.includes("/mailFolders/archive?")) {
+        return jsonResponse({ id: "opaque-archive-id", parentFolderId: null });
+      }
+      if (init?.method !== "POST") {
+        return jsonResponse({
+          value: [{ id: "folder/id?fixture", displayName: "Receipts", totalItemCount: 4 }],
+        });
+      }
+      if (url.endsWith("/move")) {
+        return jsonResponse(
+          {
+            id: "moved-message-id",
+            parentFolderId: "archive",
+            subject: "Receipt",
+            body: { contentType: "text", content: "private message body" },
+          },
+          201,
+        );
+      }
+      return jsonResponse(
+        {
+          id: url.endsWith("/childFolders") ? "child-folder-id" : "root-folder-id",
+          displayName: JSON.parse(String(init.body)).displayName,
+        },
+        201,
+      );
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.read", "mail.organize"]);
+
+    await expect(graph.invoke("microsoft365.mail.folders.list", { limit: 5 })).resolves.toEqual({
+      items: [{ id: "folder/id?fixture", displayName: "Receipts", totalItemCount: 4 }],
+      hasMore: false,
+    });
+    await expect(
+      graph.invoke("microsoft365.mail.folders.list", {
+        parentFolderId: "parent/id?fixture",
+        limit: 2,
+      }),
+    ).resolves.toEqual({
+      items: [{ id: "folder/id?fixture", displayName: "Receipts", totalItemCount: 4 }],
+      hasMore: false,
+    });
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.folder.create",
+        { displayName: "  Receipts  " },
+        invocation(),
+      ),
+    ).resolves.toEqual({
+      id: "root-folder-id",
+      displayName: "Receipts",
+      parentFolderId: null,
+    });
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.folder.create",
+        { displayName: "Child", parentFolderId: "parent/id?fixture" },
+        invocation(),
+      ),
+    ).resolves.toEqual({
+      id: "child-folder-id",
+      displayName: "Child",
+      parentFolderId: null,
+    });
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.message.move",
+        { messageId: "message/id?fixture", destinationFolderId: "  archive  " },
+        invocation(),
+      ),
+    ).resolves.toEqual({
+      id: "moved-message-id",
+      parentFolderId: "archive",
+    });
+
+    expect(graphCalls[0]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders?%24top=5&%24select=id%2CdisplayName%2CparentFolderId%2CchildFolderCount%2CtotalItemCount%2CunreadItemCount%2CisHidden&includeHiddenFolders=true",
+    );
+    expect(graphCalls[1]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture/childFolders?%24top=2&%24select=id%2CdisplayName%2CparentFolderId%2CchildFolderCount%2CtotalItemCount%2CunreadItemCount%2CisHidden&includeHiddenFolders=true",
+    );
+    expect(graphCalls[2]?.url).toBe("https://graph.microsoft.com/v1.0/me/mailFolders");
+    expect(JSON.parse(String(graphCalls[2]?.init?.body))).toEqual({ displayName: "Receipts" });
+    expect(graphCalls[3]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/deleteditems?%24select=id",
+    );
+    expect(graphCalls[4]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/recoverableitemsdeletions?%24select=id",
+    );
+    expect(graphCalls[5]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture?%24select=id%2CparentFolderId",
+    );
+    expect(graphCalls[6]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture/childFolders",
+    );
+    expect(graphCalls[7]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/deleteditems?%24select=id",
+    );
+    expect(graphCalls[8]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/recoverableitemsdeletions?%24select=id",
+    );
+    expect(graphCalls[9]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/archive?%24select=id%2CparentFolderId",
+    );
+    expect(graphCalls[10]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture/move",
+    );
+    expect(JSON.parse(String(graphCalls[10]?.init?.body))).toEqual({ destinationId: "archive" });
+  });
+
+  it("rejects opaque deletion-folder IDs before moving a message", async () => {
+    const secrets = memorySecrets();
+    const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) {
+        return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      }
+      graphCalls.push({ url, init });
+      if (url.includes("/mailFolders/deleteditems?")) {
+        return jsonResponse({ id: "opaque-deleted-items-id" });
+      }
+      if (url.includes("/mailFolders/recoverableitemsdeletions?")) {
+        return jsonResponse({ id: "opaque-recoverable-items-id" });
+      }
+      return jsonResponse({ id: "unexpected-move", parentFolderId: "unexpected" }, 201);
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.organize"]);
+
+    for (const destinationFolderId of ["opaque-deleted-items-id", "opaque-recoverable-items-id"]) {
+      await expect(
+        graph.invoke(
+          "microsoft365.mail.message.move",
+          { messageId: "message-1", destinationFolderId },
+          invocation(),
+        ),
+      ).rejects.toThrow(/deletion folder/u);
+    }
+
+    expect(graphCalls.filter(({ init }) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("rejects deletion-folder descendants for folder creation and message moves", async () => {
+    const secrets = memorySecrets();
+    const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) {
+        return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      }
+      graphCalls.push({ url, init });
+      if (url.includes("/mailFolders/deleteditems?")) {
+        return jsonResponse({ id: "opaque-deleted-items-id" });
+      }
+      if (url.includes("/mailFolders/recoverableitemsdeletions?")) {
+        return jsonResponse({ id: "opaque-recoverable-items-id" });
+      }
+      if (url.includes("/mailFolders/child-folder?")) {
+        return jsonResponse({ id: "child-folder", parentFolderId: "nested-folder" });
+      }
+      if (url.includes("/mailFolders/nested-folder?")) {
+        return jsonResponse({
+          id: "nested-folder",
+          parentFolderId: "opaque-deleted-items-id",
+        });
+      }
+      return jsonResponse({ id: "unexpected-write" }, 201);
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.organize"]);
+
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.folder.create",
+        { displayName: "Unsafe", parentFolderId: "child-folder" },
+        invocation(),
+      ),
+    ).rejects.toThrow(/deletion folder/u);
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.message.move",
+        { messageId: "message-1", destinationFolderId: "child-folder" },
+        invocation(),
+      ),
+    ).rejects.toThrow(/deletion folder/u);
+
+    expect(graphCalls.filter(({ init }) => init?.method === "POST")).toHaveLength(0);
+  });
+
   it("requires Harness commit admission before a valid external write", async () => {
     const secrets = memorySecrets();
     let graphCalls = 0;
@@ -1675,6 +1936,16 @@ describe("MicrosoftGraphProvider tools", () => {
           subject: "Review",
           body: "Please review this draft.",
         },
+      },
+      {
+        capability: "mail.organize",
+        toolName: "microsoft365.mail.folder.create",
+        input: { displayName: "Receipts" },
+      },
+      {
+        capability: "mail.organize",
+        toolName: "microsoft365.mail.message.move",
+        input: { messageId: "message-1", destinationFolderId: "archive" },
       },
       {
         capability: "calendar.write",
@@ -2109,6 +2380,15 @@ describe("MicrosoftGraphProvider tools", () => {
     ]) {
       await expect(graph.invoke("microsoft365.mail.get", input)).rejects.toBeDefined();
     }
+    for (const input of [
+      null,
+      { limit: 0 },
+      { limit: 101 },
+      { parentFolderId: "" },
+      { parentFolderId: "folder-1", extra: true },
+    ]) {
+      await expect(graph.invoke("microsoft365.mail.folders.list", input)).rejects.toBeDefined();
+    }
     for (const input of [null, { eventId: "" }, { eventId: "x".repeat(513), extra: true }]) {
       await expect(graph.invoke("microsoft365.calendar.event.get", input)).rejects.toBeDefined();
     }
@@ -2152,7 +2432,13 @@ describe("MicrosoftGraphProvider tools", () => {
       return jsonResponse({});
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
-    await authorize(graph, ["mail.draft.create", "calendar.write", "chat.read", "chat.write"]);
+    await authorize(graph, [
+      "mail.draft.create",
+      "mail.organize",
+      "calendar.write",
+      "chat.read",
+      "chat.write",
+    ]);
 
     for (const input of [
       { to: [], subject: "x", body: "x" },
@@ -2186,6 +2472,28 @@ describe("MicrosoftGraphProvider tools", () => {
       },
     ]) {
       await expect(graph.invoke("microsoft365.mail.draft.create", input)).rejects.toBeDefined();
+    }
+    for (const [tool, input] of [
+      ["microsoft365.mail.folder.create", { displayName: "   " }],
+      ["microsoft365.mail.folder.create", { displayName: "x".repeat(256) }],
+      ["microsoft365.mail.folder.create", { displayName: "Receipts", extra: true }],
+      ["microsoft365.mail.message.move", { messageId: "", destinationFolderId: "archive" }],
+      ["microsoft365.mail.message.move", { messageId: "message-1", destinationFolderId: "" }],
+      ["microsoft365.mail.message.move", { messageId: "message-1", destinationFolderId: "   " }],
+      [
+        "microsoft365.mail.message.move",
+        { messageId: "message-1", destinationFolderId: "DeletedItems" },
+      ],
+      [
+        "microsoft365.mail.message.move",
+        { messageId: "message-1", destinationFolderId: " recoverableitemsdeletions " },
+      ],
+      [
+        "microsoft365.mail.message.move",
+        { messageId: "message-1", destinationFolderId: "archive", delete: true },
+      ],
+    ] as const) {
+      await expect(graph.invoke(tool, input, invocation())).rejects.toBeDefined();
     }
     await expect(
       graph.invoke("microsoft365.mail.draft.create", {
@@ -2267,6 +2575,16 @@ describe("MicrosoftGraphProvider tools", () => {
     await expect(graph.invoke("microsoft365.calendar.events", {})).rejects.toThrow(/not granted/u);
     await expect(
       graph.invoke("microsoft365.calendar.event.attachments.list", { eventId: "event-1" }),
+    ).rejects.toThrow(/not granted/u);
+    await expect(
+      graph.invoke("microsoft365.mail.folder.create", { displayName: "Receipts" }, invocation()),
+    ).rejects.toThrow(/not granted/u);
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.message.move",
+        { messageId: "message-1", destinationFolderId: "archive" },
+        invocation(),
+      ),
     ).rejects.toThrow(/not granted/u);
     await expect(
       graph.invoke("microsoft365.mail.draft.create", {

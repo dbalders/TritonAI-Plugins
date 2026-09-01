@@ -1,8 +1,8 @@
 # Microsoft 365 plugin
 
 Trusted server-side TritonAI Harness provider for bounded Microsoft 365 mail, calendar, and chat
-access. Mail and calendar reads are enabled by default. Draft creation, calendar writes, chat read,
-and chat send are separate opt-in capabilities.
+access. Mail and calendar reads are enabled by default. Draft creation, mail organization, calendar
+writes, chat read, and chat send are separate opt-in capabilities.
 
 ## Capability and authorization surface
 
@@ -10,6 +10,7 @@ and chat send are separate opt-in capabilities.
 | ------------------- | ------- | --------------------- | -------------------------------------------- |
 | `mail.read`         | Default | `Mail.Read`           | Search and read messages and attachments     |
 | `mail.draft.create` | Opt-in  | `Mail.ReadWrite`      | Create an unsent draft with file attachments |
+| `mail.organize`     | Opt-in  | `Mail.ReadWrite`      | Create folders and move/archive messages     |
 | `calendar.read`     | Default | `Calendars.Read`      | Read calendar events and attachments         |
 | `calendar.write`    | Opt-in  | `Calendars.ReadWrite` | Create or edit an event                      |
 | `chat.read`         | Opt-in  | `Chat.Read`           | List chats and read bounded message history  |
@@ -19,6 +20,8 @@ The provider never requests `Mail.Send`, application permissions, `.default`, or
 It exposes no generic Graph request, raw URL, arbitrary OData, mail send/delete, event delete,
 invitation response, chat creation, or message edit/delete surface. Entra can return additive Graph
 scopes already consented for the same public client; those never become Harness capabilities.
+Draft creation and mail organization remain separate product capabilities even though both use
+`Mail.ReadWrite`; selecting either one never enables the other.
 
 `chat.write` deliberately uses the tenant's already-approved `Chat.ReadWrite` delegated scope rather
 than introducing a new `ChatMessage.Send` approval. The capability and provider still expose only
@@ -27,6 +30,9 @@ or tool through which it can be exercised.
 
 The fixed endpoints follow the Microsoft Graph contracts for [reading a message](https://learn.microsoft.com/en-us/graph/api/message-get?view=graph-rest-1.0),
 [creating a draft message](https://learn.microsoft.com/en-us/graph/api/user-post-messages?view=graph-rest-1.0),
+[listing mail folders](https://learn.microsoft.com/en-us/graph/api/user-list-mailfolders?view=graph-rest-1.0),
+[creating a mail folder](https://learn.microsoft.com/en-us/graph/api/user-post-mailfolders?view=graph-rest-1.0),
+[moving or archiving a message](https://learn.microsoft.com/en-us/graph/api/message-move?view=graph-rest-1.0),
 [reading message attachments](https://learn.microsoft.com/en-us/graph/api/message-list-attachments?view=graph-rest-1.0),
 [creating an event](https://learn.microsoft.com/en-us/graph/api/calendar-post-events?view=graph-rest-1.0),
 [reading an event](https://learn.microsoft.com/en-us/graph/api/event-get?view=graph-rest-1.0),

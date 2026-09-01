@@ -32,11 +32,14 @@ const OUTLOOK_WEB_HOSTS = new Set(["outlook.office.com", "outlook.office365.com"
 const TEAMS_WEB_HOSTS = new Set(["teams.cloud.microsoft", "teams.microsoft.com"]);
 const OFFLINE_SCOPE = "offline_access";
 const OIDC_RESPONSE_SCOPES = new Set(["openid", "profile", "email"]);
+const DELETION_MOVE_DESTINATIONS = new Set(["deleteditems", "recoverableitemsdeletions"]);
+const MAX_MAIL_FOLDER_ANCESTRY_DEPTH = 64;
 const REFRESH_TOKEN_FIELD = ["refresh", "token"].join("_");
 const refreshValueField = ["refresh", "Token"].join("") as "refreshToken";
 const CAPABILITY_SCOPES = {
   "mail.read": "Mail.Read",
   "mail.draft.create": "Mail.ReadWrite",
+  "mail.organize": "Mail.ReadWrite",
   "calendar.read": "Calendars.Read",
   "calendar.write": "Calendars.ReadWrite",
   "chat.read": "Chat.Read",
@@ -91,6 +94,46 @@ const MailSearchInput = Schema.Struct({
 const MailGetInput = Schema.Struct({
   messageId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
     description: "Exact Microsoft 365 message identifier.",
+  }),
+});
+
+const MailFolderListInput = Schema.Struct({
+  parentFolderId: Schema.optionalKey(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+      description: "Optional exact parent mail-folder identifier.",
+    }),
+  ),
+  limit: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })).annotate({
+      description: "Maximum number of mail folders (1-100).",
+    }),
+  ),
+});
+
+const MailFolderCreateInput = Schema.Struct({
+  displayName: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(255),
+    Schema.isPattern(/\S/u),
+  ).annotate({ description: "Display name for the new mail folder." }),
+  parentFolderId: Schema.optionalKey(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+      description: "Optional exact parent mail-folder identifier.",
+    }),
+  ),
+});
+
+const MailMessageMoveInput = Schema.Struct({
+  messageId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+    description: "Exact Microsoft 365 message identifier.",
+  }),
+  destinationFolderId: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(512),
+    Schema.isPattern(/\S/u),
+  ).annotate({
+    description:
+      'Exact destination mail-folder identifier, or the well-known folder name "archive".',
   }),
 });
 
@@ -285,6 +328,9 @@ const ChatMessageSendInput = Schema.Struct({
 
 const decodeMailSearchInput = Schema.decodeUnknownPromise(MailSearchInput);
 const decodeMailGetInput = Schema.decodeUnknownPromise(MailGetInput);
+const decodeMailFolderListInput = Schema.decodeUnknownPromise(MailFolderListInput);
+const decodeMailFolderCreateInput = Schema.decodeUnknownPromise(MailFolderCreateInput);
+const decodeMailMessageMoveInput = Schema.decodeUnknownPromise(MailMessageMoveInput);
 const decodeMailAttachmentListInput = Schema.decodeUnknownPromise(MailAttachmentListInput);
 const decodeMailAttachmentGetInput = Schema.decodeUnknownPromise(MailAttachmentGetInput);
 const decodeCalendarEventsInput = Schema.decodeUnknownPromise(CalendarEventsInput);
@@ -317,6 +363,35 @@ export const MICROSOFT_GRAPH_TOOLS = [
     readOnly: true,
     destructive: false,
     idempotent: true,
+    openWorld: true,
+  },
+  {
+    name: "microsoft365.mail.folders.list",
+    description:
+      "List bounded Microsoft 365 mail-folder resources from a fixed read-only endpoint.",
+    input: MailFolderListInput,
+    readOnly: true,
+    destructive: false,
+    idempotent: true,
+    openWorld: true,
+  },
+  {
+    name: "microsoft365.mail.folder.create",
+    description: "Create one Microsoft 365 mail folder through a fixed endpoint.",
+    input: MailFolderCreateInput,
+    readOnly: false,
+    destructive: false,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "microsoft365.mail.message.move",
+    description:
+      'Move one exact Microsoft 365 mail message to an exact folder or the well-known "archive" folder.',
+    input: MailMessageMoveInput,
+    readOnly: false,
+    destructive: true,
+    idempotent: false,
     openWorld: true,
   },
   {
@@ -437,15 +512,17 @@ export const MICROSOFT_GRAPH_TOOLS = [
 ] as const satisfies ReadonlyArray<IntegrationProviderTool>;
 
 interface Credential {
-  readonly version: 1;
+  readonly version: 2;
   readonly refreshToken: string;
   readonly grantedScopes: ReadonlyArray<string>;
+  readonly grantedCapabilities: ReadonlyArray<keyof typeof CAPABILITY_SCOPES>;
   readonly updatedAt: string;
 }
 
 interface PendingFlow {
   readonly deviceCode: string;
   readonly requestedScopes: ReadonlyArray<string>;
+  readonly requestedCapabilities: ReadonlyArray<keyof typeof CAPABILITY_SCOPES>;
   readonly expiresAt: number;
   readonly intervalSeconds: number;
   readonly generation: number;
@@ -455,6 +532,7 @@ interface AccessToken {
   readonly value: string;
   readonly expiresAt: number;
   readonly grantedScopes: ReadonlyArray<string>;
+  readonly grantedCapabilities: ReadonlyArray<keyof typeof CAPABILITY_SCOPES>;
 }
 
 type Fetch = typeof globalThis.fetch;
@@ -584,11 +662,34 @@ function canonicalScopes(value: unknown, required: ReadonlyArray<string>): Reado
   return expectedScopes;
 }
 
-function capabilitiesFromScopes(scopes: ReadonlyArray<string>): ReadonlyArray<string> {
+function legacyCapabilitiesFromScopes(
+  scopes: ReadonlyArray<string>,
+): ReadonlyArray<keyof typeof CAPABILITY_SCOPES> {
   return Object.entries(CAPABILITY_SCOPES)
-    .filter(([, scope]) => scopes.includes(scope))
-    .map(([capability]) => capability)
+    .filter(([capability, scope]) => capability !== "mail.organize" && scopes.includes(scope))
+    .map(([capability]) => capability as keyof typeof CAPABILITY_SCOPES)
     .toSorted();
+}
+
+function canonicalCapabilities(
+  value: unknown,
+  scopes: ReadonlyArray<string>,
+): ReadonlyArray<keyof typeof CAPABILITY_SCOPES> {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.some(
+      (capability) => typeof capability !== "string" || !CAPABILITY_NAMES.has(capability),
+    ) ||
+    new Set(value).size !== value.length
+  ) {
+    throw new Error("Stored Microsoft credential is invalid.");
+  }
+  const capabilities = value as ReadonlyArray<keyof typeof CAPABILITY_SCOPES>;
+  if (capabilities.some((capability) => !scopes.includes(CAPABILITY_SCOPES[capability]))) {
+    throw new Error("Stored Microsoft credential is invalid.");
+  }
+  return [...capabilities].toSorted();
 }
 
 function isoTimestamp(value: string): string {
@@ -653,9 +754,17 @@ function parseCredential(bytes: Uint8Array): Credential {
     throw new Error("Stored Microsoft credential is invalid.");
   }
   const value = asRecord(parsed);
+  const isLegacy = value.version === 1;
   if (
-    !exactKeys(value, new Set(["version", "refreshToken", "grantedScopes", "updatedAt"])) ||
-    value.version !== 1 ||
+    (value.version !== 1 && value.version !== 2) ||
+    !exactKeys(
+      value,
+      new Set(
+        isLegacy
+          ? ["version", "refreshToken", "grantedScopes", "updatedAt"]
+          : ["version", "refreshToken", "grantedScopes", "grantedCapabilities", "updatedAt"],
+      ),
+    ) ||
     !Array.isArray(value.grantedScopes) ||
     value.grantedScopes.length === 0 ||
     value.grantedScopes.some(
@@ -669,10 +778,14 @@ function parseCredential(bytes: Uint8Array): Credential {
     throw new Error("Stored Microsoft credential is invalid.");
   }
   const refreshToken = boundedString(value.refreshToken, MAX_TOKEN_CHARS);
+  const grantedScopes = [...value.grantedScopes].toSorted() as ReadonlyArray<string>;
   return {
-    version: 1,
+    version: 2,
     refreshToken,
-    grantedScopes: [...value.grantedScopes].toSorted() as ReadonlyArray<string>,
+    grantedScopes,
+    grantedCapabilities: isLegacy
+      ? legacyCapabilitiesFromScopes(grantedScopes)
+      : canonicalCapabilities(value.grantedCapabilities, grantedScopes),
     updatedAt: value.updatedAt,
   };
 }
@@ -1075,6 +1188,21 @@ function attachmentResult(value: Record<string, unknown>) {
   return boundedResult(metadata);
 }
 
+function mailFolderReceipt(value: Record<string, unknown>) {
+  return {
+    id: boundedString(value.id, 512),
+    displayName: boundedString(value.displayName, 255),
+    parentFolderId: boundedOptionalString(value.parentFolderId, 512),
+  };
+}
+
+function mailMoveReceipt(value: Record<string, unknown>) {
+  return {
+    id: boundedString(value.id, 512),
+    parentFolderId: boundedString(value.parentFolderId, 512),
+  };
+}
+
 function recipients(addresses: ReadonlyArray<string>) {
   return addresses.map((address) => ({ emailAddress: { address } }));
 }
@@ -1320,7 +1448,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
       return {
         state: "connected",
         accountLabel: null,
-        grantedCapabilities: capabilitiesFromScopes(credential.grantedScopes),
+        grantedCapabilities: credential.grantedCapabilities,
         message: "Connected with delegated access for the selected capabilities.",
       };
     } catch {
@@ -1357,13 +1485,14 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
       throw new Error("Microsoft credential changed while sign-in was starting.");
     }
     const credentialRevision = this.#credentialRevision;
-    const requestedScopes = [
+    const requestedCapabilities = [
       ...new Set([
-        ...(existing?.grantedScopes ?? []),
-        ...capabilities.map(
-          (capability) => CAPABILITY_SCOPES[capability as keyof typeof CAPABILITY_SCOPES],
-        ),
+        ...(existing?.grantedCapabilities ?? []),
+        ...(capabilities as ReadonlyArray<keyof typeof CAPABILITY_SCOPES>),
       ]),
+    ].toSorted();
+    const requestedScopes = [
+      ...new Set(requestedCapabilities.map((capability) => CAPABILITY_SCOPES[capability])),
     ].toSorted();
     const { response, json } = await this.#postForm(
       "devicecode",
@@ -1400,6 +1529,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
     this.#pending.set(flowId, {
       deviceCode,
       requestedScopes,
+      requestedCapabilities,
       expiresAt,
       intervalSeconds,
       generation,
@@ -1489,9 +1619,10 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
       const grantedScopes = canonicalScopes(json.scope, flow.requestedScopes);
       const expiresInSeconds = boundedInteger(json.expires_in, 60, 86_400);
       const credential: Credential = {
-        version: 1,
+        version: 2,
         refreshToken,
         grantedScopes,
+        grantedCapabilities: flow.requestedCapabilities,
         updatedAt: new Date().toISOString(),
       };
       await this.#serializeCredential(async () => {
@@ -1512,6 +1643,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
           value: accessToken,
           expiresAt: Date.now() + expiresInSeconds * 1_000,
           grantedScopes,
+          grantedCapabilities: flow.requestedCapabilities,
         };
       });
       this.#pending.delete(flowId);
@@ -1571,9 +1703,10 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         const expiresInSeconds = boundedInteger(json.expires_in, 60, 86_400);
         await this.#writeCredential(
           {
-            version: 1,
+            version: 2,
             [refreshValueField]: rotatedValue,
             grantedScopes,
+            grantedCapabilities: credential.grantedCapabilities,
             updatedAt: new Date().toISOString(),
           },
           commitSignal,
@@ -1583,6 +1716,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
           value: accessToken,
           expiresAt: Date.now() + expiresInSeconds * 1_000,
           grantedScopes,
+          grantedCapabilities: credential.grantedCapabilities,
         };
       } catch (error) {
         if (admitted) this.#uncertainCredentialState = true;
@@ -1627,7 +1761,7 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
   }
 
   #requireCapability(access: AccessToken, capability: keyof typeof CAPABILITY_SCOPES) {
-    if (!access.grantedScopes.includes(CAPABILITY_SCOPES[capability])) {
+    if (!access.grantedCapabilities.includes(capability)) {
       throw new IntegrationProviderPublicError(
         `Microsoft 365 ${capability} access is not granted.`,
       );
@@ -1706,6 +1840,70 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
     return context.beginCommit();
   }
 
+  async #assertMailFolderOutsideDeletionHierarchy(
+    folderId: string,
+    accessToken: string,
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const deletionFolderError = () =>
+      new IntegrationProviderPublicError(
+        "Microsoft 365 mail organization cannot use a deletion folder.",
+      );
+    const initialFolderId = folderId.trim();
+    if (DELETION_MOVE_DESTINATIONS.has(initialFolderId.toLowerCase())) {
+      throw deletionFolderError();
+    }
+
+    const deletionFolderIds = new Set<string>();
+    const selectId = new URLSearchParams({ $select: "id" });
+    for (const wellKnownName of DELETION_MOVE_DESTINATIONS) {
+      const folder = await this.#graph(
+        `/me/mailFolders/${wellKnownName}?${selectId.toString()}`,
+        accessToken,
+        { signal },
+      );
+      this.#assertInvocationCurrent(generation);
+      deletionFolderIds.add(boundedString(folder.id, 512));
+    }
+
+    const visitedFolderIds = new Set<string>();
+    const selectAncestry = new URLSearchParams({ $select: "id,parentFolderId" });
+    let currentFolderId = initialFolderId;
+    for (let depth = 0; depth < MAX_MAIL_FOLDER_ANCESTRY_DEPTH; depth += 1) {
+      if (deletionFolderIds.has(currentFolderId)) throw deletionFolderError();
+      if (visitedFolderIds.has(currentFolderId)) {
+        throw new IntegrationProviderPublicError(
+          "Microsoft 365 could not safely verify the mail folder hierarchy.",
+        );
+      }
+      visitedFolderIds.add(currentFolderId);
+
+      const folder = await this.#graph(
+        `/me/mailFolders/${encodeURIComponent(currentFolderId)}?${selectAncestry.toString()}`,
+        accessToken,
+        { signal },
+      );
+      this.#assertInvocationCurrent(generation);
+      const resolvedFolderId = boundedString(folder.id, 512);
+      if (deletionFolderIds.has(resolvedFolderId)) throw deletionFolderError();
+      if (resolvedFolderId !== currentFolderId) {
+        if (visitedFolderIds.has(resolvedFolderId)) {
+          throw new IntegrationProviderPublicError(
+            "Microsoft 365 could not safely verify the mail folder hierarchy.",
+          );
+        }
+        visitedFolderIds.add(resolvedFolderId);
+      }
+      if (folder.parentFolderId === null || folder.parentFolderId === undefined) return;
+      currentFolderId = boundedString(folder.parentFolderId, 512);
+    }
+
+    throw new IntegrationProviderPublicError(
+      "Microsoft 365 could not safely verify the mail folder hierarchy.",
+    );
+  }
+
   async invoke(
     toolName: string,
     input: unknown,
@@ -1759,6 +1957,82 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
       );
       this.#assertInvocationCurrent(generation);
       return mailGetResult(result);
+    }
+    if (toolName === "microsoft365.mail.folders.list") {
+      this.#requireCapability(access, "mail.read");
+      const values = await decodeMailFolderListInput(input, {
+        errors: "all",
+        onExcessProperty: "error",
+      });
+      const limit = values.limit ?? 50;
+      const basePath = values.parentFolderId
+        ? `/me/mailFolders/${encodeURIComponent(values.parentFolderId)}/childFolders`
+        : "/me/mailFolders";
+      const params = new URLSearchParams({
+        $top: String(limit),
+        $select:
+          "id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount,isHidden",
+        includeHiddenFolders: "true",
+      });
+      const result = await this.#graph(`${basePath}?${params.toString()}`, access.value, {
+        signal: context?.signal,
+      });
+      this.#assertInvocationCurrent(generation);
+      return collectionResult(result, limit);
+    }
+    if (toolName === "microsoft365.mail.folder.create") {
+      this.#requireCapability(access, "mail.organize");
+      const values = await decodeMailFolderCreateInput(input, {
+        errors: "all",
+        onExcessProperty: "error",
+      });
+      const basePath = values.parentFolderId
+        ? `/me/mailFolders/${encodeURIComponent(values.parentFolderId)}/childFolders`
+        : "/me/mailFolders";
+      const commitSignal = await this.#beginInvocationCommit(context);
+      this.#assertInvocationCurrent(generation);
+      if (values.parentFolderId) {
+        await this.#assertMailFolderOutsideDeletionHierarchy(
+          values.parentFolderId,
+          access.value,
+          generation,
+          commitSignal,
+        );
+      }
+      const result = await this.#graph(basePath, access.value, {
+        method: "POST",
+        body: { displayName: values.displayName.trim() },
+        signal: commitSignal,
+      });
+      this.#assertInvocationCurrent(generation);
+      return mailFolderReceipt(result);
+    }
+    if (toolName === "microsoft365.mail.message.move") {
+      this.#requireCapability(access, "mail.organize");
+      const values = await decodeMailMessageMoveInput(input, {
+        errors: "all",
+        onExcessProperty: "error",
+      });
+      const destinationFolderId = values.destinationFolderId.trim();
+      const commitSignal = await this.#beginInvocationCommit(context);
+      this.#assertInvocationCurrent(generation);
+      await this.#assertMailFolderOutsideDeletionHierarchy(
+        destinationFolderId,
+        access.value,
+        generation,
+        commitSignal,
+      );
+      const result = await this.#graph(
+        `/me/messages/${encodeURIComponent(values.messageId)}/move`,
+        access.value,
+        {
+          method: "POST",
+          body: { destinationId: destinationFolderId },
+          signal: commitSignal,
+        },
+      );
+      this.#assertInvocationCurrent(generation);
+      return mailMoveReceipt(result);
     }
     if (toolName === "microsoft365.mail.attachments.list") {
       this.#requireCapability(access, "mail.read");

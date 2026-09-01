@@ -29,6 +29,39 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly idempotent: true;
     readonly openWorld: true;
 }, {
+    readonly name: "microsoft365.mail.folders.list";
+    readonly description: "List bounded Microsoft 365 mail-folder resources from a fixed read-only endpoint.";
+    readonly input: Schema.Struct<{
+        readonly parentFolderId: Schema.optionalKey<Schema.String>;
+        readonly limit: Schema.optionalKey<Schema.Int>;
+    }>;
+    readonly readOnly: true;
+    readonly destructive: false;
+    readonly idempotent: true;
+    readonly openWorld: true;
+}, {
+    readonly name: "microsoft365.mail.folder.create";
+    readonly description: "Create one Microsoft 365 mail folder through a fixed endpoint.";
+    readonly input: Schema.Struct<{
+        readonly displayName: Schema.String;
+        readonly parentFolderId: Schema.optionalKey<Schema.String>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: false;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "microsoft365.mail.message.move";
+    readonly description: "Move one exact Microsoft 365 mail message to an exact folder or the well-known \"archive\" folder.";
+    readonly input: Schema.Struct<{
+        readonly messageId: Schema.String;
+        readonly destinationFolderId: Schema.String;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: true;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
     readonly name: "microsoft365.mail.draft.create";
     readonly description: "Create one unsent Microsoft 365 mail draft with a plain-text body and optional file attachments through a fixed endpoint.";
     readonly input: Schema.Struct<{
@@ -207,6 +240,39 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly readOnly: true;
         readonly destructive: false;
         readonly idempotent: true;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.mail.folders.list";
+        readonly description: "List bounded Microsoft 365 mail-folder resources from a fixed read-only endpoint.";
+        readonly input: Schema.Struct<{
+            readonly parentFolderId: Schema.optionalKey<Schema.String>;
+            readonly limit: Schema.optionalKey<Schema.Int>;
+        }>;
+        readonly readOnly: true;
+        readonly destructive: false;
+        readonly idempotent: true;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.mail.folder.create";
+        readonly description: "Create one Microsoft 365 mail folder through a fixed endpoint.";
+        readonly input: Schema.Struct<{
+            readonly displayName: Schema.String;
+            readonly parentFolderId: Schema.optionalKey<Schema.String>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: false;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.mail.message.move";
+        readonly description: "Move one exact Microsoft 365 mail message to an exact folder or the well-known \"archive\" folder.";
+        readonly input: Schema.Struct<{
+            readonly messageId: Schema.String;
+            readonly destinationFolderId: Schema.String;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: true;
+        readonly idempotent: false;
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.mail.draft.create";
