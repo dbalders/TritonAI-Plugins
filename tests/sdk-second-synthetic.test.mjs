@@ -55,6 +55,11 @@ test("second SDK plugin exercises API-key lifecycle and read-write commits", asy
     commits += 1;
     return signal;
   };
+  await assert.rejects(
+    provider.connect(["synthetic-api-key.read"], { signal, beginCommit }, null),
+    (error) => error?._tag === "PluginFailure" && error.code === "invalid_api_key",
+  );
+  assert.equal(commits, 0);
   await provider.connect(
     ["synthetic-api-key.read"],
     { signal, beginCommit },

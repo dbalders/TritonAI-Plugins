@@ -1,6 +1,7 @@
 const FLOW_ID = "synthetic-api-key";
 const CAPABILITIES = ["synthetic-api-key.read", "synthetic-api-key.write"];
 const CONNECTION_SECRET = "connection";
+const API_KEY_SUBMISSION_KEYS = new Set(["kind", "flowId", "value"]);
 
 function failure(code, message) {
   return Object.freeze({
@@ -92,6 +93,11 @@ export function createIntegrationProvider({ secrets }) {
         };
       }
       if (
+        submission === null ||
+        typeof submission !== "object" ||
+        Array.isArray(submission) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(submission)) ||
+        Object.keys(submission).some((key) => !API_KEY_SUBMISSION_KEYS.has(key)) ||
         submission.kind !== "api_key" ||
         submission.flowId !== FLOW_ID ||
         typeof submission.value !== "string" ||
