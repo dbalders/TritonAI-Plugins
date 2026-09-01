@@ -75,6 +75,9 @@ async function writeFixture(root, overrides = {}) {
         description: "Read fixture data.",
         capabilities: ["fixture.read"],
         effect: "read",
+        destructive: false,
+        idempotent: true,
+        openWorld: false,
         inputSchema: {
           $schema: "https://json-schema.org/draft/2020-12/schema",
           type: "object",

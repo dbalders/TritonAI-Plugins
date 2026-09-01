@@ -31,6 +31,9 @@ const TOOL_KEYS = new Set([
   "description",
   "capabilities",
   "effect",
+  "destructive",
+  "idempotent",
+  "openWorld",
   "inputSchema",
 ]);
 const SKILL_KEYS = new Set(["name", "description", "capabilities"]);
@@ -298,6 +301,12 @@ export function validateManifestV1(value) {
       tool.effect === "read" || tool.effect === "write",
       `Tool ${tool.name} effect is invalid.`,
     );
+    for (const annotation of ["destructive", "idempotent", "openWorld"]) {
+      assert(
+        typeof tool[annotation] === "boolean",
+        `Tool ${tool.name} ${annotation} annotation is required.`,
+      );
+    }
     assert(
       Array.isArray(tool.capabilities) &&
         tool.capabilities.length > 0 &&

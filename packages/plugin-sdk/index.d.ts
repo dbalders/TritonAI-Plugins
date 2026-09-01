@@ -27,6 +27,9 @@ export interface PluginTool {
   readonly description: string;
   readonly capabilities: readonly string[];
   readonly effect: "read" | "write";
+  readonly destructive: boolean;
+  readonly idempotent: boolean;
+  readonly openWorld: boolean;
   readonly inputSchema: JsonSchema;
 }
 export interface PluginSkill {

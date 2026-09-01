@@ -12,6 +12,9 @@ package-scoped string secret store, structural errors, and provider lifecycle me
 major selects the ABI; `requiredHostContractLevel` is a monotonic feature floor. Harness versions
 are not part of compatibility.
 
+Tool declarations carry their executable input schema plus explicit destructive, idempotent, and
+open-world annotations; Harness never infers these safety properties from a plugin ID.
+
 Each plugin ships as one deterministic Node 24 ESM artifact. Third-party dependencies are bundled;
 remaining `node:` imports are explicit descriptor data. The canonical descriptor binds the
 manifest, entry, skills, configuration schema, tool schemas, runtime target, SDK requirement, and
