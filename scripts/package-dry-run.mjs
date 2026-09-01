@@ -100,7 +100,7 @@ if (pluginDirectories.length === 0) {
         for (const output of outputs) {
           await Fs.mkdir(Path.dirname(output), { recursive: true });
           await buildPluginArtifact(packageRoot, output);
-          await verifyPluginArtifact(output);
+          await verifyPluginArtifact(output, { hostNodeVersion: "24.13.1" });
         }
         const snapshots = await Promise.all(outputs.map(snapshotStaticFiles));
         assertStaticSourceUnchanged(directory, snapshots[0], snapshots[1]);
