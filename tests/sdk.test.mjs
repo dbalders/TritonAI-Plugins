@@ -265,6 +265,22 @@ test("SDK v1 validates strict data-only manifests and structural boundary errors
       }),
     /properties must be an object/u,
   );
+  assert.throws(
+    () =>
+      validateManifestV1({
+        ...value,
+        tools: [
+          {
+            ...value.tools[0],
+            inputSchema: {
+              ...value.tools[0].inputSchema,
+              properties: { topic: 1 },
+            },
+          },
+        ],
+      }),
+    /properties\.topic must be a schema/u,
+  );
   assert.deepEqual(externalCommitOutcomeUnknown(), {
     _tag: "ExternalCommitOutcomeUnknown",
     code: "external_commit_outcome_unknown",

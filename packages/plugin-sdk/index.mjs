@@ -158,24 +158,35 @@ function assertSchema(schema, label) {
   function visitSubschemas(current, path, visit) {
     for (const keyword of SCHEMA_VALUE_KEYWORDS) {
       const value = current[keyword];
-      if (plainObject(value) || typeof value === "boolean") visit(value, `${path}.${keyword}`);
+      if (value === undefined) continue;
+      assert(
+        plainObject(value) || typeof value === "boolean",
+        `${path}.${keyword} must be a schema.`,
+      );
+      visit(value, `${path}.${keyword}`);
     }
     for (const keyword of SCHEMA_ARRAY_KEYWORDS) {
       const values = current[keyword];
-      if (!Array.isArray(values)) continue;
+      if (values === undefined) continue;
+      assert(Array.isArray(values), `${path}.${keyword} must be a schema array.`);
       values.forEach((value, index) => {
-        if (plainObject(value) || typeof value === "boolean") {
-          visit(value, `${path}.${keyword}[${index}]`);
-        }
+        assert(
+          plainObject(value) || typeof value === "boolean",
+          `${path}.${keyword}[${index}] must be a schema.`,
+        );
+        visit(value, `${path}.${keyword}[${index}]`);
       });
     }
     for (const keyword of SCHEMA_MAP_KEYWORDS) {
       const values = current[keyword];
-      if (!plainObject(values)) continue;
+      if (values === undefined) continue;
+      assert(plainObject(values), `${path}.${keyword} must be a schema map.`);
       for (const [name, value] of Object.entries(values)) {
-        if (plainObject(value) || typeof value === "boolean") {
-          visit(value, `${path}.${keyword}.${name}`);
-        }
+        assert(
+          plainObject(value) || typeof value === "boolean",
+          `${path}.${keyword}.${name} must be a schema.`,
+        );
+        visit(value, `${path}.${keyword}.${name}`);
       }
     }
   }
