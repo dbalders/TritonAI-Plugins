@@ -116,6 +116,19 @@ test("SDK v1 validates strict data-only manifests and structural boundary errors
     await Fs.readFile(Path.join(conformancePlugin, ".tritonai-plugin", "plugin.json"), "utf8"),
   );
   assert.equal(validateManifestV1(value).tools[0].effect, "read");
+  assert.equal(
+    validateManifestV1({
+      ...value,
+      tools: [{ ...value.tools[0], name: "n8n.search_workflows" }],
+    }).tools[0].name,
+    "n8n.search_workflows",
+  );
+  for (const name of ["_private", "n8n..read", "n8n._read", "n8n.read_"]) {
+    assert.throws(
+      () => validateManifestV1({ ...value, tools: [{ ...value.tools[0], name }] }),
+      /tool name is invalid/iu,
+    );
+  }
   assert.throws(() => validateManifestV1({ ...value, extra: true }), /unsupported fields/u);
   assert.throws(
     () =>
