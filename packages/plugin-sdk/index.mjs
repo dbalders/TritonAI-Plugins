@@ -5,6 +5,7 @@ export const SDK_API_MAJOR = 1;
 export const HOST_CONTRACT_LEVEL = 1;
 
 const ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u;
+const TOOL_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/u;
 const VERSION =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const MANIFEST_KEYS = new Set([
@@ -66,6 +67,10 @@ function nonEmpty(value, maximum = 512) {
 
 function stableId(value, maximum = 128) {
   return nonEmpty(value, maximum) && ID.test(value);
+}
+
+function stableToolId(value) {
+  return nonEmpty(value, 128) && TOOL_ID.test(value);
 }
 
 function assertJson(value, path = "$", depth = 0, budget = { nodes: 0 }) {
@@ -294,7 +299,7 @@ export function validateManifestV1(value) {
   const tools = new Set();
   for (const tool of value.tools) {
     assert(plainObject(tool) && exactKeys(tool, TOOL_KEYS), "Tool contains unsupported fields.");
-    assert(stableId(tool.name), "Tool name is invalid.");
+    assert(stableToolId(tool.name), "Tool name is invalid.");
     assert(nonEmpty(tool.displayName, 128), `Tool ${tool.name} displayName is required.`);
     assert(nonEmpty(tool.description, 1_024), `Tool ${tool.name} description is required.`);
     assert(
