@@ -343,3 +343,15 @@ test("path and size guards reject adversarial inventories", async (t) => {
   await Fs.writeFile(Path.join(root, "oversized.bin"), Buffer.alloc(ARTIFACT_LIMITS.fileBytes + 1));
   await assert.rejects(() => buildPluginArtifact(root, `${root}-artifact`), /size limit/u);
 });
+
+test("artifact construction ignores the workspace dependency directory", async (t) => {
+  const temporary = await temporaryDirectory(t);
+  const source = Path.join(temporary, "source");
+  await writeFixture(source);
+  await Fs.mkdir(Path.join(source, "node_modules", "dev-only"), { recursive: true });
+  await Fs.writeFile(Path.join(source, "node_modules", "dev-only", "index.js"), "throw 1;\n");
+  const output = Path.join(temporary, "artifact");
+  await buildPluginArtifact(source, output);
+  const snapshot = await artifactSnapshot(output);
+  assert(![...snapshot.keys()].some((path) => path.includes("node_modules")));
+});
