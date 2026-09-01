@@ -33,6 +33,7 @@ const TEAMS_WEB_HOSTS = new Set(["teams.cloud.microsoft", "teams.microsoft.com"]
 const OFFLINE_SCOPE = "offline_access";
 const OIDC_RESPONSE_SCOPES = new Set(["openid", "profile", "email"]);
 const DELETION_MOVE_DESTINATIONS = new Set(["deleteditems", "recoverableitemsdeletions"]);
+const MAX_MAIL_FOLDER_ANCESTRY_DEPTH = 64;
 const REFRESH_TOKEN_FIELD = ["refresh", "token"].join("_");
 const refreshValueField = ["refresh", "Token"].join("") as "refreshToken";
 const CAPABILITY_SCOPES = {
@@ -1839,6 +1840,70 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
     return context.beginCommit();
   }
 
+  async #assertMailFolderOutsideDeletionHierarchy(
+    folderId: string,
+    accessToken: string,
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const deletionFolderError = () =>
+      new IntegrationProviderPublicError(
+        "Microsoft 365 mail organization cannot use a deletion folder.",
+      );
+    const initialFolderId = folderId.trim();
+    if (DELETION_MOVE_DESTINATIONS.has(initialFolderId.toLowerCase())) {
+      throw deletionFolderError();
+    }
+
+    const deletionFolderIds = new Set<string>();
+    const selectId = new URLSearchParams({ $select: "id" });
+    for (const wellKnownName of DELETION_MOVE_DESTINATIONS) {
+      const folder = await this.#graph(
+        `/me/mailFolders/${wellKnownName}?${selectId.toString()}`,
+        accessToken,
+        { signal },
+      );
+      this.#assertInvocationCurrent(generation);
+      deletionFolderIds.add(boundedString(folder.id, 512));
+    }
+
+    const visitedFolderIds = new Set<string>();
+    const selectAncestry = new URLSearchParams({ $select: "id,parentFolderId" });
+    let currentFolderId = initialFolderId;
+    for (let depth = 0; depth < MAX_MAIL_FOLDER_ANCESTRY_DEPTH; depth += 1) {
+      if (deletionFolderIds.has(currentFolderId)) throw deletionFolderError();
+      if (visitedFolderIds.has(currentFolderId)) {
+        throw new IntegrationProviderPublicError(
+          "Microsoft 365 could not safely verify the mail folder hierarchy.",
+        );
+      }
+      visitedFolderIds.add(currentFolderId);
+
+      const folder = await this.#graph(
+        `/me/mailFolders/${encodeURIComponent(currentFolderId)}?${selectAncestry.toString()}`,
+        accessToken,
+        { signal },
+      );
+      this.#assertInvocationCurrent(generation);
+      const resolvedFolderId = boundedString(folder.id, 512);
+      if (deletionFolderIds.has(resolvedFolderId)) throw deletionFolderError();
+      if (resolvedFolderId !== currentFolderId) {
+        if (visitedFolderIds.has(resolvedFolderId)) {
+          throw new IntegrationProviderPublicError(
+            "Microsoft 365 could not safely verify the mail folder hierarchy.",
+          );
+        }
+        visitedFolderIds.add(resolvedFolderId);
+      }
+      if (folder.parentFolderId === null || folder.parentFolderId === undefined) return;
+      currentFolderId = boundedString(folder.parentFolderId, 512);
+    }
+
+    throw new IntegrationProviderPublicError(
+      "Microsoft 365 could not safely verify the mail folder hierarchy.",
+    );
+  }
+
   async invoke(
     toolName: string,
     input: unknown,
@@ -1926,6 +1991,14 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         : "/me/mailFolders";
       const commitSignal = await this.#beginInvocationCommit(context);
       this.#assertInvocationCurrent(generation);
+      if (values.parentFolderId) {
+        await this.#assertMailFolderOutsideDeletionHierarchy(
+          values.parentFolderId,
+          access.value,
+          generation,
+          commitSignal,
+        );
+      }
       const result = await this.#graph(basePath, access.value, {
         method: "POST",
         body: { displayName: values.displayName.trim() },
@@ -1941,29 +2014,14 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         onExcessProperty: "error",
       });
       const destinationFolderId = values.destinationFolderId.trim();
-      if (DELETION_MOVE_DESTINATIONS.has(destinationFolderId.toLowerCase())) {
-        throw new IntegrationProviderPublicError(
-          "Microsoft 365 mail organization cannot move messages into a deletion folder.",
-        );
-      }
       const commitSignal = await this.#beginInvocationCommit(context);
       this.#assertInvocationCurrent(generation);
-      const deletionFolderIds = new Set<string>();
-      const selectId = new URLSearchParams({ $select: "id" });
-      for (const wellKnownName of DELETION_MOVE_DESTINATIONS) {
-        const folder = await this.#graph(
-          `/me/mailFolders/${wellKnownName}?${selectId.toString()}`,
-          access.value,
-          { signal: commitSignal },
-        );
-        this.#assertInvocationCurrent(generation);
-        deletionFolderIds.add(boundedString(folder.id, 512));
-      }
-      if (deletionFolderIds.has(destinationFolderId)) {
-        throw new IntegrationProviderPublicError(
-          "Microsoft 365 mail organization cannot move messages into a deletion folder.",
-        );
-      }
+      await this.#assertMailFolderOutsideDeletionHierarchy(
+        destinationFolderId,
+        access.value,
+        generation,
+        commitSignal,
+      );
       const result = await this.#graph(
         `/me/messages/${encodeURIComponent(values.messageId)}/move`,
         access.value,

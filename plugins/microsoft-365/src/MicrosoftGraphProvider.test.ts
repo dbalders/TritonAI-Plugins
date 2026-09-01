@@ -1707,6 +1707,12 @@ describe("MicrosoftGraphProvider tools", () => {
       if (url.includes("/mailFolders/recoverableitemsdeletions?")) {
         return jsonResponse({ id: "recoverable-items-deletions-folder-id" });
       }
+      if (url.includes("/mailFolders/parent%2Fid%3Ffixture?")) {
+        return jsonResponse({ id: "parent/id?fixture", parentFolderId: null });
+      }
+      if (url.includes("/mailFolders/archive?")) {
+        return jsonResponse({ id: "opaque-archive-id", parentFolderId: null });
+      }
       if (init?.method !== "POST") {
         return jsonResponse({
           value: [{ id: "folder/id?fixture", displayName: "Receipts", totalItemCount: 4 }],
@@ -1789,18 +1795,30 @@ describe("MicrosoftGraphProvider tools", () => {
     expect(graphCalls[2]?.url).toBe("https://graph.microsoft.com/v1.0/me/mailFolders");
     expect(JSON.parse(String(graphCalls[2]?.init?.body))).toEqual({ displayName: "Receipts" });
     expect(graphCalls[3]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture/childFolders",
-    );
-    expect(graphCalls[4]?.url).toBe(
       "https://graph.microsoft.com/v1.0/me/mailFolders/deleteditems?%24select=id",
     );
-    expect(graphCalls[5]?.url).toBe(
+    expect(graphCalls[4]?.url).toBe(
       "https://graph.microsoft.com/v1.0/me/mailFolders/recoverableitemsdeletions?%24select=id",
     );
+    expect(graphCalls[5]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture?%24select=id%2CparentFolderId",
+    );
     expect(graphCalls[6]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture/childFolders",
+    );
+    expect(graphCalls[7]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/deleteditems?%24select=id",
+    );
+    expect(graphCalls[8]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/recoverableitemsdeletions?%24select=id",
+    );
+    expect(graphCalls[9]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/archive?%24select=id%2CparentFolderId",
+    );
+    expect(graphCalls[10]?.url).toBe(
       "https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture/move",
     );
-    expect(JSON.parse(String(graphCalls[6]?.init?.body))).toEqual({ destinationId: "archive" });
+    expect(JSON.parse(String(graphCalls[10]?.init?.body))).toEqual({ destinationId: "archive" });
   });
 
   it("rejects opaque deletion-folder IDs before moving a message", async () => {
@@ -1833,6 +1851,54 @@ describe("MicrosoftGraphProvider tools", () => {
         ),
       ).rejects.toThrow(/deletion folder/u);
     }
+
+    expect(graphCalls.filter(({ init }) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("rejects deletion-folder descendants for folder creation and message moves", async () => {
+    const secrets = memorySecrets();
+    const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) {
+        return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      }
+      graphCalls.push({ url, init });
+      if (url.includes("/mailFolders/deleteditems?")) {
+        return jsonResponse({ id: "opaque-deleted-items-id" });
+      }
+      if (url.includes("/mailFolders/recoverableitemsdeletions?")) {
+        return jsonResponse({ id: "opaque-recoverable-items-id" });
+      }
+      if (url.includes("/mailFolders/child-folder?")) {
+        return jsonResponse({ id: "child-folder", parentFolderId: "nested-folder" });
+      }
+      if (url.includes("/mailFolders/nested-folder?")) {
+        return jsonResponse({
+          id: "nested-folder",
+          parentFolderId: "opaque-deleted-items-id",
+        });
+      }
+      return jsonResponse({ id: "unexpected-write" }, 201);
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.organize"]);
+
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.folder.create",
+        { displayName: "Unsafe", parentFolderId: "child-folder" },
+        invocation(),
+      ),
+    ).rejects.toThrow(/deletion folder/u);
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.message.move",
+        { messageId: "message-1", destinationFolderId: "child-folder" },
+        invocation(),
+      ),
+    ).rejects.toThrow(/deletion folder/u);
 
     expect(graphCalls.filter(({ init }) => init?.method === "POST")).toHaveLength(0);
   });
