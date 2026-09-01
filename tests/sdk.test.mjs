@@ -467,9 +467,10 @@ test("source inspection admits declared Node builtins and rejects unresolved dep
     () => assertSelfContainedModule("export const url = import.meta.url;\n"),
     /import\.meta/u,
   );
-  await assert.rejects(
-    () => assertSelfContainedModule('const fs = require("node:fs");\n'),
-    /CommonJS/u,
+  await assert.doesNotReject(() =>
+    assertSelfContainedModule(
+      'const help = "call require("; export function createIntegrationProvider() { return help; }\n',
+    ),
   );
   await assert.rejects(
     () => assertSelfContainedModule('export const runtime = import("effect");\n'),

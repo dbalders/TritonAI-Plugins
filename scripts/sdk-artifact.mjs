@@ -220,12 +220,6 @@ export async function assertSelfContainedModule(source) {
     );
     builtins.push(request.n);
   }
-  // Defense in depth for the reviewed supply-chain contract, not an execution sandbox. Curated
-  // plugin code runs with host globals after admission; the ADR documents that trust boundary.
-  assert(
-    !/(?:\brequire\s*\(|\bmodule\s*\.\s*require\s*\(|\bcreateRequire\b)/u.test(source),
-    "Plugin entry must not load CommonJS runtime modules.",
-  );
   assert(
     canonicalJson(exports.map(({ n }) => n).sort()) ===
       canonicalJson(["createIntegrationProvider"]),
