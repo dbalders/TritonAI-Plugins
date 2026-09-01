@@ -49,6 +49,8 @@ importers:
 
   plugins/kuali-build: {}
 
+  plugins/jira-data-center: {}
+
   plugins/microsoft-365:
     devDependencies:
       effect:

@@ -1,4 +1,5 @@
 # This manifest uses the SDK's canonical JSON encoding for byte-stable sealing.
 plugins/synthetic-readonly/.tritonai-plugin/plugin.json
 plugins/kuali-build/.tritonai-plugin/plugin.json
+plugins/jira-data-center/.tritonai-plugin/plugin.json
 artifacts/
