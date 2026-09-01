@@ -47,6 +47,8 @@ importers:
         specifier: 4.0.0-beta.103
         version: 4.0.0-beta.103
 
+  plugins/kuali-build: {}
+
   plugins/microsoft-365:
     devDependencies:
       effect:
