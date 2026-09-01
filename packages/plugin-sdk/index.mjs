@@ -7,7 +7,7 @@ export const HOST_CONTRACT_LEVEL = 1;
 const ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u;
 const TOOL_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/u;
 const VERSION =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const MANIFEST_KEYS = new Set([
   "apiVersion",
   "kind",

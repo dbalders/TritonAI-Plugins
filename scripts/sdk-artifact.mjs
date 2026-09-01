@@ -359,6 +359,16 @@ export async function buildPluginArtifact(sourceRoot, outputRoot) {
   }
   const nodeBuiltins = await assertPayloadInvariants(manifest, payloads);
   const descriptor = descriptorFor(manifest, payloads, nodeBuiltins);
+  const descriptorBytes = canonicalBytes(descriptor);
+  assert(
+    descriptorBytes.length <= ARTIFACT_LIMITS.manifestBytes,
+    "Artifact descriptor exceeds its size limit.",
+  );
+  assert(
+    [...payloads.values()].reduce((total, bytes) => total + bytes.length, descriptorBytes.length) <=
+      ARTIFACT_LIMITS.totalBytes,
+    "Generated artifact exceeds its total size limit.",
+  );
 
   const temporary = await Fs.mkdtemp(`${output}.building-`);
   try {
@@ -367,7 +377,7 @@ export async function buildPluginArtifact(sourceRoot, outputRoot) {
       await Fs.mkdir(Path.dirname(target), { recursive: true });
       await Fs.writeFile(target, bytes, { flag: "wx", mode: 0o644 });
     }
-    await Fs.writeFile(Path.join(temporary, ARTIFACT_PATH), canonicalBytes(descriptor), {
+    await Fs.writeFile(Path.join(temporary, ARTIFACT_PATH), descriptorBytes, {
       flag: "wx",
       mode: 0o644,
     });

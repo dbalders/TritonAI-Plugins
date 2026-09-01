@@ -167,6 +167,10 @@ test("SDK v1 validates strict data-only manifests and structural boundary errors
     );
   }
   assert.throws(() => validateManifestV1({ ...value, extra: true }), /unsupported fields/u);
+  assert.equal(validateManifestV1({ ...value, version: "1.0.0-alpha.1" }).version, "1.0.0-alpha.1");
+  for (const version of ["1.0.0-01", "1.0.0-alpha.01"]) {
+    assert.throws(() => validateManifestV1({ ...value, version }), /version must be semver/u);
+  }
   assert.throws(
     () =>
       validateManifestV1({
@@ -532,6 +536,49 @@ test("path and size guards reject adversarial inventories", async (t) => {
     await Fs.mkdir(deepest);
   }
   await assert.rejects(() => buildPluginArtifact(deepRoot, `${deepRoot}-artifact`), /depth limit/u);
+
+  const totalRoot = Path.join(await temporaryDirectory(t), "total");
+  await writeFixture(totalRoot, {
+    manifest: {
+      skills: [
+        {
+          name: "fixture-reader",
+          description: "Read deterministic fixture records.",
+          capabilities: ["fixture.read"],
+        },
+      ],
+    },
+  });
+  const skillRoot = Path.join(totalRoot, "skills", "fixture-reader");
+  await Fs.mkdir(skillRoot, { recursive: true });
+  await Fs.writeFile(
+    Path.join(skillRoot, "SKILL.md"),
+    "---\nname: fixture-reader\ndescription: Read deterministic fixture records.\n---\n",
+  );
+  await Promise.all(
+    Array.from({ length: 100 }, (_, index) =>
+      Fs.writeFile(Path.join(skillRoot, `empty-${index}.txt`), ""),
+    ),
+  );
+  const paddingPaths = Array.from({ length: 4 }, (_, index) =>
+    Path.join(skillRoot, `padding-${index}.bin`),
+  );
+  await Promise.all(paddingPaths.map((path) => Fs.writeFile(path, "")));
+  const sourceBytes = [...(await artifactSnapshot(totalRoot)).values()].reduce(
+    (total, bytes) => total + bytes.length,
+    0,
+  );
+  let remaining = ARTIFACT_LIMITS.totalBytes - sourceBytes;
+  for (const path of paddingPaths) {
+    const size = Math.min(ARTIFACT_LIMITS.fileBytes, remaining);
+    await Fs.writeFile(path, Buffer.alloc(size));
+    remaining -= size;
+  }
+  assert.equal(remaining, 0);
+  await assert.rejects(
+    () => buildPluginArtifact(totalRoot, `${totalRoot}-artifact`),
+    /Generated artifact exceeds its total size limit/u,
+  );
 });
 
 test("artifact construction ignores the workspace dependency directory", async (t) => {
