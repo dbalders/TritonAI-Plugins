@@ -351,6 +351,15 @@ test("sealed artifact output is byte-for-byte deterministic and executable", asy
       { id: "alpha-2", topic: "alpha" },
     ],
   });
+  await assert.rejects(
+    () =>
+      provider.invoke(
+        "synthetic.records.list",
+        { topic: "alpha", limit: null },
+        { signal: AbortSignal.timeout(5_000), writeApproved: false, beginCommit },
+      ),
+    (error) => error?.code === "invalid_input" && /limit must be an integer/u.test(error.message),
+  );
 });
 
 test("module namespaces are isolated by the complete artifact descriptor", async (t) => {

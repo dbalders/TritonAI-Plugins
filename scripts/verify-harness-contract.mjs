@@ -122,6 +122,11 @@ for (const directory of await discoverPluginDirectories(pluginsRoot)) {
   const packageJson = JSON.parse(await Fs.readFile(Path.join(packageRoot, "package.json"), "utf8"));
   if (manifest.apiVersion === "tritonai.plugin/v1") {
     const artifactRoot = Path.resolve(pluginsRoot, "..", "artifacts", directory);
+    const artifactStatus = await Fs.lstat(artifactRoot);
+    assert(
+      artifactStatus.isDirectory() && !artifactStatus.isSymbolicLink(),
+      `${directory}: SDK artifact root must be a real directory.`,
+    );
     const files = [];
     async function collect(current, relative = "") {
       for (const entry of await Fs.readdir(current, { withFileTypes: true })) {
