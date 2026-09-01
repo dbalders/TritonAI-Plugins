@@ -6,7 +6,8 @@
 2. Confirm the framework still supports a repository with zero plugins.
 3. Confirm no marketplace, runtime-install, or unconsumed catalog semantics were added.
 4. Run `pnpm install --frozen-lockfile --ignore-scripts` in a clean dependency state.
-5. Run `pnpm readiness`.
+5. Run `pnpm artifacts:sdk`, review the sealed artifact diff, then run `pnpm readiness` and confirm
+   the artifact check leaves the worktree unchanged.
 6. Run `pnpm readiness:local` with a trusted, exact clean Harness worktree and its matching full
    commit SHA; confirm the installed server runtime matches its catalog, lockfile, patch, and pnpm
    realpath identity.
@@ -18,8 +19,9 @@
 1. Confirm the manifest, package version, API/manifest contract, capabilities, skills, provider ID,
    and exact tool sets agree.
 2. Confirm each authorization boundary has its own plugin and credential namespace.
-3. Verify the package contains only declared documentation, manifest, skills, and reviewed compiled
-   output; source and tests must not ship, and `prepack` must not change the compiled bytes.
+3. Verify Harness v2 packages contain only declared documentation, manifest, skills, and reviewed
+   compiled output. For SDK v1, verify `artifacts/<plugin-id>/` contains only the canonical
+   descriptor and its exact declared payload inventory.
 4. Run all provider tests plus deterministic package dry-runs.
 5. Run the package's `contract:harness` proof for the exact `manifest`, synchronous
    `createIntegrationProvider` factory, provider export, exact tool set, and secret-store facade

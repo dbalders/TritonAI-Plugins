@@ -17,6 +17,7 @@ import { discoverPluginDirectories } from "./plugin-directories.mjs";
 
 const root = Path.resolve(import.meta.dirname, "..");
 const pluginsRoot = Path.join(root, "plugins");
+const artifactsRoot = Path.join(root, "artifacts");
 const pluginDirectories = await discoverPluginDirectories(pluginsRoot);
 
 function run(command, args, cwd = root) {
@@ -103,6 +104,11 @@ if (pluginDirectories.length === 0) {
         }
         const snapshots = await Promise.all(outputs.map(snapshotStaticFiles));
         assertStaticSourceUnchanged(directory, snapshots[0], snapshots[1]);
+        assertStaticSourceUnchanged(
+          directory,
+          snapshots[0],
+          await snapshotStaticFiles(Path.join(artifactsRoot, directory)),
+        );
         assertStaticSourceUnchanged(
           directory,
           reviewedPackages.get(directory),
