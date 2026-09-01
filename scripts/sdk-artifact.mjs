@@ -203,6 +203,8 @@ export async function assertSelfContainedModule(source) {
     );
     builtins.push(request.n);
   }
+  // Defense in depth for the reviewed supply-chain contract, not an execution sandbox. Curated
+  // plugin code runs with host globals after admission; the ADR documents that trust boundary.
   assert(
     !/(?:\brequire\s*\(|\bmodule\s*\.\s*require\s*\(|\bcreateRequire\b)/u.test(source),
     "Plugin entry must not load CommonJS runtime modules.",
@@ -254,6 +256,39 @@ function descriptorFor(manifest, payloads, nodeBuiltins) {
   };
 }
 
+async function assertPayloadInvariants(manifest, payloads) {
+  const entryBytes = payloads.get(ENTRY_PATH);
+  assert(entryBytes, "Plugin entry payload is missing.");
+  assert(entryBytes.length <= ARTIFACT_LIMITS.entryBytes, "Plugin entry exceeds its size limit.");
+  const entrySource = entryBytes.toString("utf8");
+  assert(Buffer.from(entrySource, "utf8").equals(entryBytes), "Plugin entry must be valid UTF-8.");
+  const nodeBuiltins = await assertSelfContainedModule(entrySource);
+
+  const declaredSkills = new Set(manifest.skills.map((skill) => skill.name));
+  for (const path of payloads.keys()) {
+    if (path === MANIFEST_PATH || path === ENTRY_PATH) continue;
+    const [root, skill] = path.split("/");
+    assert(
+      root === "skills" && skill !== undefined && declaredSkills.has(skill),
+      `Plugin contains an undeclared payload: ${path}`,
+    );
+  }
+  for (const skill of manifest.skills) {
+    const path = `skills/${skill.name}/SKILL.md`;
+    const bytes = payloads.get(path);
+    assert(bytes, `Plugin skill entrypoint is missing: ${path}`);
+    const content = bytes.toString("utf8");
+    assert(Buffer.from(content, "utf8").equals(bytes), `Plugin skill must be UTF-8: ${path}`);
+    const frontmatter = parseSkillFrontmatter(content);
+    assert(frontmatter.name === skill.name, `Plugin skill name does not match: ${path}`);
+    assert(
+      frontmatter.description === skill.description,
+      `Plugin skill description does not match: ${path}`,
+    );
+  }
+  return nodeBuiltins;
+}
+
 export async function buildPluginArtifact(sourceRoot, outputRoot) {
   const source = Path.resolve(sourceRoot);
   const output = Path.resolve(outputRoot);
@@ -290,10 +325,6 @@ export async function buildPluginArtifact(sourceRoot, outputRoot) {
   );
 
   const entryBytes = await Fs.readFile(Path.join(source, manifest.entry));
-  assert(entryBytes.length <= ARTIFACT_LIMITS.entryBytes, "Plugin entry exceeds its size limit.");
-  const entrySource = entryBytes.toString("utf8");
-  assert(Buffer.from(entrySource, "utf8").equals(entryBytes), "Plugin entry must be valid UTF-8.");
-  const nodeBuiltins = await assertSelfContainedModule(entrySource);
   const declaredSkills = new Set(manifest.skills.map((skill) => skill.name));
   const payloads = new Map([
     [MANIFEST_PATH, manifestDocument.bytes],
@@ -304,19 +335,7 @@ export async function buildPluginArtifact(sourceRoot, outputRoot) {
     assert(declaredSkills.has(skill), `Plugin contains undeclared skill files: ${path}`);
     payloads.set(path, await Fs.readFile(Path.join(source, path)));
   }
-  for (const skill of manifest.skills) {
-    const path = `skills/${skill.name}/SKILL.md`;
-    const bytes = payloads.get(path);
-    assert(bytes, `Plugin skill entrypoint is missing: ${path}`);
-    const content = bytes.toString("utf8");
-    assert(Buffer.from(content, "utf8").equals(bytes), `Plugin skill must be UTF-8: ${path}`);
-    const frontmatter = parseSkillFrontmatter(content);
-    assert(frontmatter.name === skill.name, `Plugin skill name does not match: ${path}`);
-    assert(
-      frontmatter.description === skill.description,
-      `Plugin skill description does not match: ${path}`,
-    );
-  }
+  const nodeBuiltins = await assertPayloadInvariants(manifest, payloads);
   const descriptor = descriptorFor(manifest, payloads, nodeBuiltins);
 
   const temporary = await Fs.mkdtemp(`${output}.building-`);
@@ -482,20 +501,23 @@ export async function verifyPluginArtifact(
       descriptor.sdk.requiredHostContractLevel === manifest.sdk.requiredHostContractLevel,
     "Artifact sdk contract does not match its manifest.",
   );
-  const nodeBuiltins = await assertSelfContainedModule(entryBytes.toString("utf8"));
+  const nodeBuiltins = await assertPayloadInvariants(manifest, payloads);
   const expectedDescriptor = descriptorFor(manifest, payloads, nodeBuiltins);
   assert(
     canonicalJson(descriptor) === canonicalJson(expectedDescriptor),
     "Artifact descriptor does not match its verified payloads.",
   );
-  return { descriptor, manifest, entryBytes };
+  return {
+    descriptor,
+    descriptorSha256: digest(descriptorDocument.bytes),
+    manifest,
+    entryBytes,
+  };
 }
 
 export async function loadPluginArtifact(artifactRoot, compatibility) {
   const verified = await verifyPluginArtifact(artifactRoot, compatibility);
-  const entry = verified.descriptor.files.find((file) => file.path === ENTRY_PATH);
-  assert(entry, "Artifact entry is not listed.");
-  const url = `data:text/javascript;base64,${verified.entryBytes.toString("base64")}#sha256=${entry.sha256}`;
+  const url = `data:text/javascript;base64,${verified.entryBytes.toString("base64")}#artifact-sha256=${verified.descriptorSha256}`;
   const module = await import(url);
   assert(
     Object.keys(module).length === 1 && typeof module.createIntegrationProvider === "function",
