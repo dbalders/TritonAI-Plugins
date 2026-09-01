@@ -473,4 +473,12 @@ test("artifact construction ignores the workspace dependency directory", async (
   await buildPluginArtifact(source, output);
   const snapshot = await artifactSnapshot(output);
   assert(![...snapshot.keys()].some((path) => path.includes("node_modules")));
+
+  const injected = Path.join(output, "node_modules", "rogue", "index.mjs");
+  await Fs.mkdir(Path.dirname(injected), { recursive: true });
+  await Fs.writeFile(injected, "throw new Error('unsealed');\n");
+  await assert.rejects(
+    () => verifyPluginArtifact(output),
+    /artifact contains forbidden dependencies/u,
+  );
 });
