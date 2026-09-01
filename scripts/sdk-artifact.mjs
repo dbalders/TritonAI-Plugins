@@ -102,7 +102,7 @@ export function assertSafeRelativePaths(paths) {
   }
 }
 
-async function scanRegularTree(root) {
+async function scanRegularTree(root, { ignoreNodeModules = false } = {}) {
   const files = [];
   let totalBytes = 0;
   async function walk(directory) {
@@ -110,7 +110,10 @@ async function scanRegularTree(root) {
     for (const entry of entries) {
       const absolute = Path.join(directory, entry.name);
       const relative = posixRelative(root, absolute);
-      if (entry.name === "node_modules" && entry.isDirectory()) continue;
+      if (entry.name === "node_modules" && entry.isDirectory()) {
+        assert(ignoreNodeModules, `Plugin artifact contains forbidden dependencies: ${relative}`);
+        continue;
+      }
       assert(!entry.isSymbolicLink(), `Symlinks are forbidden in plugin source: ${relative}`);
       if (entry.isDirectory()) {
         await walk(absolute);
@@ -301,7 +304,7 @@ export async function buildPluginArtifact(sourceRoot, outputRoot) {
     sourceStatus.isDirectory() && !sourceStatus.isSymbolicLink(),
     "Plugin source must be a real directory.",
   );
-  const files = await scanRegularTree(source);
+  const files = await scanRegularTree(source, { ignoreNodeModules: true });
   assertNoNativeSources(files);
   assert(files.includes("package.json"), "Plugin source package.json is required.");
   assert(files.includes(MANIFEST_PATH), `Plugin source ${MANIFEST_PATH} is required.`);
