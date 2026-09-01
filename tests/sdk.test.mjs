@@ -15,13 +15,30 @@ import {
   assertSafeRelativePaths,
   assertSelfContainedModule,
   buildPluginArtifact,
-  instantiatePluginArtifact,
-  loadPluginArtifact,
   verifyPluginArtifact,
 } from "../scripts/sdk-artifact.mjs";
 
 const repository = Path.resolve(import.meta.dirname, "..");
 const conformancePlugin = Path.join(repository, "plugins", "synthetic-readonly");
+
+async function loadTestArtifact(artifactRoot, compatibility) {
+  const verified = await verifyPluginArtifact(artifactRoot, compatibility);
+  const url = `data:text/javascript;base64,${verified.entryBytes.toString("base64")}#artifact-sha256=${verified.descriptorSha256}`;
+  const module = await import(url);
+  assert.deepEqual(Object.keys(module), ["createIntegrationProvider"]);
+  assert.equal(typeof module.createIntegrationProvider, "function");
+  return { ...verified, createIntegrationProvider: module.createIntegrationProvider };
+}
+
+async function instantiateTestArtifact(artifactRoot, context, compatibility) {
+  const loaded = await loadTestArtifact(artifactRoot, compatibility);
+  const provider = loaded.createIntegrationProvider(context);
+  assert(provider && typeof provider === "object");
+  assert.equal(provider.id, loaded.manifest.provider);
+  assert.equal(typeof provider.status, "function");
+  assert.equal(typeof provider.invoke, "function");
+  return { ...loaded, provider };
+}
 
 async function artifactSnapshot(root) {
   const snapshot = new Map();
@@ -250,7 +267,7 @@ test("sealed artifact output is byte-for-byte deterministic and executable", asy
 
   const beginCommit = () =>
     Promise.reject(new Error("read-only plugin crossed the write boundary"));
-  const { provider, manifest } = await instantiatePluginArtifact(outputs[0], {
+  const { provider, manifest } = await instantiateTestArtifact(outputs[0], {
     configuration: {},
     secrets: {
       get: async () => null,
@@ -309,8 +326,8 @@ export function createIntegrationProvider() {
     configuration: {},
     secrets: { get: async () => null, set: async () => undefined, remove: async () => undefined },
   };
-  const first = await instantiatePluginArtifact(outputs[0], context);
-  const second = await instantiatePluginArtifact(outputs[1], context);
+  const first = await instantiateTestArtifact(outputs[0], context);
+  const second = await instantiateTestArtifact(outputs[1], context);
   const operation = { signal: new AbortController().signal };
 
   assert.equal((await first.provider.status(operation)).accountLabel, "1");
@@ -368,13 +385,30 @@ test("artifact compatibility and byte integrity fail before module import", asyn
   descriptor.sdk.apiMajor = 99;
   await Fs.writeFile(descriptorPath, `${canonicalJson(descriptor)}\n`);
   delete globalThis.__tritonaiSdkImported;
-  await assert.rejects(() => loadPluginArtifact(output), /API major/u);
+  await assert.rejects(() => loadTestArtifact(output), /API major/u);
   assert.equal(globalThis.__tritonaiSdkImported, undefined);
 
   descriptor.sdk.apiMajor = 1;
   await Fs.writeFile(descriptorPath, `${canonicalJson(descriptor)}\n`);
   await Fs.appendFile(Path.join(output, "plugin.mjs"), "// tampered\n");
-  await assert.rejects(() => loadPluginArtifact(output), /(size|digest) mismatch/u);
+  await assert.rejects(() => loadTestArtifact(output), /(size|digest) mismatch/u);
+  assert.equal(globalThis.__tritonaiSdkImported, undefined);
+});
+
+test("runtime compatibility fails before module import", async (t) => {
+  const temporary = await temporaryDirectory(t);
+  const source = Path.join(temporary, "source");
+  const output = Path.join(temporary, "artifact");
+  await writeFixture(source, {
+    entry:
+      "globalThis.__tritonaiSdkImported = true; export function createIntegrationProvider() { return {}; }\n",
+  });
+  await buildPluginArtifact(source, output);
+  delete globalThis.__tritonaiSdkImported;
+  await assert.rejects(
+    () => loadTestArtifact(output, { hostNodeVersion: "22.23.1" }),
+    /requires Node\.js/u,
+  );
   assert.equal(globalThis.__tritonaiSdkImported, undefined);
 });
 
@@ -394,7 +428,12 @@ test("host contract levels are monotonic", async (t) => {
 });
 
 test("source inspection admits declared Node builtins and rejects unresolved dependencies", async (t) => {
-  assert.deepEqual(await assertSelfContainedModule('import fs from "node:fs";\n'), ["node:fs"]);
+  assert.deepEqual(
+    await assertSelfContainedModule(
+      'import fs from "node:fs"; export function createIntegrationProvider() {}\n',
+    ),
+    ["node:fs"],
+  );
   await assert.rejects(
     () => assertSelfContainedModule("export const url = import.meta.url;\n"),
     /import\.meta/u,
@@ -410,6 +449,17 @@ test("source inspection admits declared Node builtins and rejects unresolved dep
   await assert.rejects(
     () => assertSelfContainedModule('export { x } from "./x.mjs";\n'),
     /unresolved/u,
+  );
+  await assert.rejects(
+    () =>
+      assertSelfContainedModule(
+        'import "node:not-a-real-module"; export function createIntegrationProvider() {}\n',
+      ),
+    /unresolved/u,
+  );
+  await assert.rejects(
+    () => assertSelfContainedModule("export const unrelated = true;\n"),
+    /export only createIntegrationProvider/u,
   );
 
   for (const [name, mutation, expected] of [
@@ -461,6 +511,27 @@ test("path and size guards reject adversarial inventories", async (t) => {
   await writeFixture(root);
   await Fs.writeFile(Path.join(root, "oversized.bin"), Buffer.alloc(ARTIFACT_LIMITS.fileBytes + 1));
   await assert.rejects(() => buildPluginArtifact(root, `${root}-artifact`), /size limit/u);
+
+  const wideRoot = Path.join(await temporaryDirectory(t), "wide");
+  await writeFixture(wideRoot);
+  await Promise.all(
+    Array.from({ length: ARTIFACT_LIMITS.directories }, (_, index) =>
+      Fs.mkdir(Path.join(wideRoot, `empty-${index}`)),
+    ),
+  );
+  await assert.rejects(
+    () => buildPluginArtifact(wideRoot, `${wideRoot}-artifact`),
+    /too many directories/u,
+  );
+
+  const deepRoot = Path.join(await temporaryDirectory(t), "deep");
+  await writeFixture(deepRoot);
+  let deepest = deepRoot;
+  for (let depth = 0; depth <= ARTIFACT_LIMITS.depth; depth += 1) {
+    deepest = Path.join(deepest, "nested");
+    await Fs.mkdir(deepest);
+  }
+  await assert.rejects(() => buildPluginArtifact(deepRoot, `${deepRoot}-artifact`), /depth limit/u);
 });
 
 test("artifact construction ignores the workspace dependency directory", async (t) => {

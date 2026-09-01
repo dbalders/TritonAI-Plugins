@@ -1,7 +1,9 @@
 import * as Crypto from "node:crypto";
 import * as Fs from "node:fs/promises";
+import { builtinModules } from "node:module";
 import * as Path from "node:path";
 import { init, parse } from "es-module-lexer";
+import { satisfies as satisfiesSemver } from "semver";
 
 import {
   HOST_CONTRACT_LEVEL,
@@ -14,6 +16,8 @@ import { parseSkillFrontmatter } from "./skill-frontmatter.mjs";
 export const ARTIFACT_FORMAT = "tritonai.plugin-artifact/v1";
 export const ARTIFACT_VERSION = 1;
 export const ARTIFACT_LIMITS = Object.freeze({
+  depth: 16,
+  directories: 128,
   files: 128,
   fileBytes: 1_048_576,
   entryBytes: 524_288,
@@ -24,6 +28,11 @@ export const ARTIFACT_LIMITS = Object.freeze({
 const MANIFEST_PATH = ".tritonai-plugin/plugin.json";
 const ARTIFACT_PATH = "artifact.json";
 const ENTRY_PATH = "plugin.mjs";
+const NODE_BUILTINS = new Set(
+  builtinModules.map((specifier) =>
+    specifier.startsWith("node:") ? specifier : `node:${specifier}`,
+  ),
+);
 const LIFECYCLE_SCRIPTS = new Set([
   "preinstall",
   "install",
@@ -104,8 +113,12 @@ export function assertSafeRelativePaths(paths) {
 
 async function scanRegularTree(root, { ignoreNodeModules = false } = {}) {
   const files = [];
+  let directories = 0;
   let totalBytes = 0;
-  async function walk(directory) {
+  async function walk(directory, depth) {
+    directories += 1;
+    assert(directories <= ARTIFACT_LIMITS.directories, "Plugin tree has too many directories.");
+    assert(depth <= ARTIFACT_LIMITS.depth, "Plugin tree exceeds its depth limit.");
     const entries = await Fs.readdir(directory, { withFileTypes: true });
     for (const entry of entries) {
       const absolute = Path.join(directory, entry.name);
@@ -116,10 +129,11 @@ async function scanRegularTree(root, { ignoreNodeModules = false } = {}) {
       }
       assert(!entry.isSymbolicLink(), `Symlinks are forbidden in plugin source: ${relative}`);
       if (entry.isDirectory()) {
-        await walk(absolute);
+        await walk(absolute, depth + 1);
         continue;
       }
       assert(entry.isFile(), `Special files are forbidden in plugin source: ${relative}`);
+      assert(files.length < ARTIFACT_LIMITS.files, "Plugin tree has too many files.");
       const stat = await Fs.lstat(absolute);
       assert(
         stat.isFile() && !stat.isSymbolicLink(),
@@ -137,7 +151,7 @@ async function scanRegularTree(root, { ignoreNodeModules = false } = {}) {
       files.push(relative);
     }
   }
-  await walk(root);
+  await walk(root, 0);
   files.sort();
   assertSafeRelativePaths(files);
   return files;
@@ -194,14 +208,14 @@ function assertSafePackageJson(value) {
 export async function assertSelfContainedModule(source) {
   assert(typeof source === "string", "Plugin entry must be UTF-8 source text.");
   await init;
-  const [imports] = parse(source);
+  const [imports, exports] = parse(source);
   const builtins = [];
   for (const request of imports) {
     assert(request.d !== -2, "Plugin entry cannot rely on import.meta from a data module.");
     assert(request.n !== undefined, "Plugin entry cannot compute a dynamic import specifier.");
     assert(request.d === -1, "Plugin entry cannot load modules dynamically.");
     assert(
-      request.n.startsWith("node:"),
+      request.n.startsWith("node:") && NODE_BUILTINS.has(request.n),
       `Plugin entry has an unresolved runtime dependency: ${request.n}`,
     );
     builtins.push(request.n);
@@ -211,6 +225,11 @@ export async function assertSelfContainedModule(source) {
   assert(
     !/(?:\brequire\s*\(|\bmodule\s*\.\s*require\s*\(|\bcreateRequire\b)/u.test(source),
     "Plugin entry must not load CommonJS runtime modules.",
+  );
+  assert(
+    canonicalJson(exports.map(({ n }) => n).sort()) ===
+      canonicalJson(["createIntegrationProvider"]),
+    "Plugin entry must export only createIntegrationProvider.",
   );
   return [...new Set(builtins)].sort();
 }
@@ -421,13 +440,18 @@ function assertDescriptorShape(value) {
 
 export async function verifyPluginArtifact(
   artifactRoot,
-  { sdkApiMajor = SDK_API_MAJOR, hostContractLevel = HOST_CONTRACT_LEVEL } = {},
+  {
+    sdkApiMajor = SDK_API_MAJOR,
+    hostContractLevel = HOST_CONTRACT_LEVEL,
+    hostNodeVersion = process.versions.node,
+  } = {},
 ) {
   assert(Number.isSafeInteger(sdkApiMajor) && sdkApiMajor > 0, "Host sdkApiMajor is invalid.");
   assert(
     Number.isSafeInteger(hostContractLevel) && hostContractLevel > 0,
     "Host contract level is invalid.",
   );
+  assert(typeof hostNodeVersion === "string", "Host Node.js version is invalid.");
   const root = Path.resolve(artifactRoot);
   const status = await Fs.lstat(root);
   assert(
@@ -444,6 +468,10 @@ export async function verifyPluginArtifact(
   );
   const descriptor = descriptorDocument.value;
   assertDescriptorShape(descriptor);
+  assert(
+    satisfiesSemver(hostNodeVersion, descriptor.target.node),
+    `Plugin requires Node.js ${descriptor.target.node}; host is ${hostNodeVersion}.`,
+  );
   assert(
     descriptor.sdk.apiMajor === sdkApiMajor,
     "Plugin SDK API major is incompatible with this host.",
@@ -516,33 +544,4 @@ export async function verifyPluginArtifact(
     manifest,
     entryBytes,
   };
-}
-
-export async function loadPluginArtifact(artifactRoot, compatibility) {
-  const verified = await verifyPluginArtifact(artifactRoot, compatibility);
-  const url = `data:text/javascript;base64,${verified.entryBytes.toString("base64")}#artifact-sha256=${verified.descriptorSha256}`;
-  const module = await import(url);
-  assert(
-    Object.keys(module).length === 1 && typeof module.createIntegrationProvider === "function",
-    "Plugin module must export only createIntegrationProvider.",
-  );
-  return { ...verified, createIntegrationProvider: module.createIntegrationProvider };
-}
-
-export async function instantiatePluginArtifact(artifactRoot, context, compatibility) {
-  const loaded = await loadPluginArtifact(artifactRoot, compatibility);
-  const provider = loaded.createIntegrationProvider(context);
-  assert(
-    provider && typeof provider === "object",
-    "Plugin factory must resolve to a provider object.",
-  );
-  assert(
-    provider.id === loaded.manifest.provider,
-    "Plugin provider id does not match its manifest.",
-  );
-  assert(
-    typeof provider.status === "function" && typeof provider.invoke === "function",
-    "Plugin provider lifecycle is incomplete.",
-  );
-  return { ...loaded, provider };
 }
