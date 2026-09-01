@@ -171,6 +171,31 @@ test("SDK v1 validates strict data-only manifests and structural boundary errors
   for (const version of ["1.0.0-01", "1.0.0-alpha.01"]) {
     assert.throws(() => validateManifestV1({ ...value, version }), /version must be semver/u);
   }
+  assert.doesNotThrow(() =>
+    validateManifestV1({
+      ...value,
+      configurationSchema: {
+        ...value.configurationSchema,
+        $defs: { label: { type: "string" } },
+        properties: {
+          pattern: { $ref: "#/%24defs/label" },
+          metadata: { type: "object", default: { $id: "instance-data", $ref: "not-a-schema" } },
+        },
+      },
+    }),
+  );
+  assert.throws(
+    () =>
+      validateManifestV1({
+        ...value,
+        configurationSchema: {
+          ...value.configurationSchema,
+          $defs: { item: { type: "object" } },
+          properties: { item: { $ref: "#/$defs/item/" } },
+        },
+      }),
+    /does not resolve/u,
+  );
   assert.throws(
     () =>
       validateManifestV1({
