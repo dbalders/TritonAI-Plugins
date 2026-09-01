@@ -36,6 +36,9 @@ const productionBuiltins = await Fs.readFile(
   Path.join(harness, "apps/server/src/integrations/productionBuiltins.ts"),
   "utf8",
 );
+const pluginSdkArtifactModule = await import(
+  pathToFileURL(Path.join(harness, "packages/shared/src/pluginSdkArtifact.ts")).href
+);
 const { version: harnessEffectVersion } = await verifyHarnessEffectRuntime(harness);
 
 for (const fragment of [
@@ -117,7 +120,29 @@ for (const directory of await discoverPluginDirectories(pluginsRoot)) {
   const manifestPath = Path.join(packageRoot, ".tritonai-plugin", "plugin.json");
   const manifest = JSON.parse(await Fs.readFile(manifestPath, "utf8"));
   const packageJson = JSON.parse(await Fs.readFile(Path.join(packageRoot, "package.json"), "utf8"));
-  if (manifest.apiVersion === "tritonai.plugin/v1") continue;
+  if (manifest.apiVersion === "tritonai.plugin/v1") {
+    const artifactRoot = Path.resolve(pluginsRoot, "..", "artifacts", directory);
+    const files = [];
+    async function collect(current, relative = "") {
+      for (const entry of await Fs.readdir(current, { withFileTypes: true })) {
+        const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
+        const child = Path.join(current, entry.name);
+        if (entry.isDirectory()) await collect(child, childRelative);
+        else if (entry.isFile())
+          files.push({ path: childRelative, contents: await Fs.readFile(child) });
+        else throw new Error(`${directory}: SDK artifact contains a non-regular entry.`);
+      }
+    }
+    await collect(artifactRoot);
+    const verified = pluginSdkArtifactModule.verifyPluginSdkArtifact(files, {
+      hostNodeVersion: "24.13.1",
+    });
+    assert(
+      verified.sdkManifest.id === directory && verified.sdkManifest.version === packageJson.version,
+      `${directory}: exact Harness rejected the sealed SDK artifact identity.`,
+    );
+    continue;
+  }
   const harnessValidated = manifestModule.validateIntegrationManifest(manifest);
   assert(harnessValidated.id === directory, `${directory}: exact Harness rejected the plugin id.`);
   assertProviderRuntimeDependencies(directory, packageJson, harnessValidated);
@@ -165,4 +190,4 @@ for (const directory of await discoverPluginDirectories(pluginsRoot)) {
   }
 }
 
-console.log(`exact Harness v2 framework checks passed at ${actualHead}`);
+console.log(`exact Harness plugin contract checks passed at ${actualHead}`);

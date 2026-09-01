@@ -15,10 +15,10 @@ shapes. Provider distribution files are reviewed artifacts: packaging compares t
 working tree and rejects lifecycle-script mutations. Packaging is repeated and hashed to catch
 nondeterministic output.
 
-There is intentionally no `marketplace.json`, network catalog, installer integration, update
-endpoint, or runtime download path. The SDK verifier is a reference artifact admission primitive,
-not Harness wiring. A catalog file should be added only with a real deterministic build consumer
-and schema validation.
+There is intentionally no `marketplace.json`, network catalog, update endpoint, or runtime download
+path. SDK v1 release bytes live at `artifacts/<plugin-id>/`. Release consumers copy that complete
+sealed directory byte-for-byte; only Harness performs descriptor, compatibility, schema, and code
+admission. A production catalog remains consumer-owned and pins the complete staged package digest.
 
 ## Build-time composition
 
@@ -95,3 +95,7 @@ canonical schema digests. Verification repeats every check, retains the verified
 validates compatibility, and imports those bytes only after admission. Artifact admission remains
 a host responsibility; verification does not sandbox trusted plugin code or police dynamic access
 through JavaScript runtime globals after import.
+
+`pnpm artifacts:sdk` atomically refreshes each checked-in SDK v1 artifact. Readiness rebuilds every
+artifact independently and byte-compares it with `artifacts/`, so a tag cannot silently publish
+stale or environment-dependent output.
