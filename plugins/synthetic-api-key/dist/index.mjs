@@ -1,5 +1,6 @@
 const FLOW_ID = "synthetic-api-key";
 const CAPABILITIES = ["synthetic-api-key.read", "synthetic-api-key.write"];
+const CONNECTION_SECRET = "connection";
 
 function failure(code, message) {
   return Object.freeze({
@@ -24,10 +25,39 @@ function assertPlainInput(value, allowed) {
 
 export function createIntegrationProvider({ secrets }) {
   const items = new Map();
-  const credential = () => secrets.get("apiKey");
-  const requireConnection = async () => {
-    if (!(await credential())) {
+  const connection = async () => {
+    const encoded = await secrets.get(CONNECTION_SECRET);
+    if (!encoded) return null;
+    let value;
+    try {
+      value = JSON.parse(encoded);
+    } catch {
+      throw failure("invalid_connection", "The stored synthetic connection is invalid.");
+    }
+    if (
+      !value ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      Object.keys(value).some((key) => !new Set(["apiKey", "capabilities"]).has(key)) ||
+      typeof value.apiKey !== "string" ||
+      value.apiKey.length < 1 ||
+      value.apiKey.length > 256 ||
+      !Array.isArray(value.capabilities) ||
+      value.capabilities.length < 1 ||
+      value.capabilities.some((capability) => !CAPABILITIES.includes(capability)) ||
+      new Set(value.capabilities).size !== value.capabilities.length
+    ) {
+      throw failure("invalid_connection", "The stored synthetic connection is invalid.");
+    }
+    return value;
+  };
+  const requireCapability = async (capability) => {
+    const connected = await connection();
+    if (!connected) {
       throw failure("not_connected", "Connect an API key before using this plugin.");
+    }
+    if (!connected.capabilities.includes(capability)) {
+      throw failure("capability_not_granted", "The connection did not grant this capability.");
     }
   };
 
@@ -35,17 +65,21 @@ export function createIntegrationProvider({ secrets }) {
     id: "synthetic-api-key",
     async status({ signal }) {
       signal.throwIfAborted();
-      const connected = Boolean(await credential());
+      const connected = await connection();
       return {
         state: connected ? "connected" : "not_connected",
         accountLabel: connected ? "synthetic API key" : null,
-        grantedCapabilities: connected ? CAPABILITIES : [],
+        grantedCapabilities: connected ? connected.capabilities : [],
         message: null,
       };
     },
     async connect(capabilities, context, submission) {
       context.signal.throwIfAborted();
-      if (capabilities.some((capability) => !CAPABILITIES.includes(capability))) {
+      if (
+        capabilities.length < 1 ||
+        new Set(capabilities).size !== capabilities.length ||
+        capabilities.some((capability) => !CAPABILITIES.includes(capability))
+      ) {
         throw failure("invalid_capability", "Connection requested an unsupported capability.");
       }
       if (submission === undefined) {
@@ -68,19 +102,22 @@ export function createIntegrationProvider({ secrets }) {
       }
       const commitSignal = await context.beginCommit();
       commitSignal.throwIfAborted();
-      await secrets.set("apiKey", submission.value);
+      await secrets.set(
+        CONNECTION_SECRET,
+        JSON.stringify({ apiKey: submission.value, capabilities: [...capabilities].sort() }),
+      );
       return { kind: "connected", flowId: FLOW_ID, message: "Synthetic API key connected." };
     },
     async disconnect(context) {
       const commitSignal = await context.beginCommit();
       commitSignal.throwIfAborted();
-      await secrets.remove("apiKey");
+      await secrets.remove(CONNECTION_SECRET);
       items.clear();
     },
     async invoke(toolName, input, context) {
       context.signal.throwIfAborted();
-      await requireConnection();
       if (toolName === "synthetic.items.list") {
+        await requireCapability("synthetic-api-key.read");
         assertPlainInput(input, new Set());
         return {
           items: [...items.entries()].map(([id, value]) => ({ id, value })),
@@ -89,6 +126,7 @@ export function createIntegrationProvider({ secrets }) {
       if (toolName !== "synthetic.items.put") {
         throw failure("tool_not_found", "The requested tool is not provided by this plugin.");
       }
+      await requireCapability("synthetic-api-key.write");
       assertPlainInput(input, new Set(["id", "value"]));
       if (
         typeof input.id !== "string" ||

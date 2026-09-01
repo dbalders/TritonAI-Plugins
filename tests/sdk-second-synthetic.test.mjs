@@ -44,11 +44,32 @@ test("second SDK plugin exercises API-key lifecycle and read-write commits", asy
     return signal;
   };
   await provider.connect(
-    ["synthetic-api-key.read", "synthetic-api-key.write"],
+    ["synthetic-api-key.read"],
     { signal, beginCommit },
     { kind: "api_key", flowId: "synthetic-api-key", value: "fixture-key" },
   );
   assert.equal(commits, 1);
+  assert.deepEqual((await provider.status({ signal })).grantedCapabilities, [
+    "synthetic-api-key.read",
+  ]);
+  await assert.rejects(
+    provider.invoke(
+      "synthetic.items.put",
+      { id: "one", value: "first" },
+      { signal, writeApproved: true, beginCommit },
+    ),
+    (error) => error?._tag === "PluginFailure" && error.code === "capability_not_granted",
+  );
+  assert.equal(commits, 1);
+  await provider.disconnect({ signal, beginCommit });
+  assert.equal(commits, 2);
+
+  await provider.connect(
+    ["synthetic-api-key.read", "synthetic-api-key.write"],
+    { signal, beginCommit },
+    { kind: "api_key", flowId: "synthetic-api-key", value: "fixture-key" },
+  );
+  assert.equal(commits, 3);
   assert.equal((await provider.status({ signal })).state, "connected");
   await assert.rejects(
     provider.invoke(
@@ -66,7 +87,7 @@ test("second SDK plugin exercises API-key lifecycle and read-write commits", asy
     ),
     { id: "one", value: "first" },
   );
-  assert.equal(commits, 2);
+  assert.equal(commits, 4);
   assert.deepEqual(
     await provider.invoke(
       "synthetic.items.list",
@@ -76,6 +97,6 @@ test("second SDK plugin exercises API-key lifecycle and read-write commits", asy
     { items: [{ id: "one", value: "first" }] },
   );
   await provider.disconnect({ signal, beginCommit });
-  assert.equal(commits, 3);
+  assert.equal(commits, 5);
   assert.equal((await provider.status({ signal })).state, "not_connected");
 });
