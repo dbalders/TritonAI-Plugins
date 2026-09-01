@@ -337,11 +337,7 @@ test("fixed read tools emit only reviewed GraphQL operations and never cross the
   const mock = sequence(responses);
   const provider = factory(t, secrets.service, mock.implementation);
   const events = [];
-  const apps = await provider.invoke(
-    "kuali-build.apps.list",
-    { limit: 1 },
-    invocation(events),
-  );
+  const apps = await provider.invoke("kuali-build.apps.list", { limit: 1 }, invocation(events));
   assert.equal(apps.apps[0].name, "Travel");
   assert.equal(apps.returned, 1);
   assert.equal(apps.truncated, true);
