@@ -365,7 +365,9 @@ export function createIntegrationProvider() {
 
 test("verification reapplies entry and skill payload invariants", async (t) => {
   const temporary = await temporaryDirectory(t);
-  const outputs = ["entry", "skill", "undeclared"].map((name) => Path.join(temporary, name));
+  const outputs = ["entry", "syntax", "skill", "undeclared"].map((name) =>
+    Path.join(temporary, name),
+  );
   for (const output of outputs) await buildPluginArtifact(conformancePlugin, output);
 
   const entryPath = Path.join(outputs[0], "plugin.mjs");
@@ -377,10 +379,19 @@ test("verification reapplies entry and skill payload invariants", async (t) => {
   await resealPayload(outputs[0], "plugin.mjs", oversized);
   await assert.rejects(() => verifyPluginArtifact(outputs[0]), /entry exceeds its size limit/u);
 
-  const skillPath = "skills/synthetic-readonly/SKILL.md";
-  const skill = await Fs.readFile(Path.join(outputs[1], skillPath), "utf8");
   await resealPayload(
     outputs[1],
+    "plugin.mjs",
+    Buffer.from(
+      "export function createIntegrationProvider() {} const duplicate = 1; const duplicate = 2;\n",
+    ),
+  );
+  await assert.rejects(() => verifyPluginArtifact(outputs[1]), /not valid ECMAScript/u);
+
+  const skillPath = "skills/synthetic-readonly/SKILL.md";
+  const skill = await Fs.readFile(Path.join(outputs[2], skillPath), "utf8");
+  await resealPayload(
+    outputs[2],
     skillPath,
     Buffer.from(
       skill.replace(
@@ -389,15 +400,15 @@ test("verification reapplies entry and skill payload invariants", async (t) => {
       ),
     ),
   );
-  await assert.rejects(() => verifyPluginArtifact(outputs[1]), /skill description does not match/u);
+  await assert.rejects(() => verifyPluginArtifact(outputs[2]), /skill description does not match/u);
 
   const undeclaredPath = "skills/undeclared/SKILL.md";
   await resealPayload(
-    outputs[2],
+    outputs[3],
     undeclaredPath,
     Buffer.from("---\nname: undeclared\ndescription: Undeclared skill.\n---\n"),
   );
-  await assert.rejects(() => verifyPluginArtifact(outputs[2]), /undeclared payload/u);
+  await assert.rejects(() => verifyPluginArtifact(outputs[3]), /undeclared payload/u);
 });
 
 test("artifact compatibility and byte integrity fail before module import", async (t) => {
@@ -491,7 +502,6 @@ test("source inspection admits declared Node builtins and rejects unresolved dep
     () => assertSelfContainedModule("export const unrelated = true;\n"),
     /export only createIntegrationProvider/u,
   );
-
   for (const [name, mutation, expected] of [
     [
       "lifecycle",

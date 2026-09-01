@@ -11,6 +11,9 @@ importers:
       '@types/node':
         specifier: 24.12.4
         version: 24.12.4
+      acorn:
+        specifier: 8.16.0
+        version: 8.16.0
       effect:
         specifier: 4.0.0-beta.103
         version: 4.0.0-beta.103
@@ -664,6 +667,11 @@ packages:
     engines: {node: ^20.19.0 || ^22.18.0 || >=24.11.0}
     cpu: [x64]
     os: [win32]
+
+  acorn@8.16.0:
+    resolution: {integrity: sha512-UVJyE9MttOsBQIDKw1skb9nAwQuR5wuGD3+82K6JgJlm/Y+KI92oNsMNGZCYdDsVtRHSak0pcV5Dno5+4jh9sw==}
+    engines: {node: '>=0.4.0'}
+    hasBin: true
 
   ansi-regex@5.0.1:
     resolution: {integrity: sha512-quJQXlTSUGL2LH9SUXo8VwsY4soanhgo6LNSm84E1LBcE8s3O0wpdiRzyR9z/ZZJMlMWv37qOOb9pdJlMUEKFQ==}
@@ -1484,6 +1492,8 @@ snapshots:
 
   '@voidzero-dev/vite-plus-win32-x64-msvc@0.2.1':
     optional: true
+
+  acorn@8.16.0: {}
 
   ansi-regex@5.0.1: {}
 

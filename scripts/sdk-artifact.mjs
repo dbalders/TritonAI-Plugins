@@ -2,7 +2,8 @@ import * as Crypto from "node:crypto";
 import * as Fs from "node:fs/promises";
 import { builtinModules } from "node:module";
 import * as Path from "node:path";
-import { init, parse } from "es-module-lexer";
+import { parse as parseModule } from "acorn";
+import { init, parse as parseImports } from "es-module-lexer";
 import { satisfies as satisfiesSemver } from "semver";
 
 import {
@@ -222,8 +223,15 @@ function assertSafePackageJson(value) {
 
 export async function assertSelfContainedModule(source) {
   assert(typeof source === "string", "Plugin entry must be UTF-8 source text.");
+  try {
+    parseModule(source, { ecmaVersion: "latest", sourceType: "module" });
+  } catch (error) {
+    throw new Error(
+      `Plugin entry is not valid ECMAScript: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   await init;
-  const [imports, exports] = parse(source);
+  const [imports, exports] = parseImports(source);
   const builtins = [];
   for (const request of imports) {
     assert(request.d !== -2, "Plugin entry cannot rely on import.meta from a data module.");
