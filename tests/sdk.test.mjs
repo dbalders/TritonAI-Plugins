@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as Crypto from "node:crypto";
 import * as Fs from "node:fs/promises";
 import * as Os from "node:os";
 import * as Path from "node:path";
@@ -39,6 +40,25 @@ async function temporaryDirectory(t) {
   const root = await Fs.mkdtemp(Path.join(Os.tmpdir(), "tritonai-sdk-test-"));
   t.after(() => Fs.rm(root, { recursive: true, force: true }));
   return root;
+}
+
+async function resealPayload(root, relative, contents) {
+  const target = Path.join(root, relative);
+  await Fs.mkdir(Path.dirname(target), { recursive: true });
+  await Fs.writeFile(target, contents);
+  const descriptorPath = Path.join(root, "artifact.json");
+  const descriptor = JSON.parse(await Fs.readFile(descriptorPath, "utf8"));
+  let record = descriptor.files.find((file) => file.path === relative);
+  if (!record) {
+    record = { path: relative, sha256: "", size: 0 };
+    descriptor.files.push(record);
+  }
+  record.sha256 = Crypto.createHash("sha256").update(contents).digest("hex");
+  record.size = contents.length;
+  descriptor.files.sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+  );
+  await Fs.writeFile(descriptorPath, `${canonicalJson(descriptor)}\n`);
 }
 
 async function writeFixture(root, overrides = {}) {
@@ -252,6 +272,88 @@ test("sealed artifact output is byte-for-byte deterministic and executable", asy
   });
 });
 
+test("module namespaces are isolated by the complete artifact descriptor", async (t) => {
+  const temporary = await temporaryDirectory(t);
+  const entry = `
+let instanceCount = 0;
+export function createIntegrationProvider() {
+  const accountLabel = String(++instanceCount);
+  return {
+    id: "fixture-reader",
+    async status() { return { state: "connected", accountLabel, grantedCapabilities: ["fixture.read"], message: null }; },
+    async invoke() { return null; }
+  };
+}
+`;
+  const configurationSchema = (description) => ({
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    type: "object",
+    description,
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  });
+  const sources = [Path.join(temporary, "source-one"), Path.join(temporary, "source-two")];
+  await writeFixture(sources[0], {
+    entry,
+    manifest: { configurationSchema: configurationSchema("First reviewed artifact.") },
+  });
+  await writeFixture(sources[1], {
+    entry,
+    manifest: { configurationSchema: configurationSchema("Second reviewed artifact.") },
+  });
+  const outputs = [Path.join(temporary, "artifact-one"), Path.join(temporary, "artifact-two")];
+  await buildPluginArtifact(sources[0], outputs[0]);
+  await buildPluginArtifact(sources[1], outputs[1]);
+  const context = {
+    configuration: {},
+    secrets: { get: async () => null, set: async () => undefined, remove: async () => undefined },
+  };
+  const first = await instantiatePluginArtifact(outputs[0], context);
+  const second = await instantiatePluginArtifact(outputs[1], context);
+  const operation = { signal: new AbortController().signal };
+
+  assert.equal((await first.provider.status(operation)).accountLabel, "1");
+  assert.equal((await second.provider.status(operation)).accountLabel, "1");
+});
+
+test("verification reapplies entry and skill payload invariants", async (t) => {
+  const temporary = await temporaryDirectory(t);
+  const outputs = ["entry", "skill", "undeclared"].map((name) => Path.join(temporary, name));
+  for (const output of outputs) await buildPluginArtifact(conformancePlugin, output);
+
+  const entryPath = Path.join(outputs[0], "plugin.mjs");
+  const entry = await Fs.readFile(entryPath);
+  const oversized = Buffer.concat([
+    entry,
+    Buffer.alloc(ARTIFACT_LIMITS.entryBytes + 1 - entry.length, 0x20),
+  ]);
+  await resealPayload(outputs[0], "plugin.mjs", oversized);
+  await assert.rejects(() => verifyPluginArtifact(outputs[0]), /entry exceeds its size limit/u);
+
+  const skillPath = "skills/synthetic-readonly/SKILL.md";
+  const skill = await Fs.readFile(Path.join(outputs[1], skillPath), "utf8");
+  await resealPayload(
+    outputs[1],
+    skillPath,
+    Buffer.from(
+      skill.replace(
+        "Exercise the deterministic read-only TritonAI SDK conformance tool.",
+        "Drifted description.",
+      ),
+    ),
+  );
+  await assert.rejects(() => verifyPluginArtifact(outputs[1]), /skill description does not match/u);
+
+  const undeclaredPath = "skills/undeclared/SKILL.md";
+  await resealPayload(
+    outputs[2],
+    undeclaredPath,
+    Buffer.from("---\nname: undeclared\ndescription: Undeclared skill.\n---\n"),
+  );
+  await assert.rejects(() => verifyPluginArtifact(outputs[2]), /undeclared payload/u);
+});
+
 test("artifact compatibility and byte integrity fail before module import", async (t) => {
   const temporary = await temporaryDirectory(t);
   const source = Path.join(temporary, "source");
@@ -300,6 +402,10 @@ test("source inspection admits declared Node builtins and rejects unresolved dep
   await assert.rejects(
     () => assertSelfContainedModule('const fs = require("node:fs");\n'),
     /CommonJS/u,
+  );
+  await assert.rejects(
+    () => assertSelfContainedModule('export const runtime = import("effect");\n'),
+    /dynamically/u,
   );
   await assert.rejects(
     () => assertSelfContainedModule('export { x } from "./x.mjs";\n'),
