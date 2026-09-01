@@ -1,2 +1,3 @@
 # This manifest uses the SDK's canonical JSON encoding for byte-stable sealing.
 plugins/synthetic-readonly/.tritonai-plugin/plugin.json
+plugins/synthetic-api-key/.tritonai-plugin/plugin.json
