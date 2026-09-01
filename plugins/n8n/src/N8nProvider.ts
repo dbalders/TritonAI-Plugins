@@ -2221,7 +2221,6 @@ export class N8nProvider implements IntegrationProvider {
       this.#availableTools = new Set();
       await this.#clearPendingFlows();
       let admitted = false;
-      let removalStarted = false;
       try {
         const credential = await this.#readCredential(context?.signal);
         const commitSignal = await this.#beginCommit(context);
@@ -2230,14 +2229,13 @@ export class N8nProvider implements IntegrationProvider {
           const discovery = await this.#discover(commitSignal);
           await this.#revokeToken(discovery, credential.refreshToken, commitSignal);
         }
-        removalStarted = true;
         await this.#secrets.remove(N8N_SECRET_SUFFIX);
         commitSignal.throwIfAborted();
         this.#accessToken = null;
         this.#credentialRevision += 1;
         this.#uncertainCredentialState = false;
       } catch (error) {
-        if (admitted && (removalStarted || !(error instanceof ConfirmedRemoteFailure))) {
+        if (admitted) {
           this.#uncertainCredentialState = true;
           throw new ExternalCommitOutcomeUnknownError(
             "The n8n disconnect may have completed. Verify the connection state before retrying.",

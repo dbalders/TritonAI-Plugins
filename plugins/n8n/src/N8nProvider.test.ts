@@ -525,6 +525,28 @@ describe("N8nProvider", () => {
     await restored.close();
   });
 
+  it("faults disconnect when revocation has an unknown external outcome", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch();
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/mcp-oauth/revoke")) {
+        return json({ error: "fixture revocation failure" }, 503);
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
+    await authorize(provider, mock.requests);
+
+    await expect(provider.disconnect(lifecycle())).rejects.toMatchObject({
+      _tag: "ExternalCommitOutcomeUnknown",
+      code: "external_commit_outcome_unknown",
+      retryable: false,
+    });
+    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(true);
+    await expect(provider.status()).resolves.toMatchObject({ state: "error" });
+    await provider.close();
+  });
+
   it("serializes disconnect with authorization-code exchange and revokes the issued credential", async () => {
     const secrets = memorySecrets();
     const mock = oauthMcpFetch();
