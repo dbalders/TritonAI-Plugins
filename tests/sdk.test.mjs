@@ -188,6 +188,10 @@ test("SDK v1 validates strict data-only manifests and structural boundary errors
   );
   assert.doesNotMatch(sdkRuntime, /(?:from|import\s*)["']effect(?:\/|["'])/u);
   assert.doesNotMatch(sdkTypes, /from\s*["']effect(?:\/|["'])/u);
+  assert.match(
+    sdkTypes,
+    /poll\?\([\s\S]*?context: IntegrationLifecycleContext,[\s\S]*?\): Promise<IntegrationProviderPollResult>/u,
+  );
 });
 
 test("sealed artifact output is byte-for-byte deterministic and executable", async (t) => {

@@ -153,7 +153,7 @@ export interface IntegrationProvider {
   ): Promise<IntegrationConnectResult>;
   poll?(
     flowId: string,
-    context: IntegrationOperationContext,
+    context: IntegrationLifecycleContext,
   ): Promise<IntegrationProviderPollResult>;
   disconnect?(context: IntegrationLifecycleContext): Promise<void>;
   invoke(
