@@ -1,13 +1,15 @@
 const PROVIDER_ID = "kuali-build";
 const READ_CAPABILITY = "kuali-build.read";
-const DOCUMENT_WRITE_CAPABILITY = "kuali-build.documents.write";
-const WORKFLOW_WRITE_CAPABILITY = "kuali-build.workflows.write";
-const CAPABILITIES = Object.freeze([
-  READ_CAPABILITY,
-  DOCUMENT_WRITE_CAPABILITY,
-  WORKFLOW_WRITE_CAPABILITY,
-]);
+const WRITE_CAPABILITY = "kuali-build.write";
+const LEGACY_DOCUMENT_WRITE_CAPABILITY = "kuali-build.documents.write";
+const LEGACY_WORKFLOW_WRITE_CAPABILITY = "kuali-build.workflows.write";
+const CAPABILITIES = Object.freeze([READ_CAPABILITY, WRITE_CAPABILITY]);
 const CAPABILITY_SET = new Set(CAPABILITIES);
+const LEGACY_CAPABILITY_SET = new Set([
+  READ_CAPABILITY,
+  LEGACY_DOCUMENT_WRITE_CAPABILITY,
+  LEGACY_WORKFLOW_WRITE_CAPABILITY,
+]);
 const SECRET_NAME = "api-key";
 const TENANT_ORIGIN = "https://ucsd.kualibuild.com";
 const API_KEY_SETTINGS_URL = `${TENANT_ORIGIN}/build/space/favorites/account/api-keys`;
@@ -635,12 +637,27 @@ function parseSecret(value) {
       parsed.version !== 1 ||
       !Array.isArray(parsed.capabilities) ||
       parsed.capabilities.length < 1 ||
-      parsed.capabilities.length > CAPABILITIES.length ||
+      parsed.capabilities.length > LEGACY_CAPABILITY_SET.size ||
       parsed.capabilities[0] !== READ_CAPABILITY ||
-      new Set(parsed.capabilities).size !== parsed.capabilities.length ||
-      parsed.capabilities.some((capability) => !CAPABILITY_SET.has(capability))
+      new Set(parsed.capabilities).size !== parsed.capabilities.length
     ) return undefined;
-    return { version: 1, apiKey: validateApiKey(parsed.apiKey), capabilities: parsed.capabilities };
+    const isCurrent = parsed.capabilities.every((capability) => CAPABILITY_SET.has(capability));
+    const isLegacy = parsed.capabilities.every((capability) => LEGACY_CAPABILITY_SET.has(capability));
+    if (!isCurrent && !isLegacy) return undefined;
+    const hadBothLegacyWriteCapabilities =
+      parsed.capabilities.includes(LEGACY_DOCUMENT_WRITE_CAPABILITY) &&
+      parsed.capabilities.includes(LEGACY_WORKFLOW_WRITE_CAPABILITY);
+    const capabilities = isCurrent
+      ? CAPABILITIES.filter((capability) => parsed.capabilities.includes(capability))
+      : hadBothLegacyWriteCapabilities
+        ? [...CAPABILITIES]
+        : [READ_CAPABILITY];
+    return {
+      version: 1,
+      apiKey: validateApiKey(parsed.apiKey),
+      capabilities,
+      needsMigration: !isCurrent,
+    };
   } catch {
     return undefined;
   }
@@ -672,7 +689,7 @@ function exactCapabilities(value) {
   ) {
     throw failure(
       "invalid_capabilities",
-      "The connection must request kuali-build.read first and may additionally request the two declared write capabilities.",
+      "The connection must request kuali-build.read first and may additionally request kuali-build.write.",
     );
   }
   return CAPABILITIES.filter((capability) => value.includes(capability));
@@ -938,6 +955,7 @@ export function createIntegrationProvider(context) {
         if (stored !== null && stored !== undefined) {
           await verifyConnection(stored.apiKey, lifecycleContext.signal);
           if (
+            stored.needsMigration ||
             stored.capabilities.length !== granted.length ||
             stored.capabilities.some((capability, index) => capability !== granted[index])
           ) {
@@ -949,7 +967,7 @@ export function createIntegrationProvider(context) {
             message:
               granted.length === 1
                 ? "Connected to UC San Diego Kuali Build with read-only tools."
-                : "Connected to UC San Diego Kuali Build with the selected read and write capabilities.",
+                : "Connected to UC San Diego Kuali Build with write tools enabled.",
           };
         }
         const flowId = createFlow(flows, granted);
@@ -983,7 +1001,7 @@ export function createIntegrationProvider(context) {
         message:
           flow.capabilities.length === 1
             ? "Connected to UC San Diego Kuali Build with read-only tools."
-            : "Connected to UC San Diego Kuali Build with the selected read and write capabilities.",
+            : "Connected to UC San Diego Kuali Build with write tools enabled.",
       };
     },
     async disconnect(lifecycleContext) {
@@ -1136,7 +1154,7 @@ export function createIntegrationProvider(context) {
         }
         case "kuali-build.documents.update": {
           validateWriteInvocation(invocationContext);
-          requireCapability(credential, DOCUMENT_WRITE_CAPABILITY);
+          requireCapability(credential, WRITE_CAPABILITY);
           const current = extract(
             await execute(
               credential.apiKey,
@@ -1199,8 +1217,7 @@ export function createIntegrationProvider(context) {
         }
         case "kuali-build.documents.drafts.initialize": {
           validateWriteInvocation(invocationContext);
-          requireCapability(credential, DOCUMENT_WRITE_CAPABILITY);
-          requireCapability(credential, WORKFLOW_WRITE_CAPABILITY);
+          requireCapability(credential, WRITE_CAPABILITY);
           const app = extract(
             await execute(
               credential.apiKey,
@@ -1239,8 +1256,7 @@ export function createIntegrationProvider(context) {
         }
         case "kuali-build.documents.submit": {
           validateWriteInvocation(invocationContext);
-          requireCapability(credential, DOCUMENT_WRITE_CAPABILITY);
-          requireCapability(credential, WORKFLOW_WRITE_CAPABILITY);
+          requireCapability(credential, WRITE_CAPABILITY);
           const actionValue = extract(
             await execute(
               credential.apiKey,

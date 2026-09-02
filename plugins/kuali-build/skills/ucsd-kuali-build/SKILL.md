@@ -9,6 +9,10 @@ Use these tools only for UC San Diego's Kuali **Build** tenant. Do not use them 
 Sponsored Programs, product datasets, other institutions, app/form builder administration, or
 arbitrary GraphQL.
 
+The connection offers exactly two permissions: read access and the optional **Create, edit, and
+submit Build documents** permission. The optional permission gates every mutation in this skill;
+the host must still approve each individual write.
+
 ## Read before writing
 
 1. Use `kuali-build.apps.list` and `kuali-build.apps.get` to confirm the exact app.

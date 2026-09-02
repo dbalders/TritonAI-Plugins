@@ -11,7 +11,7 @@ Prototype-related keys are rejected. HTTP and GraphQL failures are normalized wi
 response bodies, server messages, request headers, or API keys. Reads are never automatically
 retried; retryable and rate-limit failures are surfaced to the Harness.
 
-Writes require opt-in document/workflow capabilities, host `writeApproved`, explicit tool-level
+Writes require the single opt-in `kuali-build.write` capability, host `writeApproved`, explicit tool-level
 confirmation fields, and exactly one `beginCommit` admission immediately before each mutation.
 Document edits use a pre-write `meta.updatedAt` stale check, normalize only bounded Kuali form keys,
 and require extra confirmation for null values. The stale check is not atomic because the
@@ -26,6 +26,10 @@ Draft initialization and submission are separate external commits with a read-on
 between them. They are not atomic; initialization can leave an empty draft. Approval, denial,
 send-back, reassignment, withdrawal, deletion, builder administration, and arbitrary GraphQL are not
 implemented because reviewed mutation contracts were not available.
+
+Legacy credentials that granted both former write capabilities are migrated to unified write when
+the connection is updated. A partial legacy write grant is conservatively normalized to read-only;
+the user can enable unified write without re-entering the stored API key.
 
 The hostname is fixed rather than caller-controlled, and Web PKI validation remains enabled. This
 prevents ordinary SSRF and loopback/IP-literal input. As with other `fetch`-based HTTPS clients,

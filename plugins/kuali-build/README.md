@@ -20,8 +20,9 @@ and alternate ports are rejected.
 ## Scope
 
 The plugin exposes fixed reads for Build apps, form schemas, Build documents, users, workflow
-metadata, and initialized draft actions. Its opt-in write capabilities provide only the mutation
-shapes established by the official Build GraphQL guides:
+metadata, and initialized draft actions. Its single opt-in **Create, edit, and submit Build
+documents** permission provides only the mutation shapes established by the official Build GraphQL
+guides:
 
 - update explicitly supplied fields on an existing document;
 - initialize an empty draft for one exact app;
@@ -36,8 +37,8 @@ workflow administration.
 
 ## Write safety and creation phases
 
-Every mutation requires an enabled opt-in capability, host write approval, and exactly one
-`beginCommit` call immediately before the request. Network, timeout, oversized/malformed response,
+Every mutation requires the unified `kuali-build.write` permission, host write approval, and exactly
+one `beginCommit` call immediately before the request. Network, timeout, oversized/malformed response,
 post-commit cancellation, partial-data, and server-side ambiguity are returned as
 `external_commit_outcome_unknown`; writes are never automatically retried.
 
@@ -49,6 +50,11 @@ Kuali's documented creation flow is intentionally exposed as three separate tool
 empty draft, resolve its document ID, then submit it. These phases are not atomic. A successful
 initialization can leave an empty draft when a later phase fails, and an unknown initialization or
 submission outcome must be inspected in Kuali before any further action.
+
+Existing connections do not need to reveal or re-enter their API key when changing permissions.
+Connections that previously granted both legacy write permissions are recognized as unified write.
+A connection with only one legacy write permission is treated as read-only until the user enables
+the new unified write permission, preventing a silent expansion of access.
 
 References:
 
