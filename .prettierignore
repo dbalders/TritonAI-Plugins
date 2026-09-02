@@ -2,4 +2,5 @@
 plugins/synthetic-readonly/.tritonai-plugin/plugin.json
 plugins/synthetic-api-key/.tritonai-plugin/plugin.json
 plugins/kuali-build/.tritonai-plugin/plugin.json
+plugins/n8n/.tritonai-plugin/plugin.json
 artifacts/

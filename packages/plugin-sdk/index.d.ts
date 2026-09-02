@@ -19,7 +19,7 @@ export interface PluginCapability {
   readonly id: string;
   readonly displayName: string;
   readonly description: string;
-  readonly access: "default" | "opt-in";
+  readonly access: "default" | "opt-in" | "authorization";
 }
 export interface PluginTool {
   readonly name: string;
