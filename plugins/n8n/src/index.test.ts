@@ -8,7 +8,7 @@ import { createIntegrationProvider } from "./index.ts";
 
 const sdkManifest = manifest as unknown as {
   readonly provider: string;
-  readonly capabilities: readonly unknown[];
+  readonly capabilities: readonly { readonly id: string; readonly access: string }[];
   readonly tools: readonly {
     readonly name: string;
     readonly effect: "read" | "write";
@@ -66,7 +66,10 @@ describe("n8n SDK plugin factory", () => {
         inputSchema: inputSchema(tool.input),
       })),
     );
-    expect(sdkManifest.capabilities).toHaveLength(9);
+    expect(sdkManifest.capabilities.map(({ id, access }) => ({ id, access }))).toEqual([
+      { id: "read", access: "authorization" },
+      { id: "write", access: "authorization" },
+    ]);
   });
 
   it("rejects every arbitrary, malformed, or extra endpoint without disclosure", () => {

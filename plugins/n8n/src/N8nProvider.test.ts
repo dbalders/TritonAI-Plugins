@@ -10,17 +10,25 @@ import type {
 
 const SERVER = "https://n8n.tritonai.ucsd.edu/mcp-server/http";
 const ORIGIN = "https://n8n.tritonai.ucsd.edu";
-const SCOPES = [
+const MCP_PROTOCOL_VERSION = "2026-07-28";
+const MCP_PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion";
+const MCP_CLIENT_CAPABILITIES_META_KEY = "io.modelcontextprotocol/clientCapabilities";
+const MCP_CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo";
+const READ_SCOPES = [
   "credential:read",
   "dataTable:read",
-  "dataTable:write",
   "execution:read",
   "project:read",
   "tag:read",
-  "workflow:execute",
   "workflow:read",
+] as const;
+const WRITE_SCOPES = [
+  "dataTable:write",
+  "project:write",
+  "workflow:execute",
   "workflow:write",
 ] as const;
+const SCOPES = [...READ_SCOPES, ...WRITE_SCOPES] as const;
 
 function memorySecrets(options: { failSet?: boolean } = {}) {
   const values = new Map<string, Uint8Array>();
@@ -108,7 +116,18 @@ function toolInventory(options: { mutate?: (tools: Record<string, unknown>[]) =>
 }
 
 function mcpResponse(request: Record<string, unknown>, result: unknown, headers: HeadersInit = {}) {
-  return json({ jsonrpc: "2.0", id: request.id, result }, 200, headers);
+  return json(
+    {
+      jsonrpc: "2.0",
+      id: request.id,
+      result:
+        result && typeof result === "object" && !Array.isArray(result)
+          ? { ...result, resultType: "complete" }
+          : result,
+    },
+    200,
+    headers,
+  );
 }
 
 function mcpEventResponse(
@@ -116,7 +135,14 @@ function mcpEventResponse(
   result: unknown,
   headers: HeadersInit = {},
 ) {
-  const payload = JSON.stringify({ jsonrpc: "2.0", id: request.id, result });
+  const payload = JSON.stringify({
+    jsonrpc: "2.0",
+    id: request.id,
+    result:
+      result && typeof result === "object" && !Array.isArray(result)
+        ? { ...result, resultType: "complete" }
+        : result,
+  });
   return new Response(`: keep-alive\r\n\r\nevent: message\r\ndata: ${payload}\r\n\r\n`, {
     status: 200,
     headers: { "content-type": "text/event-stream", ...headers },
@@ -129,6 +155,7 @@ function oauthMcpFetch(
     readonly mutateTools?: (tools: Record<string, unknown>[]) => void;
     readonly toolResult?: unknown;
     readonly eventStream?: boolean;
+    readonly mcpFailure?: { readonly method: string; readonly status: number };
   } = {},
 ) {
   const requests: Array<{ url: string; init?: RequestInit; body?: Record<string, unknown> }> = [];
@@ -173,22 +200,26 @@ function oauthMcpFetch(
         scope: scopes.join(" "),
       });
     }
-    if (url.endsWith("/mcp-oauth/revoke")) return new Response(null, { status: 204 });
+    if (url.endsWith("/mcp-oauth/revoke")) {
+      const form = new URLSearchParams(String(init?.body));
+      if (form.get("client_id") !== "dynamic-client-fixture") {
+        return json({ error: "invalid_client" }, 400);
+      }
+      return new Response(null, { status: 204 });
+    }
     if (url === SERVER) {
       if (!body) throw new Error("missing fixture MCP request body");
-      const respond = options.eventStream ? mcpEventResponse : mcpResponse;
-      if (body.method === "initialize") {
-        return respond(
-          body,
-          {
-            protocolVersion: "2025-06-18",
-            capabilities: { tools: {} },
-            serverInfo: { name: "n8n", version: "2.34.1" },
-          },
-          { "mcp-session-id": "session-fixture" },
-        );
+      const mcpFailure = options.mcpFailure;
+      if (mcpFailure && body.method === mcpFailure.method) {
+        return json({ message: "fixture-private-detail" }, mcpFailure.status);
       }
-      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      const respond = options.eventStream ? mcpEventResponse : mcpResponse;
+      if (body.method === "server/discover") {
+        return respond(body, {
+          supportedVersions: [MCP_PROTOCOL_VERSION],
+          capabilities: { tools: {} },
+        });
+      }
       if (body.method === "tools/list") {
         return respond(body, { tools: toolInventory({ mutate: options.mutateTools }) });
       }
@@ -204,18 +235,9 @@ function oauthMcpFetch(
 async function authorize(
   provider: N8nProvider,
   requests: ReturnType<typeof oauthMcpFetch>["requests"],
+  capabilities: ReadonlyArray<string> = ["read", "write"],
 ) {
-  const flow = await provider.connect(
-    [
-      "workflow.read",
-      "workflow.write",
-      "workflow.execute",
-      "execution.read",
-      "data-table.read",
-      "data-table.write",
-    ],
-    lifecycle(),
-  );
+  const flow = await provider.connect(capabilities, lifecycle());
   expect(flow.kind).toBe("authorization_url");
   if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
   const authorization = new URL(flow.authorizationUrl);
@@ -271,6 +293,11 @@ describe("N8nProvider", () => {
       expect(schema.properties).toHaveProperty("versionDescription");
     }
     const search = N8N_TOOLS.find(({ name }) => name === "n8n.search_workflows")!;
+    const searchSchema = Schema.toJsonSchemaDocument(search.input).schema as {
+      properties: Record<string, unknown>;
+    };
+    expect(searchSchema.properties).toHaveProperty("folderId");
+    expect(searchSchema.properties).toHaveProperty("includeSubfolders");
     await expect(
       Schema.decodeUnknownPromise(search.input)(
         { limit: 201, extra: true },
@@ -278,12 +305,34 @@ describe("N8nProvider", () => {
       ),
     ).rejects.toBeDefined();
     const execute = N8N_TOOLS.find(({ name }) => name === "n8n.execute_workflow")!;
+    const executeSchema = Schema.toJsonSchemaDocument(execute.input).schema as {
+      properties: Record<string, unknown>;
+    };
+    expect(executeSchema.properties).toHaveProperty("triggerNodeName");
+    const executeInputsSchema = executeSchema.properties.inputs as {
+      anyOf: Array<{ properties: Record<string, unknown> }>;
+    };
+    for (const inputVariant of executeInputsSchema.anyOf) {
+      expect(inputVariant.properties).not.toHaveProperty("type");
+    }
     await expect(
       Schema.decodeUnknownPromise(execute.input)(
         { workflowId: "wf" },
         { onExcessProperty: "error" },
       ),
     ).rejects.toBeDefined();
+    const detailsSchema = Schema.toJsonSchemaDocument(
+      N8N_TOOLS.find(({ name }) => name === "n8n.get_workflow_details")!.input,
+    ).schema as { properties: Record<string, unknown> };
+    expect(detailsSchema.properties).toHaveProperty("detailLevel");
+    const sdkReferenceSchema = Schema.toJsonSchemaDocument(
+      N8N_TOOLS.find(({ name }) => name === "n8n.get_workflow_sdk_reference")!.input,
+    ).schema as { properties: Record<string, unknown> };
+    expect(JSON.stringify(sdkReferenceSchema.properties.section)).toContain("groups");
+    const updateSchema = Schema.toJsonSchemaDocument(
+      N8N_TOOLS.find(({ name }) => name === "n8n.update_workflow")!.input,
+    ).schema as { properties: Record<string, unknown> };
+    expect(JSON.stringify(updateSchema.properties.operations)).toContain("addNodeGroup");
     expect(execute).toMatchObject({ readOnly: false, destructive: true, idempotent: false });
   });
 
@@ -321,7 +370,117 @@ describe("N8nProvider", () => {
     });
     expect(mock.requests.at(-1)?.body).toMatchObject({
       method: "tools/call",
-      params: { name: "search_projects", arguments: { limit: 1 } },
+      params: {
+        name: "search_projects",
+        arguments: { limit: 1 },
+        _meta: {
+          [MCP_PROTOCOL_VERSION_META_KEY]: MCP_PROTOCOL_VERSION,
+          [MCP_CLIENT_CAPABILITIES_META_KEY]: {},
+          [MCP_CLIENT_INFO_META_KEY]: { name: "TritonAI Harness", version: "1.0.0" },
+        },
+      },
+    });
+    const discover = mock.requests.find(({ body }) => body?.method === "server/discover")!;
+    expect(new Headers(discover.init?.headers).get("mcp-method")).toBe("server/discover");
+    expect(discover.body?.params).toMatchObject({
+      _meta: {
+        [MCP_PROTOCOL_VERSION_META_KEY]: MCP_PROTOCOL_VERSION,
+        [MCP_CLIENT_CAPABILITIES_META_KEY]: {},
+        [MCP_CLIENT_INFO_META_KEY]: { name: "TritonAI Harness", version: "1.0.0" },
+      },
+    });
+    expect(mock.requests.some(({ body }) => body?.method === "notifications/initialized")).toBe(
+      false,
+    );
+    const call = mock.requests.at(-1)!;
+    expect(new Headers(call.init?.headers).get("mcp-method")).toBe("tools/call");
+    expect(new Headers(call.init?.headers).get("mcp-name")).toBe("search_projects");
+    await provider.close();
+  });
+
+  it("accepts equivalent local JSON Schema references in the reviewed tool catalog", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch({
+      mutateTools: (tools) => {
+        const update = tools.find(({ name }) => name === "update_workflow")!;
+        const schema = update.inputSchema as {
+          properties: {
+            operations: {
+              items: {
+                properties: Record<string, unknown>;
+              };
+            };
+          };
+        };
+        schema.properties.operations.items.properties.position = {
+          $ref: "#/properties/operations/items/properties/node/properties/position",
+        };
+      },
+    });
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+
+    await authorize(provider, mock.requests);
+    await expect(provider.status()).resolves.toMatchObject({ state: "connected" });
+    await provider.close();
+  });
+
+  it("requests read-only OAuth scopes and requires reconnecting before write escalation", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch({ scopes: READ_SCOPES });
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    const authorization = await authorize(provider, mock.requests, ["read"]);
+    expect(authorization.searchParams.get("scope")?.split(" ").toSorted()).toEqual(
+      [...READ_SCOPES].toSorted(),
+    );
+    await expect(provider.status()).resolves.toMatchObject({
+      grantedCapabilities: ["read"],
+    });
+    await expect(provider.connect(["read", "write"], lifecycle())).rejects.toThrow(
+      /disconnect and reconnect.*additional access/iu,
+    );
+    await provider.close();
+  });
+
+  it("rejects and revokes custom grants that do not match Read only or All", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch({ scopes: [...READ_SCOPES, WRITE_SCOPES[0]] });
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    const flow = await provider.connect(["read", "write"], lifecycle());
+    expect(flow.kind).toBe("authorization_url");
+    if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
+    const authorization = new URL(flow.authorizationUrl);
+    const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+    callback.searchParams.set("state", authorization.searchParams.get("state")!);
+    callback.searchParams.set("iss", ORIGIN);
+    callback.searchParams.set("code", "authorization-code-fixture");
+    expect((await fetch(callback)).status).toBe(200);
+
+    await expect(provider.poll(flow.flowId, lifecycle())).resolves.toMatchObject({
+      state: "failed",
+      message: expect.stringMatching(/All or Read only/iu),
+    });
+    expect(mock.requests.filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))).toHaveLength(1);
+    expect(
+      new URLSearchParams(
+        String(mock.requests.find(({ url }) => url.endsWith("/mcp-oauth/revoke"))!.init?.body),
+      ).get("client_id"),
+    ).toBe("dynamic-client-fixture");
+    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+    await expect(provider.status()).resolves.toMatchObject({
+      state: "not_connected",
+      grantedCapabilities: [],
     });
     await provider.close();
   });
@@ -440,10 +599,59 @@ describe("N8nProvider", () => {
     await provider.close();
   });
 
-  it("fails closed on unknown tools and schema drift without storing credentials", async () => {
-    for (const mutateTools of [
-      (tools: Record<string, unknown>[]) =>
+  it("keeps unreviewed upstream tools unavailable without blocking the reviewed catalog", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch({
+      scopes: READ_SCOPES,
+      mutateTools: (tools) =>
         tools.push({ name: "future_admin_tool", inputSchema: { type: "object" } }),
+    });
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    await authorize(provider, mock.requests, ["read"]);
+    await expect(provider.status()).resolves.toMatchObject({ state: "connected" });
+    expect(provider.tools.some(({ name }) => name === "n8n.future_admin_tool")).toBe(false);
+    await provider.close();
+  });
+
+  it("reports the safe MCP method and HTTP status when connection verification fails", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch({
+      scopes: READ_SCOPES,
+      mcpFailure: { method: "server/discover", status: 500 },
+    });
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    const flow = await provider.connect(["read"], lifecycle());
+    if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
+    const authorization = new URL(flow.authorizationUrl);
+    const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+    callback.searchParams.set("state", authorization.searchParams.get("state")!);
+    callback.searchParams.set("iss", ORIGIN);
+    callback.searchParams.set("code", "authorization-code-fixture");
+    expect((await fetch(callback)).status).toBe(200);
+
+    await expect(provider.poll(flow.flowId, lifecycle())).resolves.toMatchObject({
+      state: "failed",
+      message: "n8n MCP server/discover failed (HTTP 500). Reconnect and try again.",
+    });
+    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+    expect(mock.requests.filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))).toHaveLength(1);
+    await expect(provider.status()).resolves.toMatchObject({ state: "not_connected" });
+    await expect(provider.connect(["read"], lifecycle())).resolves.toMatchObject({
+      kind: "authorization_url",
+    });
+    await provider.close();
+  });
+
+  it("fails closed on reviewed schema and effect-metadata drift without storing credentials", async () => {
+    for (const mutateTools of [
       (tools: Record<string, unknown>[]) => {
         const first = tools[0]!;
         first.inputSchema = { type: "object", properties: { injected: { type: "string" } } };
@@ -453,13 +661,13 @@ describe("N8nProvider", () => {
       },
     ]) {
       const secrets = memorySecrets();
-      const mock = oauthMcpFetch({ mutateTools });
+      const mock = oauthMcpFetch({ scopes: READ_SCOPES, mutateTools });
       const provider = new N8nProvider(
         secrets.service,
         { serverUrl: SERVER },
         mock.fetchImplementation,
       );
-      const flow = await provider.connect(["workflow.read"], lifecycle());
+      const flow = await provider.connect(["read"], lifecycle());
       if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
       const authorization = new URL(flow.authorizationUrl);
       const callback = new URL(authorization.searchParams.get("redirect_uri")!);
@@ -467,7 +675,10 @@ describe("N8nProvider", () => {
       callback.searchParams.set("iss", ORIGIN);
       callback.searchParams.set("code", "code");
       await fetch(callback);
-      await expect(provider.poll(flow.flowId, lifecycle())).rejects.toThrow(/changed|schema/u);
+      await expect(provider.poll(flow.flowId, lifecycle())).resolves.toMatchObject({
+        state: "failed",
+        message: expect.stringMatching(/changed|schema/u),
+      });
       expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
       await provider.close();
     }
@@ -476,7 +687,7 @@ describe("N8nProvider", () => {
   it("accepts a narrowed grant and blocks tools absent from the returned inventory", async () => {
     const secrets = memorySecrets();
     const mock = oauthMcpFetch({
-      scopes: ["workflow:read"],
+      scopes: READ_SCOPES,
       mutateTools: (tools) => tools.splice(1),
     });
     const provider = new N8nProvider(
@@ -484,9 +695,9 @@ describe("N8nProvider", () => {
       { serverUrl: SERVER },
       mock.fetchImplementation,
     );
-    await authorize(provider, mock.requests);
+    await authorize(provider, mock.requests, ["read"]);
     await expect(provider.status()).resolves.toMatchObject({
-      grantedCapabilities: ["workflow.read"],
+      grantedCapabilities: ["read"],
     });
     await expect(
       provider.invoke("n8n.get_workflow_details", { workflowId: "wf" }, invocation(false)),
@@ -549,7 +760,7 @@ describe("N8nProvider", () => {
 
   it("serializes disconnect with authorization-code exchange and revokes the issued credential", async () => {
     const secrets = memorySecrets();
-    const mock = oauthMcpFetch();
+    const mock = oauthMcpFetch({ scopes: READ_SCOPES });
     let releaseToken: (() => void) | undefined;
     let markTokenStarted: (() => void) | undefined;
     const tokenGate = new Promise<void>((resolve) => {
@@ -568,7 +779,7 @@ describe("N8nProvider", () => {
       return mock.fetchImplementation(input, init);
     }) as unknown as typeof fetch;
     const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
-    const flow = await provider.connect(["workflow.read"], lifecycle());
+    const flow = await provider.connect(["read"], lifecycle());
     if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
     const authorization = new URL(flow.authorizationUrl);
     const callback = new URL(authorization.searchParams.get("redirect_uri")!);
@@ -590,6 +801,9 @@ describe("N8nProvider", () => {
     expect(new URLSearchParams(String(revocations[0]!.init?.body)).get("token")).toBe(
       "refresh-fixture",
     );
+    expect(new URLSearchParams(String(revocations[0]!.init?.body)).get("client_id")).toBe(
+      "dynamic-client-fixture",
+    );
     await expect(provider.status()).resolves.toMatchObject({ state: "not_connected" });
     await provider.close();
   });
@@ -604,7 +818,7 @@ describe("N8nProvider", () => {
         }),
     ) as unknown as typeof fetch;
     const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, oversized);
-    await expect(provider.connect(["workflow.read"], lifecycle())).rejects.toThrow(/size/u);
+    await expect(provider.connect(["read"], lifecycle())).rejects.toThrow(/size/u);
     await provider.close();
 
     const controller = new AbortController();
@@ -622,7 +836,7 @@ describe("N8nProvider", () => {
     ) as unknown as typeof fetch;
     const cancelled = new N8nProvider(secrets.service, { serverUrl: SERVER }, waiting);
     const context = { signal: controller.signal, beginCommit: async () => controller.signal };
-    const pending = cancelled.connect(["workflow.read"], context);
+    const pending = cancelled.connect(["read"], context);
     controller.abort();
     await expect(pending).rejects.toThrow(/cancelled/u);
     await cancelled.close();

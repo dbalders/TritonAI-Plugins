@@ -2,7 +2,7 @@ export declare const PLUGIN_API_VERSION: "tritonai.plugin/v1";
 export declare const PLUGIN_KIND: "IntegrationPlugin";
 export declare const PLUGIN_MANIFEST_VERSION: 1;
 export declare const SDK_API_MAJOR: 1;
-export declare const HOST_CONTRACT_LEVEL: 1;
+export declare const HOST_CONTRACT_LEVEL: 2;
 
 export type JsonPrimitive = null | boolean | number | string;
 export type JsonValue = JsonPrimitive | JsonObject | readonly JsonValue[];
@@ -19,7 +19,7 @@ export interface PluginCapability {
   readonly id: string;
   readonly displayName: string;
   readonly description: string;
-  readonly access: "default" | "opt-in";
+  readonly access: "default" | "opt-in" | "authorization";
 }
 export interface PluginTool {
   readonly name: string;

@@ -51,7 +51,7 @@ const manifest = validateManifestV1({
   name: current.name,
   description: current.description,
   version: current.version,
-  sdk: { apiMajor: 1, requiredHostContractLevel: 1 },
+  sdk: { apiMajor: 1, requiredHostContractLevel: 2 },
   entry: "dist/index.mjs",
   provider: current.provider,
   configurationSchema: {
@@ -66,7 +66,10 @@ const manifest = validateManifestV1({
     required: ["serverUrl"],
     additionalProperties: false,
   },
-  capabilities: current.capabilities,
+  capabilities: current.capabilities.map((capability) => ({
+    ...capability,
+    access: "authorization",
+  })),
   tools,
   skills: current.skills,
 });

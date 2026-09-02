@@ -6,9 +6,11 @@ Installer code. n8n owns workflow behavior and authorization; this package owns 
 PKCE, the reviewed tool surface, input validation, and bounded Streamable HTTP transport.
 
 Each user signs in to n8n in their system browser. The provider uses OAuth discovery and dynamic
-client registration, requests every currently reviewed instance-MCP scope, and stores tokens only
-through the SDK's package-scoped secret facade. There is no API key, shared account, client secret,
-embedded browser, generic REST client, or n8n API reimplementation.
+client registration, requests the reviewed Read and Write scope ceiling, and stores tokens only
+through the SDK's package-scoped secret facade. The user's n8n consent choice is authoritative:
+Read only grants the complete read bundle, while All grants Read and Write. Harness reflects that
+grant instead of offering a competing capability switch. There is no API key, shared account,
+client secret, embedded browser, generic REST client, or n8n API reimplementation.
 
 ## Configuration
 
@@ -17,12 +19,20 @@ The reviewed endpoint is declared in the sealed SDK manifest:
 The factory accepts exactly `https://n8n.tritonai.ucsd.edu/mcp-server/http`, rejects extra
 configuration, and keeps OAuth discovery and all advertised endpoints on that origin.
 
+The n8n instance administrator must add `http://127.0.0.1/oauth2/callback` under
+**Settings → Instance-level MCP → Allowed OAuth Redirect URLs**. The provider uses an ephemeral
+loopback port for each sign-in; n8n permits that varying port while still matching the callback's
+scheme, host, and path. Without this entry, n8n rejects authorization with
+`Redirect URI not in allowed list` before the user can approve access.
+
 ## Access model
 
-All nine capabilities are enabled by default. “Full access” means the complete reviewed MCP
-surface that the connected n8n user and their n8n role can access. n8n remains the resource-level
-RBAC boundary. The SDK host requires explicit approval and one commit admission before execute,
-create, update, publish, archive, data-table write, or other mutating calls.
+Read access covers the complete reviewed inspection and design surface. Write adds workflow
+execution, creation, updates, publishing, archiving, and Data Table changes. n8n's OAuth consent is
+the single service-access choice, and the plugin accepts only its complete Read-only or All grant
+bundles. n8n remains the resource-level RBAC boundary. The SDK host still requires explicit approval
+and one commit admission before execute, create, update, publish, archive, Data Table write, or other
+mutating calls.
 
 The package pins the 34 tools exposed by the reviewed UC San Diego n8n 2.34.1 deployment. Every
 connection initializes Streamable HTTP and verifies every returned upstream name and input-schema

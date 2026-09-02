@@ -2,6 +2,7 @@
 import * as Schema from "effect/Schema";
 import * as NodeCrypto from "node:crypto";
 import * as NodeHttp from "node:http";
+import * as NodeUtil from "node:util";
 
 import {
   type IntegrationAuthorizationUrlConnectResult,
@@ -24,7 +25,11 @@ export const N8N_SECRET_SUFFIX = "oauth";
 
 const REVIEWED_SERVER_URL = "https://n8n.tritonai.ucsd.edu/mcp-server/http";
 const CALLBACK_PATH = "/oauth2/callback";
-const MCP_PROTOCOL_VERSION = "2025-06-18";
+const MCP_PROTOCOL_VERSION = "2026-07-28";
+const MCP_PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion";
+const MCP_CLIENT_CAPABILITIES_META_KEY = "io.modelcontextprotocol/clientCapabilities";
+const MCP_CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo";
+const MCP_CLIENT_INFO = { name: "TritonAI Harness", version: "1.0.0" } as const;
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 const TEST_REQUEST_TIMEOUT_MS = 5 * 60_000 + 10_000;
 const FLOW_LIFETIME_MS = 5 * 60_000;
@@ -46,30 +51,24 @@ const MAX_MCP_TOOLS = 64;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
-const OAUTH_SCOPES = [
+const READ_OAUTH_SCOPES = [
   "credential:read",
   "dataTable:read",
-  "dataTable:write",
   "execution:read",
   "project:read",
   "tag:read",
-  "workflow:execute",
   "workflow:read",
+] as const;
+const WRITE_OAUTH_SCOPES = [
+  "dataTable:write",
+  "project:write",
+  "workflow:execute",
   "workflow:write",
 ] as const;
+const OAUTH_SCOPES = [...READ_OAUTH_SCOPES, ...WRITE_OAUTH_SCOPES] as const;
 const OAUTH_SCOPE_SET = new Set<string>(OAUTH_SCOPES);
 
-const CAPABILITIES = [
-  "credential.read",
-  "data-table.read",
-  "data-table.write",
-  "execution.read",
-  "project.read",
-  "tag.read",
-  "workflow.execute",
-  "workflow.read",
-  "workflow.write",
-] as const;
+const CAPABILITIES = ["read", "write"] as const;
 const CAPABILITY_SET = new Set<string>(CAPABILITIES);
 
 export interface N8nConfiguration {
@@ -87,6 +86,13 @@ const OptionalQuery = Schema.optionalKey(
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)),
 );
 const OptionalProjectId = Schema.optionalKey(BoundedId);
+const OptionalFolderId = Schema.optionalKey(
+  Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(36),
+    Schema.isPattern(/^[A-Za-z0-9_-]+$/u),
+  ),
+);
 const OptionalLimit100 = Schema.optionalKey(
   Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })),
 );
@@ -116,8 +122,14 @@ const SearchWorkflowsInput = Schema.Struct({
       "name:desc",
     ]),
   ),
+  folderId: OptionalFolderId,
+  includeSubfolders: Schema.optionalKey(Schema.Boolean),
 });
 const WorkflowIdInput = Schema.Struct({ workflowId: BoundedId });
+const WorkflowDetailsInput = Schema.Struct({
+  workflowId: BoundedId,
+  detailLevel: Schema.optionalKey(Schema.Literals(["full", "execution"])),
+});
 const WorkflowHistoryInput = Schema.Struct({
   workflowId: BoundedId,
   limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
@@ -127,12 +139,12 @@ const WorkflowVersionInput = Schema.Struct({ workflowId: BoundedId, versionId: B
 const ExecuteWorkflowInput = Schema.Struct({
   workflowId: BoundedId,
   executionMode: Schema.Literals(["manual", "production"]),
+  triggerNodeName: Schema.optionalKey(BoundedText),
   inputs: Schema.optionalKey(
     Schema.Union([
-      Schema.Struct({ type: Schema.Literal("chat"), chatInput: BoundedText }),
-      Schema.Struct({ type: Schema.Literal("form"), formData: JsonObject }),
+      Schema.Struct({ chatInput: BoundedText }),
+      Schema.Struct({ formData: JsonObject }),
       Schema.Struct({
-        type: Schema.Literal("webhook"),
         webhookData: Schema.Struct({
           method: Schema.optionalKey(
             Schema.Literals(["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]),
@@ -223,6 +235,7 @@ const GetSdkReferenceInput = Schema.Struct({
       "guidelines",
       "design",
       "all",
+      "groups",
     ]),
   ),
 });
@@ -241,25 +254,27 @@ const GetNodeTypesInput = Schema.Struct({
   nodeIds: Schema.Array(NodeTypeRequest).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
 });
 const BestPracticesInput = Schema.Struct({
-  technique: Schema.Literals([
-    "list",
-    "scheduling",
-    "chatbot",
-    "form_input",
-    "scraping_and_research",
-    "monitoring",
-    "enrichment",
-    "triage",
-    "content_generation",
-    "document_processing",
-    "data_extraction",
-    "data_analysis",
-    "data_transformation",
-    "data_persistence",
-    "notification",
-    "knowledge_base",
-    "human_in_the_loop",
-    "web_app",
+  technique: Schema.Union([
+    Schema.Literals([
+      "scheduling",
+      "chatbot",
+      "form_input",
+      "scraping_and_research",
+      "monitoring",
+      "enrichment",
+      "triage",
+      "content_generation",
+      "document_processing",
+      "data_extraction",
+      "data_analysis",
+      "data_transformation",
+      "data_persistence",
+      "notification",
+      "knowledge_base",
+      "human_in_the_loop",
+      "web_app",
+    ]),
+    Schema.Literal("list"),
   ]),
 });
 const ExploreNodeResourcesInput = Schema.Struct({
@@ -300,9 +315,13 @@ const CreateWorkflowInput = Schema.Struct({
   projectId: OptionalProjectId,
   folderId: Schema.optionalKey(BoundedId),
 });
-const Position = Schema.Array(
-  Schema.Finite.check(Schema.isBetween({ minimum: -1_000_000, maximum: 1_000_000 })),
-).check(Schema.isMinLength(2), Schema.isMaxLength(2));
+const PositionCoordinate = Schema.Finite.check(
+  Schema.isBetween({ minimum: -1_000_000, maximum: 1_000_000 }),
+);
+const NodePosition = Schema.Array(PositionCoordinate).check(
+  Schema.isMinLength(2),
+  Schema.isMaxLength(2),
+);
 const NodeCredentials = Schema.Record(
   BoundedText,
   Schema.Struct({ id: Schema.optionalKey(BoundedId), name: BoundedText }),
@@ -313,7 +332,7 @@ const NewNode = Schema.Struct({
   type: BoundedText,
   typeVersion: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 10_000 })),
   parameters: Schema.optionalKey(JsonObject),
-  position: Schema.optionalKey(Position),
+  position: Schema.optionalKey(NodePosition),
   credentials: Schema.optionalKey(NodeCredentials),
   disabled: Schema.optionalKey(Schema.Boolean),
   notes: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(16_384))),
@@ -380,6 +399,9 @@ const UpdateOperation = Schema.Struct({
     "addTags",
     "removeTags",
     "setNodeGroups",
+    "addNodeGroup",
+    "removeNodeGroup",
+    "updateNodeGroup",
   ]),
   nodeName: Schema.optionalKey(BoundedText),
   node: Schema.optionalKey(NewNode),
@@ -399,7 +421,7 @@ const UpdateOperation = Schema.Struct({
   credentialKey: Schema.optionalKey(BoundedText),
   credentialId: Schema.optionalKey(BoundedId),
   credentialName: Schema.optionalKey(BoundedText),
-  position: Schema.optionalKey(Position),
+  position: Schema.optionalKey(NodePosition),
   disabled: Schema.optionalKey(Schema.Boolean),
   settings: Schema.optionalKey(UpdateSettings),
   name: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
@@ -417,6 +439,11 @@ const UpdateOperation = Schema.Struct({
       }),
     ).check(Schema.isMaxLength(100)),
   ),
+  groupName: Schema.optionalKey(BoundedText),
+  nodeNames: Schema.optionalKey(
+    Schema.Array(BoundedText).check(Schema.isMinLength(1), Schema.isMaxLength(250)),
+  ),
+  id: Schema.optionalKey(BoundedId),
 });
 const UpdateWorkflowInput = Schema.Struct({
   workflowId: BoundedId,
@@ -510,214 +537,212 @@ const REVIEWED_TOOLS = [
     "search_workflows",
     "Search workflow previews visible to the connected n8n user.",
     SearchWorkflowsInput,
-    "workflow.read",
+    "read",
   ),
   reviewedTool(
     "get_workflow_details",
     "Read one accessible workflow with sanitized nodes and trigger guidance.",
-    WorkflowIdInput,
-    "workflow.read",
+    WorkflowDetailsInput,
+    "read",
   ),
   reviewedTool(
     "get_workflow_history",
     "Read bounded version history for one accessible workflow.",
     WorkflowHistoryInput,
-    "workflow.read",
+    "read",
   ),
   reviewedTool(
     "get_workflow_version",
     "Read one exact historical workflow version.",
     WorkflowVersionInput,
-    "workflow.read",
+    "read",
   ),
   reviewedTool(
     "execute_workflow",
     "Execute an accessible workflow in manual or production mode.",
     ExecuteWorkflowInput,
-    "workflow.execute",
+    "write",
     { readOnly: false, destructive: true, idempotent: false, openWorld: true },
   ),
   reviewedTool(
     "test_workflow",
     "Test workflow logic with bounded pin data.",
     TestWorkflowInput,
-    "workflow.execute",
+    "write",
     { readOnly: false, destructive: true, idempotent: false },
   ),
   reviewedTool(
     "prepare_workflow_pin_data",
     "Prepare pin-data schemas for testing one workflow.",
     WorkflowIdInput,
-    "workflow.execute",
+    "write",
   ),
   reviewedTool(
     "publish_workflow",
     "Publish an accessible workflow version.",
     PublishWorkflowInput,
-    "workflow.write",
+    "write",
     { readOnly: false, idempotent: true },
   ),
   reviewedTool(
     "unpublish_workflow",
     "Unpublish an accessible workflow.",
     WorkflowIdInput,
-    "workflow.write",
+    "write",
     { readOnly: false, idempotent: true },
   ),
   reviewedTool(
     "search_projects",
     "Search projects visible to the connected n8n user.",
     SearchProjectsInput,
-    "project.read",
+    "read",
   ),
   reviewedTool(
     "search_folders",
     "Search folders within one accessible project.",
     SearchFoldersInput,
-    "project.read",
+    "read",
   ),
-  reviewedTool("list_workflow_tags", "List available workflow tags.", ListTagsInput, "tag.read"),
+  reviewedTool("list_workflow_tags", "List available workflow tags.", ListTagsInput, "read"),
   reviewedTool(
     "get_workflow_execution",
     "Read one accessible execution with optionally bounded result data.",
     GetExecutionInput,
-    "execution.read",
+    "read",
   ),
   reviewedTool(
     "search_workflow_executions",
     "Search accessible workflow executions.",
     SearchExecutionsInput,
-    "execution.read",
+    "read",
   ),
   reviewedTool(
     "list_credentials",
     "List accessible credential names and metadata without secret values.",
     ListCredentialsInput,
-    "credential.read",
+    "read",
   ),
   reviewedTool(
     "list_n8n_connect_services",
     "List n8n Connect managed-credential coverage without credential values.",
     EmptyInput,
-    "credential.read",
+    "read",
   ),
   reviewedTool(
     "get_workflow_sdk_reference",
     "Read reviewed n8n Workflow SDK reference material.",
     GetSdkReferenceInput,
-    "workflow.read",
+    "read",
   ),
   reviewedTool(
     "search_nodes",
     "Search n8n node types by bounded queries.",
     SearchNodesInput,
-    "workflow.read",
+    "read",
   ),
   reviewedTool(
     "get_node_types",
     "Read exact TypeScript definitions for selected n8n node types.",
     GetNodeTypesInput,
-    "workflow.read",
+    "read",
   ),
   reviewedTool(
     "get_workflow_best_practices",
     "Read n8n best practices for a workflow technique.",
     BestPracticesInput,
-    "workflow.read",
+    "read",
   ),
   reviewedTool(
     "explore_node_resources",
     "Resolve resources for one node using an accessible credential.",
     ExploreNodeResourcesInput,
-    "credential.read",
+    "read",
     { openWorld: true },
   ),
   reviewedTool(
     "validate_workflow",
     "Validate bounded Workflow SDK code without saving it.",
     ValidateWorkflowInput,
-    "workflow.read",
+    "read",
   ),
   reviewedTool(
     "validate_node_config",
     "Validate bounded node configurations without saving them.",
     ValidateNodeConfigInput,
-    "workflow.read",
+    "read",
   ),
   reviewedTool(
     "create_workflow_from_code",
     "Create a workflow from validated Workflow SDK code.",
     CreateWorkflowInput,
-    "workflow.write",
+    "write",
     { readOnly: false, idempotent: false },
   ),
   reviewedTool(
     "update_workflow",
     "Atomically apply a bounded ordered operation batch to a workflow.",
     UpdateWorkflowInput,
-    "workflow.write",
+    "write",
     { readOnly: false, destructive: true, idempotent: false },
   ),
-  reviewedTool(
-    "archive_workflow",
-    "Archive an accessible workflow.",
-    WorkflowIdInput,
-    "workflow.write",
-    { readOnly: false, destructive: true, idempotent: true },
-  ),
+  reviewedTool("archive_workflow", "Archive an accessible workflow.", WorkflowIdInput, "write", {
+    readOnly: false,
+    destructive: true,
+    idempotent: true,
+  }),
   reviewedTool(
     "restore_workflow_version",
     "Restore an accessible workflow from one exact historical version.",
     WorkflowVersionInput,
-    "workflow.write",
+    "write",
     { readOnly: false, destructive: true, idempotent: false },
   ),
   reviewedTool(
     "search_data_tables",
     "Search data tables visible to the connected n8n user.",
     SearchDataTablesInput,
-    "data-table.read",
+    "read",
   ),
   reviewedTool(
     "create_data_table",
     "Create a data table in an accessible project.",
     CreateDataTableInput,
-    "data-table.write",
+    "write",
     { readOnly: false, idempotent: false },
   ),
   reviewedTool(
     "add_data_table_column",
     "Add a column to an accessible data table.",
     AddDataTableColumnInput,
-    "data-table.write",
+    "write",
     { readOnly: false, idempotent: false },
   ),
   reviewedTool(
     "rename_data_table_column",
     "Rename a column in an accessible data table.",
     RenameDataTableColumnInput,
-    "data-table.write",
+    "write",
     { readOnly: false, idempotent: true },
   ),
   reviewedTool(
     "delete_data_table_column",
     "Permanently delete a data-table column and its data.",
     DeleteDataTableColumnInput,
-    "data-table.write",
+    "write",
     { readOnly: false, destructive: true, idempotent: false },
   ),
   reviewedTool(
     "rename_data_table",
     "Rename an accessible data table.",
     RenameDataTableInput,
-    "data-table.write",
+    "write",
     { readOnly: false, idempotent: true },
   ),
   reviewedTool(
     "add_data_table_rows",
     "Insert bounded rows into an accessible data table.",
     AddDataTableRowsInput,
-    "data-table.write",
+    "write",
     { readOnly: false, idempotent: false },
   ),
 ] as const satisfies ReadonlyArray<ReviewedTool>;
@@ -766,6 +791,7 @@ interface PendingFlow {
   readonly redirectUri: string;
   clientId: string;
   readonly discovery: OAuthDiscovery;
+  readonly requestedScopes: ReadonlyArray<string>;
   readonly expiresAt: number;
   readonly generation: number;
   readonly server: NodeHttp.Server;
@@ -857,7 +883,11 @@ function sameOriginEndpoint(value: unknown, path: string, origin: string, label:
   return endpoint.toString();
 }
 
-function parseScopes(value: unknown, label = "n8n OAuth scope grant"): string[] {
+function parseScopes(
+  value: unknown,
+  label = "n8n OAuth scope grant",
+  allowedScopes: ReadonlySet<string> = OAUTH_SCOPE_SET,
+): string[] {
   const values =
     typeof value === "string"
       ? value.split(/\s+/u).filter(Boolean)
@@ -866,8 +896,8 @@ function parseScopes(value: unknown, label = "n8n OAuth scope grant"): string[] 
         : [];
   if (
     values.length === 0 ||
-    values.length > OAUTH_SCOPE_SET.size ||
-    values.some((entry) => typeof entry !== "string" || !OAUTH_SCOPE_SET.has(entry)) ||
+    values.length > allowedScopes.size ||
+    values.some((entry) => typeof entry !== "string" || !allowedScopes.has(entry)) ||
     new Set(values).size !== values.length
   ) {
     throw new Error(`${label} is invalid or broader than the reviewed scope set.`);
@@ -876,17 +906,29 @@ function parseScopes(value: unknown, label = "n8n OAuth scope grant"): string[] 
 }
 
 function capabilitiesFromScopes(scopes: ReadonlyArray<string>): ReadonlyArray<string> {
-  const capabilities = new Set<string>();
-  if (scopes.includes("credential:read")) capabilities.add("credential.read");
-  if (scopes.includes("project:read")) capabilities.add("project.read");
-  if (scopes.includes("tag:read")) capabilities.add("tag.read");
-  if (scopes.includes("workflow:read")) capabilities.add("workflow.read");
-  if (scopes.includes("workflow:write")) capabilities.add("workflow.write");
-  if (scopes.includes("workflow:execute")) capabilities.add("workflow.execute");
-  if (scopes.includes("execution:read")) capabilities.add("execution.read");
-  if (scopes.includes("dataTable:read")) capabilities.add("data-table.read");
-  if (scopes.includes("dataTable:write")) capabilities.add("data-table.write");
-  return [...capabilities].toSorted();
+  const granted = new Set(scopes);
+  if (granted.size === OAUTH_SCOPES.length && OAUTH_SCOPES.every((scope) => granted.has(scope))) {
+    return ["read", "write"];
+  }
+  if (
+    granted.size === READ_OAUTH_SCOPES.length &&
+    READ_OAUTH_SCOPES.every((scope) => granted.has(scope))
+  ) {
+    return ["read"];
+  }
+  return [];
+}
+
+function scopesForCapabilities(capabilities: ReadonlyArray<string>): ReadonlyArray<string> {
+  const selected = new Set(capabilities);
+  const scopes = new Set<string>();
+  if (selected.has("read") || selected.has("write")) {
+    for (const scope of READ_OAUTH_SCOPES) scopes.add(scope);
+  }
+  if (selected.has("write")) {
+    for (const scope of WRITE_OAUTH_SCOPES) scopes.add(scope);
+  }
+  return [...scopes].toSorted();
 }
 
 function parseCredential(encoded: string, serverUrl: string): Credential {
@@ -916,13 +958,17 @@ function parseCredential(encoded: string, serverUrl: string): Credential {
   ) {
     throw new Error("Stored n8n credential is invalid.");
   }
+  const scopes = parseScopes(value.scopes, "Stored n8n credential scope");
+  if (capabilitiesFromScopes(scopes).length === 0) {
+    throw new Error("Stored n8n credential has an unsupported custom scope grant.");
+  }
   return {
     version: 1,
     serverUrl,
     issuer: value.issuer,
     clientId: boundedString(value.clientId, MAX_CLIENT_ID_CHARS, "Stored n8n credential"),
     refreshToken: boundedString(value.refreshToken, MAX_TOKEN_CHARS, "Stored n8n credential"),
-    scopes: parseScopes(value.scopes, "Stored n8n credential scope"),
+    scopes,
     updatedAt: value.updatedAt,
   };
 }
@@ -1062,6 +1108,7 @@ function assertJsonBounds(value: unknown): void {
 // defensive validation bounds are intentionally local because equivalent Effect and n8n schemas
 // encode them differently; the local bounded decoder remains authoritative for accepted inputs.
 const STRUCTURAL_SCHEMA_KEYS = new Set([
+  "$ref",
   "anyOf",
   "enum",
   "items",
@@ -1071,15 +1118,42 @@ const STRUCTURAL_SCHEMA_KEYS = new Set([
   "type",
 ]);
 
-function schemaContract(value: unknown): unknown {
+function resolveLocalSchemaReference(root: unknown, reference: string): unknown {
+  if (!reference.startsWith("#/")) return undefined;
+  let current = root;
+  for (const encodedSegment of reference.slice(2).split("/")) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+    const segment = encodedSegment.replaceAll("~1", "/").replaceAll("~0", "~");
+    if (!Object.hasOwn(current, segment)) return undefined;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
+function schemaContract(
+  value: unknown,
+  root: unknown = value,
+  activeReferences: ReadonlySet<string> = new Set(),
+): unknown {
   if (Array.isArray(value)) {
-    const mapped = value.map(schemaContract);
+    const mapped = value.map((entry) => schemaContract(entry, root, activeReferences));
     return mapped.every((entry) => typeof entry === "string")
       ? (mapped as string[]).toSorted()
       : mapped;
   }
   if (!value || typeof value !== "object") return value;
   const record = value as Record<string, unknown>;
+  if (typeof record.$ref === "string" && !activeReferences.has(record.$ref)) {
+    const resolved = resolveLocalSchemaReference(root, record.$ref);
+    if (resolved && typeof resolved === "object" && !Array.isArray(resolved)) {
+      const siblings = Object.fromEntries(Object.entries(record).filter(([key]) => key !== "$ref"));
+      return schemaContract(
+        { ...(resolved as Record<string, unknown>), ...siblings },
+        root,
+        new Set([...activeReferences, record.$ref]),
+      );
+    }
+  }
   const normalized: Record<string, unknown> = {};
   for (const key of Object.keys(record)
     .filter((entry) => STRUCTURAL_SCHEMA_KEYS.has(entry))
@@ -1090,14 +1164,17 @@ function schemaContract(value: unknown): unknown {
       normalized.properties = Object.fromEntries(
         Object.keys(properties)
           .toSorted()
-          .map((name) => [name, schemaContract((properties as Record<string, unknown>)[name])]),
+          .map((name) => [
+            name,
+            schemaContract((properties as Record<string, unknown>)[name], root, activeReferences),
+          ]),
       );
       continue;
     }
-    normalized[key] = schemaContract(record[key]);
+    normalized[key] = schemaContract(record[key], root, activeReferences);
   }
   if ("const" in record && !("enum" in record)) {
-    normalized.enum = [schemaContract(record.const)];
+    normalized.enum = [schemaContract(record.const, root, activeReferences)];
   }
   if (
     normalized.properties &&
@@ -1107,11 +1184,84 @@ function schemaContract(value: unknown): unknown {
   ) {
     delete normalized.properties;
   }
+  if (Array.isArray(record.prefixItems) && !("type" in normalized)) {
+    normalized.type = "array";
+  }
+  if (
+    Array.isArray(normalized.anyOf) &&
+    normalized.anyOf.every(
+      (entry) =>
+        entry &&
+        typeof entry === "object" &&
+        !Array.isArray(entry) &&
+        (entry as Record<string, unknown>).type === "string" &&
+        Array.isArray((entry as Record<string, unknown>).enum) &&
+        ((entry as Record<string, unknown>).enum as unknown[]).every(
+          (value) => typeof value === "string",
+        ) &&
+        Object.keys(entry as Record<string, unknown>).every(
+          (key) => key === "type" || key === "enum",
+        ),
+    )
+  ) {
+    normalized.type = "string";
+    normalized.enum = [
+      ...new Set(
+        normalized.anyOf.flatMap((entry) => (entry as { readonly enum: readonly string[] }).enum),
+      ),
+    ].toSorted();
+    delete normalized.anyOf;
+  }
   return normalized;
 }
 
-function stableJson(value: unknown): string {
-  return JSON.stringify(schemaContract(value));
+function firstSchemaDifference(
+  actual: unknown,
+  expected: unknown,
+  path = "$",
+): { readonly path: string; readonly actual: unknown; readonly expected: unknown } | null {
+  if (Object.is(actual, expected)) return null;
+  if (Array.isArray(actual) && Array.isArray(expected)) {
+    if (actual.length !== expected.length) {
+      return { path: `${path}.length`, actual: actual.length, expected: expected.length };
+    }
+    for (let index = 0; index < actual.length; index += 1) {
+      const difference = firstSchemaDifference(actual[index], expected[index], `${path}[${index}]`);
+      if (difference) return difference;
+    }
+    return null;
+  }
+  if (
+    actual &&
+    expected &&
+    typeof actual === "object" &&
+    typeof expected === "object" &&
+    !Array.isArray(actual) &&
+    !Array.isArray(expected)
+  ) {
+    const actualRecord = actual as Record<string, unknown>;
+    const expectedRecord = expected as Record<string, unknown>;
+    const keys = [
+      ...new Set([...Object.keys(actualRecord), ...Object.keys(expectedRecord)]),
+    ].toSorted();
+    for (const key of keys) {
+      if (!(key in actualRecord) || !(key in expectedRecord)) {
+        return {
+          path: `${path}.${key}`,
+          actual: actualRecord[key] ?? "<missing>",
+          expected: expectedRecord[key] ?? "<missing>",
+        };
+      }
+      const difference = firstSchemaDifference(
+        actualRecord[key],
+        expectedRecord[key],
+        `${path}.${key}`,
+      );
+      if (difference) return difference;
+    }
+    return null;
+  }
+  return { path, actual, expected };
 }
 
 function expectedSchema(tool: ReviewedTool): unknown {
@@ -1131,24 +1281,34 @@ function validateToolInventory(value: unknown): ReadonlySet<string> {
     actual.set(name, tool);
   }
   const reviewedNames = new Set(REVIEWED_TOOLS.map((tool) => tool.upstreamName));
-  if (actual.size === 0 || [...actual.keys()].some((name) => !reviewedNames.has(name))) {
+  const reviewedAvailable = new Set([...actual.keys()].filter((name) => reviewedNames.has(name)));
+  if (reviewedAvailable.size === 0) {
     throw new IntegrationProviderPublicError(
-      "n8n MCP tools changed from the reviewed catalog. Update the TritonAI n8n plugin before use.",
+      "n8n MCP no longer offers any tools from the reviewed catalog. Update the TritonAI n8n plugin before use.",
     );
   }
+  const schemaChanges: string[] = [];
+  const schemaChangeDetails: string[] = [];
+  const effectChanges: string[] = [];
   for (const reviewed of REVIEWED_TOOLS) {
     const upstream = actual.get(reviewed.upstreamName);
     if (!upstream) continue;
-    if (stableJson(upstream.inputSchema) !== stableJson(expectedSchema(reviewed))) {
-      throw new IntegrationProviderPublicError(
-        `n8n MCP schema changed for ${reviewed.upstreamName}. Update the TritonAI n8n plugin before use.`,
-      );
+    const upstreamContract = schemaContract(upstream.inputSchema);
+    const reviewedContract = schemaContract(expectedSchema(reviewed));
+    if (!NodeUtil.isDeepStrictEqual(upstreamContract, reviewedContract)) {
+      schemaChanges.push(reviewed.upstreamName);
+      const difference = firstSchemaDifference(upstreamContract, reviewedContract);
+      if (difference) {
+        schemaChangeDetails.push(
+          `${reviewed.upstreamName}${difference.path.slice(1)} actual=${JSON.stringify(difference.actual)} expected=${JSON.stringify(difference.expected)}`,
+        );
+      }
+      continue;
     }
     const annotations = upstream.annotations;
     if (!annotations || typeof annotations !== "object" || Array.isArray(annotations)) {
-      throw new IntegrationProviderPublicError(
-        `n8n MCP effect metadata changed for ${reviewed.upstreamName}.`,
-      );
+      effectChanges.push(reviewed.upstreamName);
+      continue;
     }
     const hints = annotations as Record<string, unknown>;
     if (
@@ -1157,12 +1317,23 @@ function validateToolInventory(value: unknown): ReadonlySet<string> {
       hints.idempotentHint !== reviewed.idempotent ||
       hints.openWorldHint !== reviewed.openWorld
     ) {
-      throw new IntegrationProviderPublicError(
-        `n8n MCP effect metadata changed for ${reviewed.upstreamName}.`,
-      );
+      effectChanges.push(reviewed.upstreamName);
     }
   }
-  return new Set(actual.keys());
+  if (schemaChanges.length > 0) {
+    throw new IntegrationProviderPublicError(
+      `n8n MCP schema changed for: ${schemaChanges.join(", ")}. ${schemaChangeDetails.join("; ")}. Update the TritonAI n8n plugin before use.`,
+    );
+  }
+  if (effectChanges.length > 0) {
+    throw new IntegrationProviderPublicError(
+      `n8n MCP effect metadata changed for: ${effectChanges.join(", ")}.`,
+    );
+  }
+  // n8n can add tools without changing the contract of the reviewed subset. Keep those tools
+  // unavailable until the plugin explicitly reviews and exposes them instead of failing the
+  // entire connection whenever the upstream catalog grows.
+  return reviewedAvailable;
 }
 
 class SessionInvalidError extends Error {}
@@ -1652,14 +1823,18 @@ export class N8nProvider implements IntegrationProvider {
     signal: AbortSignal,
     maximumBytes: number,
     timeoutMs = this.#requestTimeoutMs,
-    notification = false,
   ): Promise<unknown> {
-    const id = notification ? undefined : `${++this.#rpcSequence}`;
+    const id = `${++this.#rpcSequence}`;
+    const metadata = {
+      [MCP_PROTOCOL_VERSION_META_KEY]: MCP_PROTOCOL_VERSION,
+      [MCP_CLIENT_CAPABILITIES_META_KEY]: {},
+      [MCP_CLIENT_INFO_META_KEY]: MCP_CLIENT_INFO,
+    };
     const payload = {
       jsonrpc: "2.0",
-      ...(id === undefined ? {} : { id }),
+      id,
       method,
-      ...(params === undefined ? {} : { params }),
+      params: { ...params, _meta: metadata },
     };
     const body = JSON.stringify(payload);
     if (Buffer.byteLength(body) > MAX_INPUT_BYTES) {
@@ -1669,8 +1844,12 @@ export class N8nProvider implements IntegrationProvider {
       accept: "application/json, text/event-stream",
       authorization: `Bearer ${access.value}`,
       "content-type": "application/json",
+      "mcp-method": method,
       "mcp-protocol-version": MCP_PROTOCOL_VERSION,
     };
+    if (method === "tools/call") {
+      headers["mcp-name"] = boundedString(params?.name, 128, "n8n MCP tool name");
+    }
     if (this.#sessionId) headers["mcp-session-id"] = this.#sessionId;
     const { response, bytes } = await this.#request(
       this.#server.toString(),
@@ -1690,12 +1869,6 @@ export class N8nProvider implements IntegrationProvider {
       this.#sessionVerified = false;
       throw new SessionInvalidError("n8n MCP session expired.");
     }
-    if (
-      notification &&
-      (response.status === 200 || response.status === 202 || response.status === 204)
-    ) {
-      if (bytes.byteLength === 0) return undefined;
-    }
     if (!response.ok) {
       if (response.status === 429) {
         throw new ConfirmedRemoteFailure("n8n is rate limiting MCP requests. Try again later.");
@@ -1703,7 +1876,9 @@ export class N8nProvider implements IntegrationProvider {
       if (response.status === 403) {
         throw new ConfirmedRemoteFailure("n8n denied this operation for the connected user.");
       }
-      throw new ConfirmedRemoteFailure("n8n MCP could not complete the request.");
+      throw new ConfirmedRemoteFailure(
+        `n8n MCP ${method} failed (HTTP ${response.status}). Reconnect and try again.`,
+      );
     }
     const returnedSession = response.headers.get("mcp-session-id");
     if (returnedSession !== null) {
@@ -1720,7 +1895,7 @@ export class N8nProvider implements IntegrationProvider {
       this.#sessionId = returnedSession;
     }
     const raw = parseMcpPayload(response, bytes);
-    if (raw.jsonrpc !== "2.0" || (id !== undefined && raw.id !== id)) {
+    if (raw.jsonrpc !== "2.0" || raw.id !== id) {
       throw new Error("n8n MCP returned a mismatched JSON-RPC response.");
     }
     if (raw.error !== undefined) {
@@ -1736,39 +1911,33 @@ export class N8nProvider implements IntegrationProvider {
     await this.#serializeSession(async () => {
       if (this.#sessionVerified) return;
       this.#sessionId = null;
-      const initialize = asRecord(
+      const discover = asRecord(
         await this.#mcpRpc(
           access,
-          "initialize",
-          {
-            protocolVersion: MCP_PROTOCOL_VERSION,
-            capabilities: {},
-            clientInfo: { name: "TritonAI Harness", version: "1.0.0" },
-          },
+          "server/discover",
+          undefined,
           signal,
           MCP_CONTROL_RESPONSE_BYTES,
         ),
-        "n8n MCP initialize result",
+        "n8n MCP server/discover result",
       );
       if (
-        initialize.protocolVersion !== MCP_PROTOCOL_VERSION ||
-        !initialize.serverInfo ||
-        typeof initialize.serverInfo !== "object" ||
-        Array.isArray(initialize.serverInfo)
+        discover.resultType !== "complete" ||
+        !Array.isArray(discover.supportedVersions) ||
+        discover.supportedVersions.length > 16 ||
+        !discover.supportedVersions.every((version) => typeof version === "string") ||
+        !discover.supportedVersions.includes(MCP_PROTOCOL_VERSION) ||
+        !discover.capabilities ||
+        typeof discover.capabilities !== "object" ||
+        Array.isArray(discover.capabilities) ||
+        !(discover.capabilities as Record<string, unknown>).tools ||
+        typeof (discover.capabilities as Record<string, unknown>).tools !== "object" ||
+        Array.isArray((discover.capabilities as Record<string, unknown>).tools)
       ) {
         throw new IntegrationProviderPublicError(
           "n8n MCP protocol changed from the reviewed version.",
         );
       }
-      await this.#mcpRpc(
-        access,
-        "notifications/initialized",
-        undefined,
-        signal,
-        METADATA_RESPONSE_BYTES,
-        this.#requestTimeoutMs,
-        true,
-      );
       const collected: Record<string, unknown>[] = [];
       let cursor: string | undefined;
       for (let page = 0; page < MAX_MCP_PAGES; page += 1) {
@@ -1782,7 +1951,9 @@ export class N8nProvider implements IntegrationProvider {
           ),
           "n8n MCP tools/list result",
         );
-        if (!Array.isArray(result.tools)) throw new Error("n8n MCP tool inventory is invalid.");
+        if (result.resultType !== "complete" || !Array.isArray(result.tools)) {
+          throw new Error("n8n MCP tool inventory is invalid.");
+        }
         collected.push(...result.tools.map((tool) => asRecord(tool, "n8n MCP tool definition")));
         if (collected.length > MAX_MCP_TOOLS)
           throw new Error("n8n MCP tool inventory is too large.");
@@ -1798,13 +1969,22 @@ export class N8nProvider implements IntegrationProvider {
     });
   }
 
-  async #revokeToken(discovery: OAuthDiscovery, token: string, signal: AbortSignal): Promise<void> {
+  async #revokeToken(
+    discovery: OAuthDiscovery,
+    token: string,
+    clientId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
     const { response } = await this.#request(
       discovery.revocationEndpoint,
       {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ token, token_type_hint: "refresh_token" }),
+        body: new URLSearchParams({
+          client_id: clientId,
+          token,
+          token_type_hint: "refresh_token",
+        }),
         signal,
       },
       METADATA_RESPONSE_BYTES,
@@ -1819,6 +1999,7 @@ export class N8nProvider implements IntegrationProvider {
     clientId: string,
     discovery: OAuthDiscovery,
     existingRefreshToken?: string,
+    allowedScopes: ReadonlySet<string> = OAUTH_SCOPE_SET,
   ): { readonly credential: Credential; readonly access: AccessToken } {
     if (json.token_type !== "Bearer" && json.token_type !== "bearer") {
       throw new Error("n8n OAuth returned an invalid token type.");
@@ -1830,7 +2011,7 @@ export class N8nProvider implements IntegrationProvider {
         : boundedString(json.refresh_token, MAX_TOKEN_CHARS, "n8n OAuth refresh token");
     if (!refreshToken) throw new Error("n8n OAuth did not issue renewable access.");
     const expiresIn = boundedInteger(json.expires_in, 60, 86_400, "n8n OAuth token lifetime");
-    const scopes = parseScopes(json.scope);
+    const scopes = parseScopes(json.scope, "n8n OAuth scope grant", allowedScopes);
     return {
       credential: {
         version: 1,
@@ -1922,11 +2103,17 @@ export class N8nProvider implements IntegrationProvider {
     ) {
       throw new Error("Unsupported n8n capability.");
     }
+    const requestedScopes = scopesForCapabilities(capabilities);
     const generation = this.#generation;
     const revision = this.#credentialRevision;
     const attempt = ++this.#connectAttempt;
     const existing = await this.#readCredential(context?.signal);
     if (existing) {
+      if (!requestedScopes.every((scope) => existing.scopes.includes(scope))) {
+        throw new IntegrationProviderPublicError(
+          "Disconnect and reconnect n8n to approve the additional access.",
+        );
+      }
       return {
         kind: "connected",
         flowId: NodeCrypto.randomUUID(),
@@ -1940,7 +2127,7 @@ export class N8nProvider implements IntegrationProvider {
     const codeVerifier = randomBase64Url(64);
     const expiresAt = Date.now() + FLOW_LIFETIME_MS;
     const flow = await this.#startFlowListener(
-      { flowId, state, codeVerifier, discovery, expiresAt, generation },
+      { flowId, state, codeVerifier, discovery, requestedScopes, expiresAt, generation },
       context?.signal,
     );
     let admitted = false;
@@ -1973,7 +2160,7 @@ export class N8nProvider implements IntegrationProvider {
     authorizationUrl.searchParams.set("client_id", flow.clientId);
     authorizationUrl.searchParams.set("redirect_uri", flow.redirectUri);
     authorizationUrl.searchParams.set("response_type", "code");
-    authorizationUrl.searchParams.set("scope", OAUTH_SCOPES.join(" "));
+    authorizationUrl.searchParams.set("scope", requestedScopes.join(" "));
     authorizationUrl.searchParams.set("state", state);
     authorizationUrl.searchParams.set(
       "code_challenge",
@@ -2080,7 +2267,29 @@ export class N8nProvider implements IntegrationProvider {
             };
           }
           credentialIssued = true;
-          const parsed = this.#parseTokenResponse(json, flow.clientId, flow.discovery);
+          const parsed = this.#parseTokenResponse(
+            json,
+            flow.clientId,
+            flow.discovery,
+            undefined,
+            new Set(flow.requestedScopes),
+          );
+          if (capabilitiesFromScopes(parsed.credential.scopes).length === 0) {
+            await this.#revokeToken(
+              flow.discovery,
+              parsed.credential.refreshToken,
+              parsed.credential.clientId,
+              commitSignal,
+            );
+            credentialCompensated = true;
+            await this.#removeFlow(flowId);
+            return {
+              state: "failed",
+              retryAfterSeconds: null,
+              message:
+                "Choose All or Read only in n8n. Custom scope combinations are not supported.",
+            };
+          }
           this.#accessToken = parsed.access;
           this.#sessionId = null;
           this.#sessionVerified = false;
@@ -2089,7 +2298,12 @@ export class N8nProvider implements IntegrationProvider {
             await this.#initializeSession(parsed.access, commitSignal);
           } catch (error) {
             try {
-              await this.#revokeToken(flow.discovery, parsed.credential.refreshToken, commitSignal);
+              await this.#revokeToken(
+                flow.discovery,
+                parsed.credential.refreshToken,
+                parsed.credential.clientId,
+                commitSignal,
+              );
               credentialCompensated = true;
             } catch {
               this.#uncertainCredentialState = true;
@@ -2099,7 +2313,14 @@ export class N8nProvider implements IntegrationProvider {
             this.#sessionVerified = false;
             this.#availableTools = new Set();
             await this.#removeFlow(flowId);
-            throw error;
+            return {
+              state: "failed",
+              retryAfterSeconds: null,
+              message:
+                error instanceof IntegrationProviderPublicError
+                  ? error.message
+                  : "n8n MCP connection verification failed. Try again.",
+            };
           }
           if (
             this.#closed ||
@@ -2170,7 +2391,7 @@ export class N8nProvider implements IntegrationProvider {
               grant_type: "refresh_token",
               refresh_token: credential.refreshToken,
               resource: this.#server.toString(),
-              scope: OAUTH_SCOPES.join(" "),
+              scope: credential.scopes.join(" "),
             }),
             signal: commitSignal,
           },
@@ -2188,7 +2409,13 @@ export class N8nProvider implements IntegrationProvider {
           credential.clientId,
           discovery,
           credential.refreshToken,
+          new Set(credential.scopes),
         );
+        if (capabilitiesFromScopes(parsed.credential.scopes).length === 0) {
+          throw new IntegrationProviderPublicError(
+            "n8n returned an unsupported custom scope grant. Disconnect and reconnect.",
+          );
+        }
         if (generation !== this.#generation || revision !== this.#credentialRevision) {
           throw new Error("n8n connection changed while refreshing.");
         }
@@ -2227,7 +2454,12 @@ export class N8nProvider implements IntegrationProvider {
         admitted = true;
         if (credential) {
           const discovery = await this.#discover(commitSignal);
-          await this.#revokeToken(discovery, credential.refreshToken, commitSignal);
+          await this.#revokeToken(
+            discovery,
+            credential.refreshToken,
+            credential.clientId,
+            commitSignal,
+          );
         }
         await this.#secrets.remove(N8N_SECRET_SUFFIX);
         commitSignal.throwIfAborted();
@@ -2308,6 +2540,11 @@ export class N8nProvider implements IntegrationProvider {
         ),
         "n8n MCP tool result",
       );
+      if (result.resultType !== "complete") {
+        throw new ConfirmedRemoteFailure(
+          "n8n requested an interactive MCP response that TritonAI Harness does not support.",
+        );
+      }
       if (result.isError === true) {
         throw new ConfirmedRemoteFailure("n8n reported that the tool operation failed.");
       }
