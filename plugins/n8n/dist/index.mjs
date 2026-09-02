@@ -7127,9 +7127,7 @@ function schemaContract(value, root = value, activeReferences = /* @__PURE__ */ 
   if (typeof record2.$ref === "string" && !activeReferences.has(record2.$ref)) {
     const resolved = resolveLocalSchemaReference(root, record2.$ref);
     if (resolved && typeof resolved === "object" && !Array.isArray(resolved)) {
-      const siblings = Object.fromEntries(
-        Object.entries(record2).filter(([key]) => key !== "$ref")
-      );
+      const siblings = Object.fromEntries(Object.entries(record2).filter(([key]) => key !== "$ref"));
       return schemaContract(
         { ...resolved, ...siblings },
         root,
@@ -7164,14 +7162,14 @@ function schemaContract(value, root = value, activeReferences = /* @__PURE__ */ 
   if (Array.isArray(normalized.anyOf) && normalized.anyOf.every(
     (entry) => entry && typeof entry === "object" && !Array.isArray(entry) && entry.type === "string" && Array.isArray(entry.enum) && entry.enum.every(
       (value2) => typeof value2 === "string"
-    ) && Object.keys(entry).every((key) => key === "type" || key === "enum")
+    ) && Object.keys(entry).every(
+      (key) => key === "type" || key === "enum"
+    )
   )) {
     normalized.type = "string";
     normalized.enum = [
       ...new Set(
-        normalized.anyOf.flatMap(
-          (entry) => entry.enum
-        )
+        normalized.anyOf.flatMap((entry) => entry.enum)
       )
     ].toSorted();
     delete normalized.anyOf;
@@ -7193,7 +7191,9 @@ function firstSchemaDifference(actual, expected, path = "$") {
   if (actual && expected && typeof actual === "object" && typeof expected === "object" && !Array.isArray(actual) && !Array.isArray(expected)) {
     const actualRecord = actual;
     const expectedRecord = expected;
-    const keys = [.../* @__PURE__ */ new Set([...Object.keys(actualRecord), ...Object.keys(expectedRecord)])].toSorted();
+    const keys = [
+      .../* @__PURE__ */ new Set([...Object.keys(actualRecord), ...Object.keys(expectedRecord)])
+    ].toSorted();
     for (const key of keys) {
       if (!(key in actualRecord) || !(key in expectedRecord)) {
         return {
@@ -7566,12 +7566,12 @@ var N8nProvider = class {
       this.#writeCallbackPage(response, 400, "This n8n sign-in callback is not valid.");
       return;
     }
-    flow.consumed = true;
     if (code !== null) {
       if (code.length === 0 || code.length > MAX_TOKEN_CHARS) {
         this.#writeCallbackPage(response, 400, "This n8n sign-in callback is not valid.");
         return;
       }
+      flow.consumed = true;
       flow.callback = { kind: "code", code };
       flow.callbackExpiresAt = Date.now() + FLOW_CALLBACK_CLAIM_MS;
       clearTimeout(flow.timer);
@@ -7584,6 +7584,7 @@ var N8nProvider = class {
       flow.timer.unref();
       this.#writeCallbackPage(response, 200, "n8n sign-in received.");
     } else {
+      flow.consumed = true;
       flow.callback = {
         kind: "error",
         error: oauthError && oauthError.length <= 256 ? oauthError : "authorization_denied"

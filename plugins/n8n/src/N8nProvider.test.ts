@@ -398,6 +398,33 @@ describe("N8nProvider", () => {
     await provider.close();
   });
 
+  it("keeps authorization retryable after rejecting an empty callback code", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch();
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+
+    const flow = await provider.connect(["read", "write"], lifecycle());
+    expect(flow.kind).toBe("authorization_url");
+    if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
+    const authorization = new URL(flow.authorizationUrl);
+    const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+    callback.searchParams.set("state", authorization.searchParams.get("state")!);
+    callback.searchParams.set("iss", ORIGIN);
+    callback.searchParams.set("code", "");
+    expect((await fetch(callback)).status).toBe(400);
+
+    callback.searchParams.set("code", "authorization-code-fixture");
+    expect((await fetch(callback)).status).toBe(200);
+    await expect(provider.poll(flow.flowId, lifecycle())).resolves.toMatchObject({
+      state: "connected",
+    });
+    await provider.close();
+  });
+
   it("accepts equivalent local JSON Schema references in the reviewed tool catalog", async () => {
     const secrets = memorySecrets();
     const mock = oauthMcpFetch({

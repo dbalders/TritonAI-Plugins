@@ -1717,12 +1717,12 @@ export class N8nProvider implements IntegrationProvider {
       this.#writeCallbackPage(response, 400, "This n8n sign-in callback is not valid.");
       return;
     }
-    flow.consumed = true;
     if (code !== null) {
       if (code.length === 0 || code.length > MAX_TOKEN_CHARS) {
         this.#writeCallbackPage(response, 400, "This n8n sign-in callback is not valid.");
         return;
       }
+      flow.consumed = true;
       flow.callback = { kind: "code", code };
       flow.callbackExpiresAt = Date.now() + FLOW_CALLBACK_CLAIM_MS;
       clearTimeout(flow.timer);
@@ -1735,6 +1735,7 @@ export class N8nProvider implements IntegrationProvider {
       flow.timer.unref();
       this.#writeCallbackPage(response, 200, "n8n sign-in received.");
     } else {
+      flow.consumed = true;
       flow.callback = {
         kind: "error",
         error: oauthError && oauthError.length <= 256 ? oauthError : "authorization_denied",
