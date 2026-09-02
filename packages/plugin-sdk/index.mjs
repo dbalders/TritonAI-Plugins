@@ -2,7 +2,7 @@ export const PLUGIN_API_VERSION = "tritonai.plugin/v1";
 export const PLUGIN_KIND = "IntegrationPlugin";
 export const PLUGIN_MANIFEST_VERSION = 1;
 export const SDK_API_MAJOR = 1;
-export const HOST_CONTRACT_LEVEL = 1;
+export const HOST_CONTRACT_LEVEL = 2;
 
 const ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u;
 const TOOL_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/u;
@@ -336,7 +336,9 @@ export function validateManifestV1(value) {
       `Capability ${capability.id} description is required.`,
     );
     assert(
-      capability.access === "default" || capability.access === "opt-in",
+      capability.access === "default" ||
+        capability.access === "opt-in" ||
+        capability.access === "authorization",
       `Capability ${capability.id} access is invalid.`,
     );
     assert(!capabilities.has(capability.id), `Duplicate capability ${capability.id}.`);

@@ -37,13 +37,19 @@ const manifest = {
       description: "Write fixture data.",
       access: "opt-in",
     },
+    {
+      id: "fixture.authorized",
+      displayName: "Authorized fixture",
+      description: "Use access chosen during provider authorization.",
+      access: "authorization",
+    },
   ],
   tools: [],
   skills: [
     {
       name: "fixture-reader",
       description: "Read fixture data.",
-      capabilities: ["fixture.read", "fixture.write"],
+      capabilities: ["fixture.read", "fixture.write", "fixture.authorized"],
     },
   ],
 };

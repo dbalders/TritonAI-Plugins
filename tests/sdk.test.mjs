@@ -500,14 +500,14 @@ test("host contract levels are monotonic", async (t) => {
   const temporary = await temporaryDirectory(t);
   const source = Path.join(temporary, "source");
   const output = Path.join(temporary, "artifact");
-  await writeFixture(source, { manifest: { sdk: { apiMajor: 1, requiredHostContractLevel: 2 } } });
+  await writeFixture(source, { manifest: { sdk: { apiMajor: 1, requiredHostContractLevel: 3 } } });
   await buildPluginArtifact(source, output);
   await assert.rejects(() => verifyTestArtifact(output), /newer host contract/u);
   await assert.doesNotReject(() =>
-    verifyTestArtifact(output, { sdkApiMajor: 1, hostContractLevel: 2 }),
+    verifyTestArtifact(output, { sdkApiMajor: 1, hostContractLevel: 3 }),
   );
   await assert.doesNotReject(() =>
-    verifyTestArtifact(output, { sdkApiMajor: 1, hostContractLevel: 3 }),
+    verifyTestArtifact(output, { sdkApiMajor: 1, hostContractLevel: 4 }),
   );
 });
 
