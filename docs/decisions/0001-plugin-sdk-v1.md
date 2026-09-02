@@ -16,7 +16,7 @@ Tool declarations carry their executable input schema plus explicit destructive,
 open-world annotations; Harness never infers these safety properties from a plugin ID.
 
 Each plugin ships as one deterministic Node 24 ESM artifact. Third-party dependencies are bundled;
-remaining `node:` imports are explicit descriptor data. The canonical descriptor binds the
+remaining static `node:` imports are explicit descriptor data. The canonical descriptor binds the
 manifest, entry, skills, configuration schema, tool schemas, runtime target, SDK requirement, and
 every payload byte. Harness privately imports retained verified bytes only after compatibility and
 schema compilation succeed.

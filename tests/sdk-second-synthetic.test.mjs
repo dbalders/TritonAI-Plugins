@@ -4,9 +4,21 @@ import * as Os from "node:os";
 import * as Path from "node:path";
 import test from "node:test";
 
-import { buildPluginArtifact, instantiatePluginArtifact } from "../scripts/sdk-artifact.mjs";
+import { buildPluginArtifact, verifyPluginArtifact } from "../scripts/sdk-artifact.mjs";
 
 const source = Path.resolve(import.meta.dirname, "..", "plugins", "synthetic-api-key");
+
+async function instantiateTestArtifact(artifact, context) {
+  const verified = await verifyPluginArtifact(artifact, { hostNodeVersion: "24.13.1" });
+  const url = `data:text/javascript;base64,${verified.entryBytes.toString("base64")}#artifact-sha256=${verified.descriptorSha256}`;
+  const module = await import(url);
+  assert.deepEqual(Object.keys(module), ["createIntegrationProvider"]);
+  const provider = module.createIntegrationProvider(context);
+  assert.equal(provider?.id, verified.manifest.provider);
+  assert.equal(typeof provider.status, "function");
+  assert.equal(typeof provider.invoke, "function");
+  return provider;
+}
 
 test("second SDK plugin exercises API-key lifecycle and read-write commits", async (t) => {
   const temporary = await Fs.mkdtemp(Path.join(Os.tmpdir(), "tritonai-sdk-api-key-"));
@@ -20,7 +32,7 @@ test("second SDK plugin exercises API-key lifecycle and read-write commits", asy
     set: async (name, value) => values.set(name, value),
     remove: async (name) => values.delete(name),
   };
-  const { provider } = await instantiatePluginArtifact(artifact, {
+  const provider = await instantiateTestArtifact(artifact, {
     configuration: {},
     secrets,
   });
@@ -43,6 +55,11 @@ test("second SDK plugin exercises API-key lifecycle and read-write commits", asy
     commits += 1;
     return signal;
   };
+  await assert.rejects(
+    provider.connect(["synthetic-api-key.read"], { signal, beginCommit }, null),
+    (error) => error?._tag === "PluginFailure" && error.code === "invalid_api_key",
+  );
+  assert.equal(commits, 0);
   await provider.connect(
     ["synthetic-api-key.read"],
     { signal, beginCommit },

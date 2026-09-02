@@ -238,7 +238,7 @@ test("rejects provider Effect peer and development version drift", () => {
 test("rejects aliased Effect declarations in every runtime dependency category", () => {
   for (const [packageJson, expected] of [
     [
-      { ...providerPackage, dependencies: { effect: "npm:effect@4.0.0-beta.102" } },
+      { ...providerPackage, dependencies: { effect: "npm:effect@4.0.0-beta.103" } },
       /omit production dependencies/u,
     ],
     [
@@ -251,7 +251,7 @@ test("rejects aliased Effect declarations in every runtime dependency category",
     [
       {
         ...providerPackage,
-        optionalDependencies: { "effect-runtime": "npm:effect@4.0.0-beta.102" },
+        optionalDependencies: { "effect-runtime": "npm:effect@4.0.0-beta.103" },
       },
       /omit optional runtime dependencies/u,
     ],

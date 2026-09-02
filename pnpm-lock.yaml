@@ -11,9 +11,12 @@ importers:
       '@types/node':
         specifier: 24.12.4
         version: 24.12.4
+      acorn:
+        specifier: 8.16.0
+        version: 8.16.0
       effect:
-        specifier: 4.0.0-beta.102
-        version: 4.0.0-beta.102
+        specifier: 4.0.0-beta.103
+        version: 4.0.0-beta.103
       es-module-lexer:
         specifier: 2.3.1
         version: 2.3.1
@@ -35,20 +38,20 @@ importers:
   plugins/github:
     devDependencies:
       effect:
-        specifier: 4.0.0-beta.102
-        version: 4.0.0-beta.102
+        specifier: 4.0.0-beta.103
+        version: 4.0.0-beta.103
 
   plugins/google-workspace:
     devDependencies:
       effect:
-        specifier: 4.0.0-beta.102
-        version: 4.0.0-beta.102
+        specifier: 4.0.0-beta.103
+        version: 4.0.0-beta.103
 
   plugins/microsoft-365:
     devDependencies:
       effect:
-        specifier: 4.0.0-beta.102
-        version: 4.0.0-beta.102
+        specifier: 4.0.0-beta.103
+        version: 4.0.0-beta.103
 
   plugins/n8n:
     devDependencies:
@@ -835,6 +838,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  acorn@8.16.0:
+    resolution: {integrity: sha512-UVJyE9MttOsBQIDKw1skb9nAwQuR5wuGD3+82K6JgJlm/Y+KI92oNsMNGZCYdDsVtRHSak0pcV5Dno5+4jh9sw==}
+    engines: {node: '>=0.4.0'}
+    hasBin: true
+
   ansi-regex@5.0.1:
     resolution: {integrity: sha512-quJQXlTSUGL2LH9SUXo8VwsY4soanhgo6LNSm84E1LBcE8s3O0wpdiRzyR9z/ZZJMlMWv37qOOb9pdJlMUEKFQ==}
     engines: {node: '>=8'}
@@ -870,6 +878,9 @@ packages:
 
   effect@4.0.0-beta.102:
     resolution: {integrity: sha512-z8Y+Q76Hh/kjLFZrXu8tGn6e+tDsg45R+UHhxd190pXxD53OGwf/G/zDxXTkse4HJ5mobNZfitLfUCp4fMvu6w==}
+
+  effect@4.0.0-beta.103:
+    resolution: {integrity: sha512-pE8TxF4m2tQzVI+77dIlm3s+81TACV1AiX1JEkvY+zVuxgQQ8aGSkqXNJF6b/ST+coCSk5cUdbULpQ7sm4oHyw==}
 
   es-module-lexer@2.3.1:
     resolution: {integrity: sha512-shc1dbU90Yl/xq1QrC7QRtfcwURZuVRfPhZbDoldJ1cn1gzDvBaBWlv0eFolj5+0znnPJz5TXLxsN77X/12KTA==}
@@ -1636,7 +1647,7 @@ snapshots:
     dependencies:
       '@testing-library/dom': 10.4.1
       '@testing-library/user-event': 14.6.1(@testing-library/dom@10.4.1)
-      '@vitest/browser': 4.1.9(vite@8.1.4(@types/node@24.12.4)(esbuild@0.28.2)(yaml@2.9.0))(vitest@4.1.9(@types/node@24.12.4)(@vitest/browser-preview@4.1.9)(vite@8.1.4(@types/node@24.12.4)(esbuild@0.28.2)(yaml@2.9.0)))
+      '@vitest/browser': 4.1.9(vite@8.1.4(@types/node@24.12.4)(esbuild@0.28.2)(yaml@2.9.0))(vitest@4.1.9)
       vitest: 4.1.9(@types/node@24.12.4)(@vitest/browser-preview@4.1.9)(vite@8.1.4(@types/node@24.12.4)(esbuild@0.28.2)(yaml@2.9.0))
     transitivePeerDependencies:
       - bufferutil
@@ -1644,7 +1655,7 @@ snapshots:
       - utf-8-validate
       - vite
 
-  '@vitest/browser@4.1.9(vite@8.1.4(@types/node@24.12.4)(esbuild@0.28.2)(yaml@2.9.0))(vitest@4.1.9(@types/node@24.12.4)(@vitest/browser-preview@4.1.9)(vite@8.1.4(@types/node@24.12.4)(esbuild@0.28.2)(yaml@2.9.0)))':
+  '@vitest/browser@4.1.9(vite@8.1.4(@types/node@24.12.4)(esbuild@0.28.2)(yaml@2.9.0))(vitest@4.1.9)':
     dependencies:
       '@blazediff/core': 1.9.1
       '@vitest/mocker': 4.1.9(vite@8.1.4(@types/node@24.12.4)(esbuild@0.28.2)(yaml@2.9.0))
@@ -1739,6 +1750,8 @@ snapshots:
   '@voidzero-dev/vite-plus-win32-x64-msvc@0.2.1':
     optional: true
 
+  acorn@8.16.0: {}
+
   ansi-regex@5.0.1: {}
 
   ansi-styles@5.2.0: {}
@@ -1760,6 +1773,19 @@ snapshots:
   dom-accessibility-api@0.5.16: {}
 
   effect@4.0.0-beta.102:
+    dependencies:
+      '@standard-schema/spec': 1.1.0
+      fast-check: 4.9.0
+      find-my-way-ts: 0.1.6
+      ini: 7.0.0
+      kubernetes-types: 1.30.0
+      msgpackr: 2.0.4
+      multipasta: 0.2.8
+      toml: 4.3.0
+      uuid: 14.0.1
+      yaml: 2.9.0
+
+  effect@4.0.0-beta.103:
     dependencies:
       '@standard-schema/spec': 1.1.0
       fast-check: 4.9.0
@@ -2061,7 +2087,7 @@ snapshots:
     dependencies:
       '@oxc-project/types': 0.136.0
       '@oxlint/plugins': 1.68.0
-      '@vitest/browser': 4.1.9(vite@8.1.4(@types/node@24.12.4)(esbuild@0.28.2)(yaml@2.9.0))(vitest@4.1.9(@types/node@24.12.4)(@vitest/browser-preview@4.1.9)(vite@8.1.4(@types/node@24.12.4)(esbuild@0.28.2)(yaml@2.9.0)))
+      '@vitest/browser': 4.1.9(vite@8.1.4(@types/node@24.12.4)(esbuild@0.28.2)(yaml@2.9.0))(vitest@4.1.9)
       '@vitest/browser-preview': 4.1.9(vite@8.1.4(@types/node@24.12.4)(esbuild@0.28.2)(yaml@2.9.0))(vitest@4.1.9)
       '@vitest/expect': 4.1.9
       '@vitest/mocker': 4.1.9(vite@8.1.4(@types/node@24.12.4)(esbuild@0.28.2)(yaml@2.9.0))

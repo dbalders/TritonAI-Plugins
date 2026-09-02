@@ -83,9 +83,12 @@ manifest in `.tritonai-plugin/plugin.json` carries inline draft 2020-12 configur
 schemas, skills, SDK API major, and minimum host contract level. The factory module has one stable export:
 `createIntegrationProvider`.
 
-Builds produce a sealed Node 24 ESM directory with a self-contained `plugin.mjs`, declared skill
-files, canonical manifest and canonical `artifact.json`. Third-party code is bundled; any remaining
-`node:` imports are enumerated in the descriptor. The descriptor binds every payload byte, target,
+Builds produce a sealed Node 24 ESM directory with one reviewed `plugin.mjs`, declared skill files,
+canonical manifest and canonical `artifact.json`. Release-ready bytes are committed at
+`artifacts/<plugin-id>/`; `pnpm artifacts:sdk` refreshes them and `pnpm artifacts:sdk:check` proves
+they exactly match source. Third-party code is bundled; static `node:`
+imports are enumerated in the descriptor. The descriptor binds every payload byte, target,
 configuration schema, and input schema by SHA-256. The verifier checks the complete inventory and
-compatibility before importing executable code. `plugins/synthetic-readonly` is the dependency-free
-conformance example.
+compatibility before importing executable code. Curated providers retain backend-code trust: this
+integrity check is not a JavaScript sandbox or a dynamic-loading policy. `plugins/synthetic-readonly`
+is the dependency-free conformance example.
