@@ -42,10 +42,11 @@ const queries = Object.freeze({
   formSchema: `query KualiBuildFormSchema($id: ID) { app(id: $id) { id name formVersion { schema { formKey label } } } }`,
   documentsList: `query KualiBuildDocuments($appId: ID!, $skip: Int!, $limit: Int!, $sort: [String!], $query: String, $fields: Operator) { app(id: $appId) { id name documentConnection(args: { skip: $skip limit: $limit sort: $sort query: $query fields: $fields } keyBy: ID) { totalCount edges { node { id } } pageInfo { hasNextPage hasPreviousPage skip limit } } } }`,
   documentGet: `query KualiBuildDocument($id: ID!) { document(id: $id) { id data meta } }`,
+  documentVersion: `query KualiBuildDocumentVersion($id: ID!) { document(id: $id) { id meta } }`,
   usersLookup: `query KualiBuildUsers($query: String, $limit: Int!) { usersConnection(args: { query: $query, limit: $limit }) { edges { node { id displayName email username firstName lastName schoolId } } } }`,
   workflowStatus: `query KualiBuildWorkflowStatus($id: ID!) { document(id: $id) { id meta } }`,
   actionGet: `query KualiBuildDraftAction($actionId: String!) { action(actionId: $actionId) { id appId document { id } } }`,
-  documentUpdate: `mutation KualiBuildDocumentUpdate($id: ID!, $data: JSON!) { updateDocument(args: { id: $id, data: $data }) { id data } }`,
+  documentUpdate: `mutation KualiBuildDocumentUpdate($id: ID!, $data: JSON!) { updateDocument(args: { id: $id, data: $data }) { id } }`,
   draftInitialize: `mutation KualiBuildDraftInitialize($appId: ID!) { initializeWorkflow(args: { id: $appId }) { actionId } }`,
   documentSubmit: `mutation KualiBuildDocumentSubmit($documentId: ID!, $data: JSON, $actionId: ID!, $status: String) { submitDocument(id: $documentId, data: $data, actionId: $actionId, status: $status) }`,
 });
@@ -868,6 +869,29 @@ export function createIntegrationProvider(context) {
     projectApps(extract(data, "apps"));
   }
 
+  async function persistCredential(apiKey, capabilities, lifecycleContext) {
+    lifecycleContext.signal.throwIfAborted();
+    const commitSignal = await lifecycleContext.beginCommit();
+    if (!(commitSignal instanceof AbortSignal)) {
+      throw failure("invalid_context", "The host commit signal is invalid.");
+    }
+    commitSignal.throwIfAborted();
+    const serialized = JSON.stringify({ version: 1, apiKey, capabilities });
+    try {
+      await factory.secrets.set(SECRET_NAME, serialized);
+    } catch {
+      let recovered;
+      try {
+        recovered = await factory.secrets.get(SECRET_NAME);
+      } catch {
+        throw failure("secret_store_error", "The credential-store commit could not be confirmed.");
+      }
+      if (recovered !== serialized) {
+        throw failure("secret_store_error", "The API key could not be stored.");
+      }
+    }
+  }
+
   return {
     id: PROVIDER_ID,
     async status(operationContext) {
@@ -910,6 +934,24 @@ export function createIntegrationProvider(context) {
       validateOperationContext(lifecycleContext, { requiresCommit: true });
       const granted = exactCapabilities(capabilities);
       if (submission === undefined) {
+        const stored = parseSecret(await readSecret(factory.secrets));
+        if (stored !== null && stored !== undefined) {
+          await verifyConnection(stored.apiKey, lifecycleContext.signal);
+          if (
+            stored.capabilities.length !== granted.length ||
+            stored.capabilities.some((capability, index) => capability !== granted[index])
+          ) {
+            await persistCredential(stored.apiKey, granted, lifecycleContext);
+          }
+          return {
+            kind: "connected",
+            flowId: crypto.randomUUID(),
+            message:
+              granted.length === 1
+                ? "Connected to UC San Diego Kuali Build with read-only tools."
+                : "Connected to UC San Diego Kuali Build with the selected read and write capabilities.",
+          };
+        }
         const flowId = createFlow(flows, granted);
         return {
           kind: "api_key",
@@ -934,22 +976,7 @@ export function createIntegrationProvider(context) {
       if (!flow || flow.expiresAt < Date.now()) throw failure("flow_expired", "The connection flow expired.");
       const apiKey = validateApiKey(submitted.value);
       await verifyConnection(apiKey, lifecycleContext.signal);
-      lifecycleContext.signal.throwIfAborted();
-      const commitSignal = await lifecycleContext.beginCommit();
-      if (!(commitSignal instanceof AbortSignal)) throw failure("invalid_context", "The host commit signal is invalid.");
-      commitSignal.throwIfAborted();
-      const serialized = JSON.stringify({ version: 1, apiKey, capabilities: flow.capabilities });
-      try {
-        await factory.secrets.set(SECRET_NAME, serialized);
-      } catch {
-        let recovered;
-        try {
-          recovered = await factory.secrets.get(SECRET_NAME);
-        } catch {
-          throw failure("secret_store_error", "The credential-store commit could not be confirmed.");
-        }
-        if (recovered !== serialized) throw failure("secret_store_error", "The API key could not be stored.");
-      }
+      await persistCredential(apiKey, flow.capabilities, lifecycleContext);
       return {
         kind: "connected",
         flowId: submitted.flowId,
@@ -1113,7 +1140,7 @@ export function createIntegrationProvider(context) {
           const current = extract(
             await execute(
               credential.apiKey,
-              "documentGet",
+              "documentVersion",
               { id: parsed.documentId },
               invocationContext.signal,
             ),
@@ -1122,19 +1149,28 @@ export function createIntegrationProvider(context) {
           if (current === null) {
             throw failure("document_not_found", "The Kuali Build document was not found.");
           }
-          const projected = projectDocument(current);
-          if (!isPlainObject(projected.meta) || projected.meta.updatedAt === undefined) {
+          if (!isPlainObject(current) || !isPlainObject(current.meta)) {
             throw failure(
               "concurrency_check_unavailable",
               "Kuali did not return meta.updatedAt, so the edit was not attempted.",
             );
           }
-          if (String(projected.meta.updatedAt) !== parsed.expectedUpdatedAt) {
+          const currentUpdatedAt = current.meta.updatedAt;
+          if (
+            typeof currentUpdatedAt !== "string" &&
+            !(typeof currentUpdatedAt === "number" && Number.isSafeInteger(currentUpdatedAt))
+          ) {
+            throw failure(
+              "concurrency_check_unavailable",
+              "Kuali did not return a usable meta.updatedAt, so the edit was not attempted.",
+            );
+          }
+          if (String(currentUpdatedAt) !== parsed.expectedUpdatedAt) {
             throw failure(
               "document_changed",
               "The document changed since it was read. Read it again, review the new values, and prepare a new update.",
               false,
-              { currentUpdatedAt: String(projected.meta.updatedAt) },
+              { currentUpdatedAt: String(currentUpdatedAt) },
             );
           }
           return executeMutation(
@@ -1154,7 +1190,7 @@ export function createIntegrationProvider(context) {
                 throw failure("invalid_response", "Kuali returned an invalid updated document.");
               }
               return {
-                document: { id: updated.id.toLowerCase(), data: updated.data ?? null },
+                document: { id: updated.id.toLowerCase() },
                 updatedFormKeys: Object.keys(parsed.data),
                 precondition: { expectedUpdatedAt: parsed.expectedUpdatedAt },
               };

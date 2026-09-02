@@ -178,7 +178,7 @@ test("API-key lifecycle validates remotely and commits only after host admission
   });
   assert.equal(result.kind, "connected");
   assert.deepEqual(events, ["beginCommit"]);
-  assert.deepEqual(secrets.calls, ["set:api-key"]);
+  assert.deepEqual(secrets.calls, ["get:api-key", "set:api-key"]);
   assert.equal(JSON.parse(secrets.value()).apiKey, API_KEY);
   assert.deepEqual(await provider.status(lifecycle()), {
     state: "connected",
@@ -431,6 +431,8 @@ test("fixed read tools emit only reviewed GraphQL operations and never cross the
       { field: "meta.updatedAt", type: "RANGE", min: "1" },
     ],
   });
+  const documentRequest = JSON.parse(mock.requests[4].init.body);
+  assert.match(documentRequest.query, /document\(id: \$id\) \{ id data meta \}/u);
   assert.deepEqual(JSON.parse(mock.requests[5].init.body).variables, {
     query: "ada@ucsd.edu",
     limit: 51,
@@ -474,6 +476,28 @@ test("connection stores only the selected declared write capabilities", async (t
   assert.deepEqual((await provider.status(lifecycle())).grantedCapabilities, capabilities);
 });
 
+test("an existing read-only connection can add write capabilities without exposing its key", async (t) => {
+  const secrets = memorySecrets(storedCredential());
+  const mock = sequence([json({ data: { apps: [] } })]);
+  const provider = factory(t, secrets.service, mock.implementation);
+  const events = [];
+  const capabilities = [
+    "kuali-build.read",
+    "kuali-build.documents.write",
+    "kuali-build.workflows.write",
+  ];
+
+  const result = await provider.connect(capabilities, lifecycle(events));
+
+  assert.equal(result.kind, "connected");
+  assert.deepEqual(events, ["beginCommit"]);
+  assert.deepEqual(secrets.calls, ["get:api-key", "set:api-key"]);
+  assert.deepEqual(JSON.parse(secrets.value()), { version: 1, apiKey: API_KEY, capabilities });
+  assert.equal(JSON.stringify(result).includes(API_KEY), false);
+  assert.equal(mock.requests.length, 1);
+  assert.equal(mock.requests[0].init.headers.authorization, `Bearer ${API_KEY}`);
+});
+
 test("write tools require host approval and their opt-in capabilities before preflight", async (t) => {
   const readOnly = memorySecrets(storedCredential());
   let calls = 0;
@@ -503,6 +527,7 @@ test("document update stale-checks, normalizes form keys, and commits exactly on
     storedCredential(API_KEY, ["kuali-build.read", "kuali-build.documents.write"]),
   );
   const trace = [];
+  const requests = [];
   const responses = [
     json({
       data: {
@@ -517,13 +542,13 @@ test("document update stale-checks, normalizes form keys, and commits exactly on
       data: {
         updateDocument: {
           id: DOCUMENT_ID,
-          data: { nYMA37CRlj: "History 201", notes: "Line one\nLine two" },
         },
       },
     }),
   ];
   const provider = factory(t, secrets.service, async (input, init) => {
     const request = JSON.parse(init.body);
+    requests.push(request);
     trace.push(request.query.startsWith("mutation") ? "fetch:mutation" : "fetch:query");
     return responses.shift();
   });
@@ -539,8 +564,12 @@ test("document update stale-checks, normalizes form keys, and commits exactly on
     context,
   );
   assert.deepEqual(trace, ["fetch:query", "beginCommit", "fetch:mutation"]);
+  assert.match(requests[0].query, /document\(id: \$id\) \{ id meta \}/u);
+  assert.doesNotMatch(requests[0].query, /\bdata\b/u);
+  assert.doesNotMatch(requests[1].query, /\{ id data \}/u);
   assert.deepEqual(result.updatedFormKeys, ["nYMA37CRlj", "notes"]);
-  assert.equal(result.document.data.nYMA37CRlj, "History 201");
+  assert.deepEqual(result.document, { id: DOCUMENT_ID });
+  assert.equal(result.precondition.expectedUpdatedAt, "2026-09-01T00:00:00.000Z");
 });
 
 test("document update rejects stale versions and unconfirmed nulls without committing", async (t) => {
