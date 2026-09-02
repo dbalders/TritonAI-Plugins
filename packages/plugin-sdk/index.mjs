@@ -336,7 +336,9 @@ export function validateManifestV1(value) {
       `Capability ${capability.id} description is required.`,
     );
     assert(
-      capability.access === "default" || capability.access === "opt-in",
+      capability.access === "default" ||
+        capability.access === "opt-in" ||
+        capability.access === "authorization",
       `Capability ${capability.id} access is invalid.`,
     );
     assert(!capabilities.has(capability.id), `Duplicate capability ${capability.id}.`);
