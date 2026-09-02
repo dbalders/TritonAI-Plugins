@@ -1,0 +1,23 @@
+{
+  "name": "@tritonai/plugin-kuali-build",
+  "version": "1.1.0",
+  "private": true,
+  "license": "MIT",
+  "files": [
+    ".tritonai-plugin",
+    "dist",
+    "skills",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.mjs"
+  },
+  "scripts": {
+    "artifact": "pnpm --dir ../.. artifacts:sdk",
+    "artifact:check": "pnpm --dir ../.. artifacts:sdk:check",
+    "test": "node --test test/*.test.mjs"
+  }
+}

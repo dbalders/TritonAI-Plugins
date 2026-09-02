@@ -2,7 +2,7 @@ export declare const PLUGIN_API_VERSION: "tritonai.plugin/v1";
 export declare const PLUGIN_KIND: "IntegrationPlugin";
 export declare const PLUGIN_MANIFEST_VERSION: 1;
 export declare const SDK_API_MAJOR: 1;
-export declare const HOST_CONTRACT_LEVEL: 1;
+export declare const HOST_CONTRACT_LEVEL: 2;
 
 export type JsonPrimitive = null | boolean | number | string;
 export type JsonValue = JsonPrimitive | JsonObject | readonly JsonValue[];
@@ -120,13 +120,17 @@ export interface IntegrationAuthorizationUrlConnectResult extends JsonObject {
   readonly expiresAt: string;
   readonly intervalSeconds: number;
 }
-export interface IntegrationApiKeyConnectResult extends JsonObject {
+export type IntegrationApiKeyConnectResult = JsonObject & {
   readonly kind: "api_key";
   readonly flowId: string;
   readonly label: string;
   readonly placeholder: string | null;
   readonly message: string;
-}
+  /** Optional HTTPS page where the user can create or manage the required key. */
+  readonly setupUrl?: string;
+  /** Optional bounded, plain-text setup steps rendered before API-key entry. */
+  readonly setupInstructions?: readonly string[];
+};
 export interface IntegrationConnectedConnectResult extends JsonObject {
   readonly kind: "connected";
   readonly flowId: string;
