@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": false,
+    "outDir": ".sdk-build",
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "src",
+    "sourceMap": false
+  },
+  "include": ["src/N8nProvider.ts", "src/host-contract.ts", "src/index.ts"]
+}
