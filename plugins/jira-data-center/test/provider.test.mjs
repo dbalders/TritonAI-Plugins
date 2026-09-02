@@ -14,12 +14,16 @@ test.after(() => {
 function memorySecrets(initial = null, options = {}) {
   let value = initial;
   const calls = [];
+  let getCount = 0;
   return {
     calls,
     service: {
       async get(name) {
         calls.push(`get:${name}`);
-        if (options.failGet) throw new Error("fixture get failure");
+        getCount += 1;
+        if (options.failGet || options.failGetAt === getCount) {
+          throw new Error("fixture get failure");
+        }
         return value;
       },
       async set(name, next) {
@@ -262,6 +266,36 @@ test("credential write and removal recovery recognize after-write success", asyn
   assert.deepEqual(corruptEvents, ["beginCommit"]);
   assert.deepEqual(corrupt.calls, ["get:personal-access-token", "remove:personal-access-token"]);
   assert.equal(corrupt.value(), null);
+});
+
+test("unverifiable credential commits preserve the do-not-retry boundary", async () => {
+  const unknownWrite = memorySecrets(null, {
+    failSetAfterWrite: true,
+    failGet: true,
+  });
+  const writeProvider = factory(unknownWrite.service, async () => json(user()));
+  await assert.rejects(
+    () => connect(writeProvider),
+    (error) =>
+      error._tag === "ExternalCommitOutcomeUnknown" &&
+      error.code === "external_commit_outcome_unknown" &&
+      error.retryable === false,
+  );
+  assert.notEqual(unknownWrite.value(), null);
+
+  const unknownRemoval = memorySecrets(storedCredential(), {
+    failRemoveAfterWrite: true,
+    failGetAt: 2,
+  });
+  const removalProvider = factory(unknownRemoval.service, async () => json(user()));
+  await assert.rejects(
+    () => removalProvider.disconnect(lifecycle()),
+    (error) =>
+      error._tag === "ExternalCommitOutcomeUnknown" &&
+      error.code === "external_commit_outcome_unknown" &&
+      error.retryable === false,
+  );
+  assert.equal(unknownRemoval.value(), null);
 });
 
 test("status reports absent, corrupt, and rejected credentials without exposing tokens", async () => {

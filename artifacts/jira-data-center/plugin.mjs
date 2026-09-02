@@ -52,6 +52,15 @@ function failure(code, message, retryable = false, details) {
   return Object.freeze(value);
 }
 
+function unknownCommit(message) {
+  return Object.freeze({
+    _tag: "ExternalCommitOutcomeUnknown",
+    code: "external_commit_outcome_unknown",
+    message,
+    retryable: false,
+  });
+}
+
 function isPlainObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
@@ -837,7 +846,7 @@ export function createIntegrationProvider(context) {
         try {
           recovered = await factory.secrets.get(SECRET_NAME);
         } catch {
-          throw failure("secret_store_error", "The credential-store commit could not be confirmed.");
+          throw unknownCommit("The credential-store commit could not be confirmed.");
         }
         if (recovered !== serialized) {
           throw failure("secret_store_error", "The personal access token could not be stored.");
@@ -867,7 +876,7 @@ export function createIntegrationProvider(context) {
         try {
           recovered = await factory.secrets.get(SECRET_NAME);
         } catch {
-          throw failure("secret_store_error", "Credential removal could not be confirmed.");
+          throw unknownCommit("Credential removal could not be confirmed.");
         }
         if (recovered !== null) {
           throw failure("secret_store_error", "The personal access token could not be removed.");
