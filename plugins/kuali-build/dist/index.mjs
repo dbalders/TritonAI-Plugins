@@ -1,5 +1,13 @@
 const PROVIDER_ID = "kuali-build";
-const CAPABILITY = "kuali-build.read";
+const READ_CAPABILITY = "kuali-build.read";
+const DOCUMENT_WRITE_CAPABILITY = "kuali-build.documents.write";
+const WORKFLOW_WRITE_CAPABILITY = "kuali-build.workflows.write";
+const CAPABILITIES = Object.freeze([
+  READ_CAPABILITY,
+  DOCUMENT_WRITE_CAPABILITY,
+  WORKFLOW_WRITE_CAPABILITY,
+]);
+const CAPABILITY_SET = new Set(CAPABILITIES);
 const SECRET_NAME = "api-key";
 const TENANT_ORIGIN = "https://ucsd.kualibuild.com";
 const API_KEY_SETTINGS_URL = `${TENANT_ORIGIN}/build/space/favorites/account/api-keys`;
@@ -16,6 +24,12 @@ const MAX_PENDING_FLOWS = 8;
 const MAX_APP_RESULTS = 100;
 const MAX_SCHEMA_FIELDS = 500;
 const MAX_USER_RESULTS = 50;
+const MAX_WRITE_FIELDS = 100;
+const MAX_WRITE_DEPTH = 16;
+const MAX_WRITE_NODES = 5_000;
+const MAX_WRITE_ARRAY_ITEMS = 500;
+const MAX_WRITE_OBJECT_KEYS = 200;
+const MAX_WRITE_STRING_CHARS = 32_768;
 const FLOW_LIFETIME_MS = 10 * 60 * 1_000;
 const unsafeKeys = new Set(["__proto__", "constructor", "prototype"]);
 const objectIdPattern = /^[0-9a-f]{24}$/iu;
@@ -30,12 +44,26 @@ const queries = Object.freeze({
   documentGet: `query KualiBuildDocument($id: ID!) { document(id: $id) { id data meta } }`,
   usersLookup: `query KualiBuildUsers($query: String, $limit: Int!) { usersConnection(args: { query: $query, limit: $limit }) { edges { node { id displayName email username firstName lastName schoolId } } } }`,
   workflowStatus: `query KualiBuildWorkflowStatus($id: ID!) { document(id: $id) { id meta } }`,
+  actionGet: `query KualiBuildDraftAction($actionId: String!) { action(actionId: $actionId) { id appId document { id } } }`,
+  documentUpdate: `mutation KualiBuildDocumentUpdate($id: ID!, $data: JSON!) { updateDocument(args: { id: $id, data: $data }) { id data } }`,
+  draftInitialize: `mutation KualiBuildDraftInitialize($appId: ID!) { initializeWorkflow(args: { id: $appId }) { actionId } }`,
+  documentSubmit: `mutation KualiBuildDocumentSubmit($documentId: ID!, $data: JSON, $actionId: ID!, $status: String) { submitDocument(id: $documentId, data: $data, actionId: $actionId, status: $status) }`,
 });
 
 function failure(code, message, retryable = false, details) {
   const value = { _tag: "PluginFailure", code, message, retryable };
   if (details !== undefined) value.details = details;
   return Object.freeze(value);
+}
+
+function externalCommitOutcomeUnknown(operation, details = {}) {
+  return Object.freeze({
+    _tag: "ExternalCommitOutcomeUnknown",
+    code: "external_commit_outcome_unknown",
+    message: `The ${operation} request may have committed in UCSD Kuali Build. Inspect the document or workflow before deciding whether to try another action.`,
+    retryable: false,
+    details: { operation, ...details },
+  });
 }
 
 function isPlainObject(value) {
@@ -121,6 +149,14 @@ function hasControlCharacters(value) {
   return false;
 }
 
+function hasForbiddenWriteControl(value) {
+  for (const character of value) {
+    const code = character.codePointAt(0);
+    if ((code <= 0x1f && ![0x09, 0x0a, 0x0d].includes(code)) || code === 0x7f) return true;
+  }
+  return false;
+}
+
 function validateSearch(value) {
   if (
     typeof value !== "string" ||
@@ -132,6 +168,108 @@ function validateSearch(value) {
     throw failure("invalid_input", "query must be 1-256 visible characters.");
   }
   return value;
+}
+
+function validateUpdatedAt(value) {
+  if (
+    typeof value !== "string" ||
+    value.length < 1 ||
+    value.length > 128 ||
+    value.trim() !== value ||
+    hasControlCharacters(value)
+  ) {
+    throw failure(
+      "invalid_input",
+      "expectedUpdatedAt must exactly match the document meta.updatedAt value from a recent read.",
+    );
+  }
+  return value;
+}
+
+function validateWriteData(value, confirmNullValues) {
+  if (!isPlainObject(value)) {
+    throw failure("invalid_input", "data must be a plain object of Kuali form fields.");
+  }
+  const entries = Object.entries(value);
+  if (entries.length > MAX_WRITE_FIELDS) {
+    throw failure("invalid_input", `data may contain at most ${MAX_WRITE_FIELDS} form fields.`);
+  }
+  const normalized = {};
+  let sawNull = false;
+  let nodes = 0;
+  const stack = [];
+  for (const [sourceKey, item] of entries) {
+    if (
+      unsafeKeys.has(sourceKey) ||
+      !/^(?:data\.)?[A-Za-z0-9_-]{1,128}$/u.test(sourceKey)
+    ) {
+      throw failure(
+        "invalid_input",
+        "Every data key must be a bounded Kuali formKey, optionally prefixed with data..",
+      );
+    }
+    const key = sourceKey.startsWith("data.") ? sourceKey.slice(5) : sourceKey;
+    if (Object.hasOwn(normalized, key)) {
+      throw failure("invalid_input", `data contains the duplicate normalized formKey ${key}.`);
+    }
+    normalized[key] = item;
+    stack.push({ value: item, depth: 1 });
+  }
+  while (stack.length > 0) {
+    const { value: item, depth } = stack.pop();
+    nodes += 1;
+    if (nodes > MAX_WRITE_NODES) {
+      throw failure("invalid_input", "data contains too many JSON values.");
+    }
+    if (depth > MAX_WRITE_DEPTH) {
+      throw failure("invalid_input", "data is too deeply nested.");
+    }
+    if (item === null) {
+      sawNull = true;
+      continue;
+    }
+    if (typeof item === "boolean") continue;
+    if (typeof item === "number") {
+      if (!Number.isFinite(item)) throw failure("invalid_input", "data contains a non-finite number.");
+      continue;
+    }
+    if (typeof item === "string") {
+      if (item.length > MAX_WRITE_STRING_CHARS || hasForbiddenWriteControl(item)) {
+        throw failure(
+          "invalid_input",
+          `data strings must contain at most ${MAX_WRITE_STRING_CHARS} characters and no control characters.`,
+        );
+      }
+      continue;
+    }
+    if (Array.isArray(item)) {
+      if (item.length > MAX_WRITE_ARRAY_ITEMS) {
+        throw failure("invalid_input", "data contains an oversized array.");
+      }
+      for (const child of item) stack.push({ value: child, depth: depth + 1 });
+      continue;
+    }
+    if (!isPlainObject(item)) {
+      throw failure("invalid_input", "data must contain only plain JSON values.");
+    }
+    const children = Object.entries(item);
+    if (children.length > MAX_WRITE_OBJECT_KEYS) {
+      throw failure("invalid_input", "data contains an oversized nested object.");
+    }
+    for (const [key, child] of children) {
+      if (unsafeKeys.has(key) || key.length === 0 || key.length > 128 || hasControlCharacters(key)) {
+        throw failure("invalid_input", "data contains an unsafe nested object key.");
+      }
+      stack.push({ value: child, depth: depth + 1 });
+    }
+  }
+  if (sawNull && confirmNullValues !== true) {
+    throw failure(
+      "null_confirmation_required",
+      "data contains null. Set confirmNullValues to true only if clearing those Kuali values is intended.",
+    );
+  }
+  return normalized;
 }
 
 function validateInteger(value, label, minimum, maximum, fallback) {
@@ -157,6 +295,72 @@ function validateInput(toolName, value) {
     case "kuali-build.workflows.status": {
       const input = ownKeys(value, new Set(["documentId"]), "Input");
       return { documentId: validateIdentifier(input.documentId, "documentId") };
+    }
+    case "kuali-build.documents.drafts.resolve": {
+      const input = ownKeys(value, new Set(["actionId"]), "Input");
+      return { actionId: validateIdentifier(input.actionId, "actionId") };
+    }
+    case "kuali-build.documents.update": {
+      const input = ownKeys(
+        value,
+        new Set([
+          "documentId",
+          "data",
+          "expectedUpdatedAt",
+          "confirmUpdate",
+          "confirmNullValues",
+        ]),
+        "Input",
+      );
+      if (input.confirmUpdate !== true) {
+        throw failure(
+          "confirmation_required",
+          "confirmUpdate must be true to overwrite the supplied document fields.",
+        );
+      }
+      const data = validateWriteData(input.data, input.confirmNullValues);
+      if (Object.keys(data).length === 0) {
+        throw failure("invalid_input", "data must contain at least one form field to update.");
+      }
+      return {
+        documentId: validateIdentifier(input.documentId, "documentId"),
+        data,
+        expectedUpdatedAt: validateUpdatedAt(input.expectedUpdatedAt),
+      };
+    }
+    case "kuali-build.documents.drafts.initialize": {
+      const input = ownKeys(value, new Set(["appId", "confirmCreateDraft"]), "Input");
+      if (input.confirmCreateDraft !== true) {
+        throw failure(
+          "confirmation_required",
+          "confirmCreateDraft must be true because this creates an empty Kuali draft immediately.",
+        );
+      }
+      return { appId: validateIdentifier(input.appId, "appId") };
+    }
+    case "kuali-build.documents.submit": {
+      const input = ownKeys(
+        value,
+        new Set([
+          "documentId",
+          "actionId",
+          "data",
+          "confirmSubmit",
+          "confirmNullValues",
+        ]),
+        "Input",
+      );
+      if (input.confirmSubmit !== true) {
+        throw failure(
+          "confirmation_required",
+          "confirmSubmit must be true because submission starts the configured workflow.",
+        );
+      }
+      return {
+        documentId: validateIdentifier(input.documentId, "documentId"),
+        actionId: validateIdentifier(input.actionId, "actionId"),
+        data: validateWriteData(input.data, input.confirmNullValues),
+      };
     }
     case "kuali-build.users.lookup": {
       const input = ownKeys(value, new Set(["query"]), "Input");
@@ -271,7 +475,7 @@ function retryAfter(response) {
   return Math.min(Math.max(Math.ceil((timestamp - Date.now()) / 1_000), 0), 3_600);
 }
 
-function graphqlFailure(errors) {
+function graphqlFailure(errors, partialDataDiscarded) {
   const codes = [];
   const paths = [];
   if (Array.isArray(errors)) {
@@ -301,6 +505,7 @@ function graphqlFailure(errors) {
   return failure("graphql_error", "Kuali Build rejected the GraphQL operation.", false, {
     codes: [...new Set(codes)],
     paths: [...new Set(paths)],
+    partialDataDiscarded,
   });
 }
 
@@ -385,7 +590,10 @@ async function graphql(fetchImplementation, apiKey, query, variables, signal) {
   validateJsonTree(parsed);
   if (!isPlainObject(parsed)) throw failure("invalid_response", "Kuali returned an invalid GraphQL envelope.");
   if (Object.hasOwn(parsed, "errors") && Array.isArray(parsed.errors) && parsed.errors.length > 0) {
-    throw graphqlFailure(parsed.errors);
+    throw graphqlFailure(
+      parsed.errors,
+      isPlainObject(parsed.data) && Object.values(parsed.data).some((value) => value !== null),
+    );
   }
   if (!Object.hasOwn(parsed, "data") || !isPlainObject(parsed.data)) {
     throw failure("invalid_response", "Kuali returned a GraphQL response without data.");
@@ -393,6 +601,13 @@ async function graphql(fetchImplementation, apiKey, query, variables, signal) {
     return parsed.data;
   } finally {
     composed.cleanup();
+  }
+}
+
+function validateRequestSize(query, variables) {
+  const body = JSON.stringify({ query, variables });
+  if (encoder.encode(body).byteLength > MAX_REQUEST_BYTES) {
+    throw failure("request_too_large", "Kuali request exceeded the byte limit.");
   }
 }
 
@@ -418,10 +633,13 @@ function parseSecret(value) {
     if (
       parsed.version !== 1 ||
       !Array.isArray(parsed.capabilities) ||
-      parsed.capabilities.length !== 1 ||
-      parsed.capabilities[0] !== CAPABILITY
+      parsed.capabilities.length < 1 ||
+      parsed.capabilities.length > CAPABILITIES.length ||
+      parsed.capabilities[0] !== READ_CAPABILITY ||
+      new Set(parsed.capabilities).size !== parsed.capabilities.length ||
+      parsed.capabilities.some((capability) => !CAPABILITY_SET.has(capability))
     ) return undefined;
-    return { version: 1, apiKey: validateApiKey(parsed.apiKey), capabilities: [CAPABILITY] };
+    return { version: 1, apiKey: validateApiKey(parsed.apiKey), capabilities: parsed.capabilities };
   } catch {
     return undefined;
   }
@@ -443,10 +661,20 @@ async function readCredential(secrets) {
 }
 
 function exactCapabilities(value) {
-  if (!Array.isArray(value) || value.length !== 1 || value[0] !== CAPABILITY) {
-    throw failure("invalid_capabilities", "The connection must request only kuali-build.read.");
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length > CAPABILITIES.length ||
+    value[0] !== READ_CAPABILITY ||
+    new Set(value).size !== value.length ||
+    value.some((capability) => !CAPABILITY_SET.has(capability))
+  ) {
+    throw failure(
+      "invalid_capabilities",
+      "The connection must request kuali-build.read first and may additionally request the two declared write capabilities.",
+    );
   }
-  return [CAPABILITY];
+  return CAPABILITIES.filter((capability) => value.includes(capability));
 }
 
 function extract(data, key) {
@@ -516,6 +744,66 @@ function projectUser(value) {
   return output;
 }
 
+function projectDraftAction(value) {
+  if (
+    !isPlainObject(value) ||
+    typeof value.id !== "string" ||
+    !objectIdPattern.test(value.id) ||
+    typeof value.appId !== "string" ||
+    !objectIdPattern.test(value.appId) ||
+    !isPlainObject(value.document) ||
+    typeof value.document.id !== "string" ||
+    !objectIdPattern.test(value.document.id)
+  ) {
+    throw failure("invalid_response", "Kuali returned an invalid draft action.");
+  }
+  return {
+    actionId: value.id.toLowerCase(),
+    appId: value.appId.toLowerCase(),
+    documentId: value.document.id.toLowerCase(),
+  };
+}
+
+function requireCapability(credential, capability) {
+  if (!credential.capabilities.includes(capability)) {
+    throw failure(
+      "capability_not_granted",
+      `Reconnect the plugin with ${capability} enabled before using this tool.`,
+    );
+  }
+}
+
+function validateWriteInvocation(context) {
+  if (context.writeApproved !== true) {
+    throw failure(
+      "write_not_approved",
+      "The host must approve this Kuali Build write before it can run.",
+    );
+  }
+  if (typeof context.beginCommit !== "function") {
+    throw failure("invalid_context", "The host write context is missing beginCommit.");
+  }
+}
+
+function isAmbiguousWriteFailure(error, commitSignal) {
+  if (commitSignal.aborted) return true;
+  if (error?._tag === "ExternalCommitOutcomeUnknown") return true;
+  if (error?._tag !== "PluginFailure") return true;
+  if (
+    [
+      "network_error",
+      "request_timeout",
+      "response_too_large",
+      "invalid_response",
+      "redirect_rejected",
+    ].includes(error.code)
+  ) {
+    return true;
+  }
+  if (error.code === "http_error" && Number(error.details?.status) >= 500) return true;
+  return error.code === "graphql_error" && error.details?.partialDataDiscarded === true;
+}
+
 function createFlow(flows, capabilities) {
   const now = Date.now();
   for (const [id, flow] of flows) {
@@ -546,6 +834,33 @@ export function createIntegrationProvider(context) {
 
   async function execute(apiKey, operation, variables, signal) {
     return graphql(fetchImplementation, apiKey, queries[operation], variables, signal);
+  }
+
+  async function executeMutation(
+    apiKey,
+    operation,
+    variables,
+    invocationContext,
+    outcomeDetails,
+    project,
+  ) {
+    validateWriteInvocation(invocationContext);
+    validateRequestSize(queries[operation], variables);
+    invocationContext.signal.throwIfAborted();
+    const commitSignal = await invocationContext.beginCommit();
+    if (!(commitSignal instanceof AbortSignal)) {
+      throw failure("invalid_context", "The host commit signal is invalid.");
+    }
+    commitSignal.throwIfAborted();
+    try {
+      const data = await execute(apiKey, operation, variables, commitSignal);
+      return project(data);
+    } catch (error) {
+      if (isAmbiguousWriteFailure(error, commitSignal)) {
+        throw externalCommitOutcomeUnknown(operation, outcomeDetails);
+      }
+      throw error;
+    }
   }
 
   async function verifyConnection(apiKey, signal) {
@@ -638,7 +953,10 @@ export function createIntegrationProvider(context) {
       return {
         kind: "connected",
         flowId: submitted.flowId,
-        message: "Connected to UC San Diego Kuali Build with read-only tools.",
+        message:
+          flow.capabilities.length === 1
+            ? "Connected to UC San Diego Kuali Build with read-only tools."
+            : "Connected to UC San Diego Kuali Build with the selected read and write capabilities.",
       };
     },
     async disconnect(lifecycleContext) {
@@ -776,6 +1094,162 @@ export function createIntegrationProvider(context) {
             "document",
           );
           return { document: document === null ? null : projectDocument(document) };
+        }
+        case "kuali-build.documents.drafts.resolve": {
+          const action = extract(
+            await execute(
+              credential.apiKey,
+              "actionGet",
+              { actionId: parsed.actionId },
+              invocationContext.signal,
+            ),
+            "action",
+          );
+          return { action: action === null ? null : projectDraftAction(action) };
+        }
+        case "kuali-build.documents.update": {
+          validateWriteInvocation(invocationContext);
+          requireCapability(credential, DOCUMENT_WRITE_CAPABILITY);
+          const current = extract(
+            await execute(
+              credential.apiKey,
+              "documentGet",
+              { id: parsed.documentId },
+              invocationContext.signal,
+            ),
+            "document",
+          );
+          if (current === null) {
+            throw failure("document_not_found", "The Kuali Build document was not found.");
+          }
+          const projected = projectDocument(current);
+          if (!isPlainObject(projected.meta) || projected.meta.updatedAt === undefined) {
+            throw failure(
+              "concurrency_check_unavailable",
+              "Kuali did not return meta.updatedAt, so the edit was not attempted.",
+            );
+          }
+          if (String(projected.meta.updatedAt) !== parsed.expectedUpdatedAt) {
+            throw failure(
+              "document_changed",
+              "The document changed since it was read. Read it again, review the new values, and prepare a new update.",
+              false,
+              { currentUpdatedAt: String(projected.meta.updatedAt) },
+            );
+          }
+          return executeMutation(
+            credential.apiKey,
+            "documentUpdate",
+            { id: parsed.documentId, data: parsed.data },
+            invocationContext,
+            { documentId: parsed.documentId },
+            (data) => {
+              const updated = extract(data, "updateDocument");
+              if (
+                !isPlainObject(updated) ||
+                typeof updated.id !== "string" ||
+                !objectIdPattern.test(updated.id) ||
+                updated.id.toLowerCase() !== parsed.documentId
+              ) {
+                throw failure("invalid_response", "Kuali returned an invalid updated document.");
+              }
+              return {
+                document: { id: updated.id.toLowerCase(), data: updated.data ?? null },
+                updatedFormKeys: Object.keys(parsed.data),
+                precondition: { expectedUpdatedAt: parsed.expectedUpdatedAt },
+              };
+            },
+          );
+        }
+        case "kuali-build.documents.drafts.initialize": {
+          validateWriteInvocation(invocationContext);
+          requireCapability(credential, DOCUMENT_WRITE_CAPABILITY);
+          requireCapability(credential, WORKFLOW_WRITE_CAPABILITY);
+          const app = extract(
+            await execute(
+              credential.apiKey,
+              "appGet",
+              { id: parsed.appId },
+              invocationContext.signal,
+            ),
+            "app",
+          );
+          if (app === null) throw failure("app_not_found", "The Kuali Build app was not found.");
+          projectApp(app);
+          return executeMutation(
+            credential.apiKey,
+            "draftInitialize",
+            { appId: parsed.appId },
+            invocationContext,
+            { appId: parsed.appId },
+            (data) => {
+              const initialized = extract(data, "initializeWorkflow");
+              if (
+                !isPlainObject(initialized) ||
+                typeof initialized.actionId !== "string" ||
+                !objectIdPattern.test(initialized.actionId)
+              ) {
+                throw failure("invalid_response", "Kuali returned an invalid initialized draft.");
+              }
+              return {
+                appId: parsed.appId,
+                actionId: initialized.actionId.toLowerCase(),
+                state: "draft_initialized",
+                nextTool: "kuali-build.documents.drafts.resolve",
+                atomic: false,
+              };
+            },
+          );
+        }
+        case "kuali-build.documents.submit": {
+          validateWriteInvocation(invocationContext);
+          requireCapability(credential, DOCUMENT_WRITE_CAPABILITY);
+          requireCapability(credential, WORKFLOW_WRITE_CAPABILITY);
+          const actionValue = extract(
+            await execute(
+              credential.apiKey,
+              "actionGet",
+              { actionId: parsed.actionId },
+              invocationContext.signal,
+            ),
+            "action",
+          );
+          if (actionValue === null) {
+            throw failure("draft_action_not_found", "The Kuali Build draft action was not found.");
+          }
+          const action = projectDraftAction(actionValue);
+          if (action.documentId !== parsed.documentId) {
+            throw failure(
+              "draft_action_mismatch",
+              "The action ID does not belong to the supplied draft document ID.",
+            );
+          }
+          return executeMutation(
+            credential.apiKey,
+            "documentSubmit",
+            {
+              documentId: parsed.documentId,
+              data: parsed.data,
+              actionId: parsed.actionId,
+              status: "completed",
+            },
+            invocationContext,
+            { actionId: parsed.actionId, documentId: parsed.documentId },
+            (data) => {
+              const result = extract(data, "submitDocument");
+              if (typeof result !== "string" || result.length === 0 || result.length > 128) {
+                throw failure("invalid_response", "Kuali returned an invalid submission result.");
+              }
+              return {
+                actionId: parsed.actionId,
+                documentId: parsed.documentId,
+                result,
+                state: "submitted",
+                workflowStarted: true,
+                atomic: false,
+              };
+            },
+          );
         }
         case "kuali-build.users.lookup": {
           const connection = extract(
