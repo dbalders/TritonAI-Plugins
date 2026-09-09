@@ -6242,7 +6242,7 @@ var JsonObject = Record(
   String4.check(isMinLength(1), isMaxLength(256)),
   Unknown2
 );
-var EmptyInput = Record(String4, Never2);
+var EmptyInput = Struct({ _empty: optionalKey2(Never2) });
 var SearchWorkflowsInput = Struct({
   query: OptionalQuery,
   projectId: OptionalProjectId,

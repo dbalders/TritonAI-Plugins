@@ -103,7 +103,10 @@ const JsonObject = Schema.Record(
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
   Schema.Unknown,
 );
-const EmptyInput = Schema.Record(Schema.String, Schema.Never);
+// A Never-valued record emits an object-or-array JSON Schema after bundling.
+// An impossible optional field keeps the empty contract while producing the
+// strict object schema required by the Harness provider boundary.
+const EmptyInput = Schema.Struct({ _empty: Schema.optionalKey(Schema.Never) });
 
 const SearchWorkflowsInput = Schema.Struct({
   query: OptionalQuery,
