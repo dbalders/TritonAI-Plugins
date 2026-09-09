@@ -147,9 +147,6 @@ function isNotUndefined(input) {
 function isNotNullish(input) {
   return input != null;
 }
-function isNever(_) {
-  return false;
-}
 function isUnknown(_) {
   return true;
 }
@@ -2916,14 +2913,14 @@ function toDefaultIssues(issue, path, leafHook, checkHook) {
       }];
   }
 }
-function formatCheck(check) {
-  const expected = check.annotations?.expected;
+function formatCheck(check2) {
+  const expected = check2.annotations?.expected;
   if (typeof expected === "string") return expected;
-  switch (check._tag) {
+  switch (check2._tag) {
     case "Filter":
       return "<filter>";
     case "FilterGroup":
-      return check.checks.map((check2) => formatCheck(check2)).join(" & ");
+      return check2.checks.map((check3) => formatCheck(check3)).join(" & ");
   }
 }
 function makeFormatterDefault() {
@@ -3195,18 +3192,6 @@ var Null = class extends Base2 {
   }
 };
 var null_ = /* @__PURE__ */ new Null();
-var Never = class extends Base2 {
-  _tag = "Never";
-  /** @internal */
-  getParser() {
-    return fromRefinement(this, isNever);
-  }
-  /** @internal */
-  getExpected() {
-    return "never";
-  }
-};
-var never2 = /* @__PURE__ */ new Never();
 var Unknown = class extends Base2 {
   _tag = "Unknown";
   /** @internal */
@@ -3307,7 +3292,7 @@ var Number4 = class extends Base2 {
   }
 };
 function hasCheck(checks, id) {
-  return checks.some((check) => check.annotations?.representation?.id === id || check._tag === "FilterGroup" && hasCheck(check.checks, id));
+  return checks.some((check2) => check2.annotations?.representation?.id === id || check2._tag === "FilterGroup" && hasCheck(check2.checks, id));
 }
 function numberToJson(checks) {
   const encodedFinite = checks === void 0 ? finite : appendChecks(finite, checks);
@@ -4265,13 +4250,13 @@ function isOptional(ast) {
 function isMutable(ast) {
   return ast.context?.isMutable ?? false;
 }
-function isStructuralCheck(check) {
-  return check.annotations?.[STRUCTURAL_ANNOTATION_KEY] === true || check._tag === "FilterGroup" && check.checks.every(isStructuralCheck);
+function isStructuralCheck(check2) {
+  return check2.annotations?.[STRUCTURAL_ANNOTATION_KEY] === true || check2._tag === "FilterGroup" && check2.checks.every(isStructuralCheck);
 }
 function extractStructuralChecks(checks) {
-  function extract(check) {
-    if (isStructuralCheck(check)) return [check];
-    return check._tag === "FilterGroup" ? check.checks.flatMap(extract) : [];
+  function extract(check2) {
+    if (isStructuralCheck(check2)) return [check2];
+    return check2._tag === "FilterGroup" ? check2.checks.flatMap(extract) : [];
   }
   const out = checks.flatMap(extract);
   return isArrayNonEmpty2(out) ? out : void 0;
@@ -4396,14 +4381,14 @@ var REGEXP_PATTERN = "Symbol\\((.*)\\)";
 var isStringSymbolRegExp = /* @__PURE__ */ new globalThis.RegExp(`^${REGEXP_PATTERN}$`);
 function collectIssues(checks, value, issues, ast, options) {
   for (let i = 0; i < checks.length; i++) {
-    const check = checks[i];
-    if (check._tag === "FilterGroup") {
-      collectIssues(check.checks, value, issues, ast, options);
+    const check2 = checks[i];
+    if (check2._tag === "FilterGroup") {
+      collectIssues(check2.checks, value, issues, ast, options);
     } else {
-      const issue = check.run(value, ast, options);
+      const issue = check2.run(value, ast, options);
       if (issue) {
-        issues.push(new Filter(value, check, issue));
-        if (check.aborted || options?.errors !== "all") {
+        issues.push(new Filter(value, check2, issue));
+        if (check2.aborted || options?.errors !== "all") {
           return;
         }
       }
@@ -4851,11 +4836,11 @@ function compileJsonSchema(representations, rootPaths, references, options) {
   function annotationSchemas(representation, path) {
     return representation?.schemas?.map((schema, index) => recur2(schema, [...path, "schemas", index])) ?? [];
   }
-  function compileCheck(check, type, path) {
-    const annotations = check.annotations;
+  function compileCheck(check2, type, path) {
+    const annotations = check2.annotations;
     const callback2 = annotations?.toJsonSchema;
     if (callback2 !== void 0) {
-      const schemas2 = annotationSchemas(check.representation, [...path, "representation"]);
+      const schemas2 = annotationSchemas(check2.representation, [...path, "representation"]);
       const fragment = callback2({
         type,
         schemas: schemas2
@@ -4866,8 +4851,8 @@ function compileJsonSchema(representations, rootPaths, references, options) {
         ...ordinary2
       };
     }
-    if (check._tag === "Filter") return void 0;
-    const children = check.checks.map((child, index) => compileCheck(child, type, [...path, "checks", index])).filter((child) => child !== void 0);
+    if (check2._tag === "Filter") return void 0;
+    const children = check2.checks.map((child, index) => compileCheck(child, type, [...path, "checks", index])).filter((child) => child !== void 0);
     if (children.length === 0) return void 0;
     const ordinary = collectJsonSchemaAnnotations(annotations, options);
     return ordinary === void 0 ? {
@@ -4896,9 +4881,9 @@ function compileJsonSchema(representations, rootPaths, references, options) {
     }
     for (let index = 0; index < representation.checks.length; index++) {
       const type = typeof output.type === "string" && isJsonSchemaType(output.type) ? output.type : void 0;
-      const check = compileCheck(representation.checks[index], type, [...path, "checks", index]);
-      if (check !== void 0) {
-        output = appendJsonSchema(output, check);
+      const check2 = compileCheck(representation.checks[index], type, [...path, "checks", index]);
+      if (check2 !== void 0) {
+        output = appendJsonSchema(output, check2);
       }
     }
     return output;
@@ -5290,9 +5275,9 @@ function lowerASTs(asts, externalDefinitions) {
     }
   }
   function visitChecks(checks) {
-    checks?.forEach((check) => {
-      check.annotations?.representation?.schemas?.forEach((schema) => visit(toType(schema)));
-      if (check._tag === "FilterGroup") visitChecks(check.checks);
+    checks?.forEach((check2) => {
+      check2.annotations?.representation?.schemas?.forEach((schema) => visit(toType(schema)));
+      if (check2._tag === "FilterGroup") visitChecks(check2.checks);
     });
   }
   function recur2(ast, ownedReference) {
@@ -5472,19 +5457,19 @@ function lowerASTs(asts, externalDefinitions) {
   function fromChecks(checks) {
     return checks?.map(fromCheck) ?? [];
   }
-  function fromCheck(check) {
-    switch (check._tag) {
+  function fromCheck(check2) {
+    switch (check2._tag) {
       case "Filter":
         return {
           _tag: "Filter",
-          aborted: check.aborted,
-          ...fromCheckAnnotations(check.annotations)
+          aborted: check2.aborted,
+          ...fromCheckAnnotations(check2.annotations)
         };
       case "FilterGroup":
         return {
           _tag: "FilterGroup",
-          checks: map2(check.checks, fromCheck),
-          ...fromCheckAnnotations(check.annotations)
+          checks: map2(check2.checks, fromCheck),
+          ...fromCheckAnnotations(check2.annotations)
         };
     }
   }
@@ -5586,7 +5571,6 @@ function Literal2(literal) {
   });
   return out;
 }
-var Never2 = /* @__PURE__ */ make7(never2);
 var Unknown2 = /* @__PURE__ */ make7(unknown);
 var Null2 = /* @__PURE__ */ make7(null_);
 var String4 = /* @__PURE__ */ make7(string2);
@@ -5653,6 +5637,9 @@ function Literals(literals) {
       return Union2(members.map((member, index) => member.transform(to[index])));
     }
   });
+}
+function check(...checks) {
+  return (self) => self.check(...checks);
 }
 function decodeTo2(to, transformation) {
   return (from) => {
@@ -6242,7 +6229,9 @@ var JsonObject = Record(
   String4.check(isMinLength(1), isMaxLength(256)),
   Unknown2
 );
-var EmptyInput = Record(String4, Never2);
+var EmptyInput = Record(String4, Unknown2).pipe(
+  check(makeFilter2((input) => Object.keys(input).length === 0))
+);
 var SearchWorkflowsInput = Struct({
   query: OptionalQuery,
   projectId: OptionalProjectId,

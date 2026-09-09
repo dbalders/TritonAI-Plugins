@@ -103,7 +103,11 @@ const JsonObject = Schema.Record(
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
   Schema.Unknown,
 );
-const EmptyInput = Schema.Record(Schema.String, Schema.Never);
+// A Never-valued record emits an object-or-array JSON Schema after bundling.
+// Keep the reviewed wire schema property-free while rejecting non-empty input.
+const EmptyInput = Schema.Record(Schema.String, Schema.Unknown).pipe(
+  Schema.check(Schema.makeFilter((input) => Object.keys(input).length === 0)),
+);
 
 const SearchWorkflowsInput = Schema.Struct({
   query: OptionalQuery,
