@@ -21,6 +21,9 @@ function inputSchema(input) {
     ...(Object.keys(document.definitions).length > 0 ? { $defs: document.definitions } : {}),
   };
   if (schema.type === "object" && schema.properties === undefined) schema.properties = {};
+  if (schema.type === "object" && schema.additionalProperties === undefined) {
+    schema.additionalProperties = false;
+  }
   return schema;
 }
 
