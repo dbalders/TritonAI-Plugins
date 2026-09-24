@@ -323,11 +323,33 @@ test("sealed artifact output is byte-for-byte deterministic and executable", asy
     architecture: "any",
     environments: ["electron-main", "server"],
     module: "esm",
-    node: ">=24.13.1 <25",
+    node: ">=24.13.1 <25 || >=26.8.2 <27",
     nodeBuiltins: [],
     platform: "any",
     runtime: "node",
   });
+
+  await verifyPluginArtifact(outputs[0], { hostNodeVersion: "26.8.2" });
+  await assert.rejects(
+    () => verifyPluginArtifact(outputs[0], { hostNodeVersion: "25.9.0" }),
+    /Plugin requires Node.js/,
+  );
+  await assert.rejects(
+    () => verifyPluginArtifact(outputs[0], { hostNodeVersion: "26.8.1" }),
+    /Plugin requires Node.js/,
+  );
+
+  const descriptorPath = Path.join(outputs[0], "artifact.json");
+  await Fs.writeFile(
+    descriptorPath,
+    `${canonicalJson({ ...descriptor, target: { ...descriptor.target, node: ">=24.13.1 <25" } })}\n`,
+  );
+  await verifyPluginArtifact(outputs[0], supportedHost);
+  await assert.rejects(
+    () => verifyPluginArtifact(outputs[0], { hostNodeVersion: "26.8.2" }),
+    /Plugin requires Node.js/,
+  );
+  await Fs.writeFile(descriptorPath, left.get("artifact.json"));
 
   const beginCommit = () =>
     Promise.reject(new Error("read-only plugin crossed the write boundary"));

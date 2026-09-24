@@ -23,7 +23,7 @@
   },
   "devDependencies": {
     "@tritonai/plugin-sdk": "workspace:^",
-    "effect": "4.0.0-beta.102",
+    "effect": "4.0.0-rc.112",
     "esbuild": "0.28.2"
   }
 }

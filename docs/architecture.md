@@ -52,7 +52,7 @@ construction, configuration validation, and provider-specific recovery behavior.
 declare write tools implement `connect` and `disconnect`; each write invocation requires
 `writeApproved` and `beginCommit()` admission immediately before its fixed mutation.
 
-Provider packages declare only the shared Effect peer range and keep beta.102 as their exact local
+Provider packages declare only the shared Effect peer range and keep rc.112 as their exact local
 development baseline. Contract verification derives the Harness server's Effect runtime from the
 workspace catalog, importer, package and snapshot keys, patch metadata, installed package version,
 and exact pnpm realpath. Compatible runtime updates inside the peer range do not change plugin
@@ -86,7 +86,7 @@ connection lifecycle, invocation and closure are Promise-based. Logging, network
 catalogs and process isolation are deliberately outside v1.
 
 The builder inspects the full source tree, then emits the canonical manifest, declared skills and
-one reviewed Node 24 ESM entry. It rejects links, special and native-addon files, traversal,
+one reviewed Node 24.13.1+/26.8.2+ ESM entry. It rejects links, special and native-addon files, traversal,
 duplicate or case-colliding paths, lifecycle installers, unresolved static ESM dependencies,
 dynamic imports, and bounded-size violations. Third-party helpers are bundled; static `node:`
 imports are bound in the descriptor. `artifact.json` has no timestamp or environment-dependent field; it

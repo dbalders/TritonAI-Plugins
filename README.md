@@ -83,7 +83,7 @@ manifest in `.tritonai-plugin/plugin.json` carries inline draft 2020-12 configur
 schemas, skills, SDK API major, and minimum host contract level. The factory module has one stable export:
 `createIntegrationProvider`.
 
-Builds produce a sealed Node 24 ESM directory with one reviewed `plugin.mjs`, declared skill files,
+Builds produce a sealed Node 24.13.1+/26.8.2+ ESM directory with one reviewed `plugin.mjs`, declared skill files,
 canonical manifest and canonical `artifact.json`. Release-ready bytes are committed at
 `artifacts/<plugin-id>/`; `pnpm artifacts:sdk` refreshes them and `pnpm artifacts:sdk:check` proves
 they exactly match source. Third-party code is bundled; static `node:`

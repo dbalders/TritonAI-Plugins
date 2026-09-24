@@ -260,7 +260,12 @@ function assertNoNativeSources(files) {
   }
 }
 
-function descriptorFor(manifest, payloads, nodeBuiltins) {
+function descriptorFor(
+  manifest,
+  payloads,
+  nodeBuiltins,
+  nodeTarget = ">=24.13.1 <25 || >=26.8.2 <27",
+) {
   const payload = [...payloads.entries()]
     .map(([path, bytes]) => ({ path, sha256: digest(bytes), size: bytes.length }))
     .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
@@ -282,7 +287,7 @@ function descriptorFor(manifest, payloads, nodeBuiltins) {
       architecture: "any",
       environments: ["electron-main", "server"],
       module: "esm",
-      node: ">=24.13.1 <25",
+      node: nodeTarget,
       platform: "any",
       runtime: "node",
       nodeBuiltins,
@@ -437,7 +442,7 @@ function assertDescriptorShape(value) {
       Array.isArray(value.target.environments) &&
       canonicalJson(value.target.environments) === canonicalJson(["electron-main", "server"]) &&
       value.target.module === "esm" &&
-      value.target.node === ">=24.13.1 <25" &&
+      [">=24.13.1 <25", ">=24.13.1 <25 || >=26.8.2 <27"].includes(value.target.node) &&
       value.target.platform === "any" &&
       value.target.runtime === "node" &&
       Array.isArray(value.target.nodeBuiltins) &&
@@ -560,7 +565,12 @@ export async function verifyPluginArtifact(
     "Artifact sdk contract does not match its manifest.",
   );
   const nodeBuiltins = await assertPayloadInvariants(manifest, payloads);
-  const expectedDescriptor = descriptorFor(manifest, payloads, nodeBuiltins);
+  const expectedDescriptor = descriptorFor(
+    manifest,
+    payloads,
+    nodeBuiltins,
+    descriptor.target.node,
+  );
   assert(
     canonicalJson(descriptor) === canonicalJson(expectedDescriptor),
     "Artifact descriptor does not match its verified payloads.",
