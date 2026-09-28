@@ -2380,6 +2380,7 @@ export class N8nProvider implements IntegrationProvider {
       let admitted = false;
       let responseSettled = false;
       let credentialIssued = false;
+      let credentialPersisted = false;
       try {
         const commitSignal = await this.#beginCommit(context);
         admitted = true;
@@ -2404,6 +2405,16 @@ export class N8nProvider implements IntegrationProvider {
         );
         responseSettled = true;
         if (!response.ok) {
+          // invalid_grant means the stored refresh token is gone for good: already spent,
+          // revoked, or cleared wholesale when the instance upgraded. Nothing remains to
+          // revoke, so drop the dead credential here and let the user reconnect in one
+          // step instead of stranding them behind a manual disconnect.
+          if (response.status === 400 && json.error === "invalid_grant") {
+            await this.#secrets.remove(N8N_SECRET_SUFFIX);
+            this.#accessToken = null;
+            this.#credentialRevision += 1;
+            throw new IntegrationProviderPublicError("n8n sign-in expired. Connect n8n again.");
+          }
           throw new IntegrationProviderPublicError(
             "n8n access could not be refreshed. Disconnect and reconnect.",
           );
@@ -2424,15 +2435,23 @@ export class N8nProvider implements IntegrationProvider {
         if (generation !== this.#generation || revision !== this.#credentialRevision) {
           throw new Error("n8n connection changed while refreshing.");
         }
+        // n8n rotates refresh tokens and deletes the spent one in the same transaction, so
+        // the replacement is the only way back into this grant. Persist it before the MCP
+        // session round-trip, which fails routinely on a waking laptop or a restarting
+        // instance and would otherwise strand a grant n8n has already moved past.
+        await this.#writeCredential(parsed.credential, commitSignal);
+        credentialPersisted = true;
+        this.#credentialRevision += 1;
         this.#accessToken = parsed.access;
         this.#sessionId = null;
         this.#sessionVerified = false;
         this.#availableTools = new Set();
         await this.#initializeSession(parsed.access, commitSignal);
-        await this.#writeCredential(parsed.credential, commitSignal);
-        this.#credentialRevision += 1;
       } catch (error) {
-        if (admitted && (!responseSettled || credentialIssued)) {
+        // Once the rotated credential is durable the grant is known-good, so a later
+        // session failure stays an ordinary retryable error rather than an uncertain
+        // commit the user can only clear by disconnecting.
+        if (admitted && !credentialPersisted && (!responseSettled || credentialIssued)) {
           this.#uncertainCredentialState = true;
           throw new ExternalCommitOutcomeUnknownError(
             "The n8n credential refresh may have completed. Disconnect before retrying.",

@@ -763,6 +763,81 @@ describe("N8nProvider", () => {
     await restored.close();
   });
 
+  it("keeps the rotated refresh token when the recovered MCP session fails", async () => {
+    const secrets = memorySecrets();
+    const first = oauthMcpFetch();
+    const connected = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      first.fetchImplementation,
+    );
+    await authorize(connected, first.requests);
+    await connected.close();
+
+    // n8n has already deleted "refresh-fixture" by the time the session round-trip fails.
+    const failing = oauthMcpFetch({ mcpFailure: { method: "server/discover", status: 503 } });
+    const interrupted = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      failing.fetchImplementation,
+    );
+    await expect(interrupted.prepare(lifecycle())).rejects.toThrow();
+    await expect(interrupted.prepare(lifecycle())).rejects.not.toMatchObject({
+      _tag: "ExternalCommitOutcomeUnknown",
+    });
+    const stored = JSON.parse(
+      new TextDecoder().decode(secrets.values.get(N8N_SECRET_SUFFIX)),
+    ) as Record<string, unknown>;
+    expect(stored.refreshToken).toBe("refresh-rotated");
+    await interrupted.close();
+
+    // The grant survives: a later attempt spends the rotated token instead of re-authorizing.
+    const recovered = oauthMcpFetch();
+    const resumed = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      recovered.fetchImplementation,
+    );
+    await resumed.prepare(lifecycle());
+    const refreshRequest = recovered.requests.find((request) =>
+      request.url.endsWith("/mcp-oauth/token"),
+    );
+    expect(new URLSearchParams(String(refreshRequest?.init?.body)).get("refresh_token")).toBe(
+      "refresh-rotated",
+    );
+    await expect(resumed.status()).resolves.toMatchObject({ state: "connected" });
+    await resumed.close();
+  });
+
+  it("clears the credential and asks for a reconnect when n8n rejects the refresh token", async () => {
+    const secrets = memorySecrets();
+    const first = oauthMcpFetch();
+    const connected = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      first.fetchImplementation,
+    );
+    await authorize(connected, first.requests);
+    await connected.close();
+
+    const mock = oauthMcpFetch();
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (
+        String(input).endsWith("/mcp-oauth/token") &&
+        new URLSearchParams(String(init?.body)).get("grant_type") === "refresh_token"
+      ) {
+        return json({ error: "invalid_grant" }, 400);
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const restored = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
+
+    await expect(restored.prepare(lifecycle())).rejects.toThrow("n8n sign-in expired.");
+    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+    await expect(restored.status()).resolves.toMatchObject({ state: "not_connected" });
+    await restored.close();
+  });
+
   it("faults disconnect when revocation has an unknown external outcome", async () => {
     const secrets = memorySecrets();
     const mock = oauthMcpFetch();
