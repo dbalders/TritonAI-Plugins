@@ -11299,22 +11299,24 @@ function parseCredential(encoded, serverUrl) {
   };
 }
 var MAX_PENDING_REVOCATIONS = 16;
-function parsePendingRevocations(encoded, serverUrl) {
+function parsePendingRevocations(encoded) {
+  let value;
   try {
-    const value = asRecord(JSON.parse(encoded));
-    if (value.version !== 2 || value.serverUrl !== serverUrl || !Array.isArray(value.grants)) {
-      return [];
-    }
-    return value.grants.map((entry) => {
-      const grant = asRecord(entry);
-      return {
-        clientId: boundedString(grant.clientId, MAX_CLIENT_ID_CHARS),
-        refreshToken: boundedString(grant.refreshToken, MAX_TOKEN_CHARS)
-      };
-    });
+    value = JSON.parse(encoded);
   } catch {
     return [];
   }
+  const record2 = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const entries = record2 ? Array.isArray(record2.grants) ? record2.grants : [record2] : Array.isArray(value) ? value : [];
+  const grants = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const { clientId, refreshToken } = entry;
+    if (typeof clientId === "string" && clientId.length > 0 && clientId.length <= MAX_CLIENT_ID_CHARS && typeof refreshToken === "string" && refreshToken.length > 0 && refreshToken.length <= MAX_TOKEN_CHARS && !grants.some((grant) => grant.refreshToken === refreshToken)) {
+      grants.push({ clientId, refreshToken });
+    }
+  }
+  return grants;
 }
 async function readResponseBytes(response, maximumBytes) {
   const declared = Number(response.headers.get("content-length"));
@@ -12527,7 +12529,7 @@ var N8nProvider = class {
   }
   async #readPendingRevocations() {
     const encoded = await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX);
-    return encoded === null ? [] : parsePendingRevocations(encoded, this.#server.toString());
+    return encoded === null ? [] : parsePendingRevocations(encoded);
   }
   async #writePendingRevocations(grants) {
     if (grants.length === 0) {
@@ -12603,10 +12605,18 @@ var N8nProvider = class {
             }
           }
           if (!revoked) {
-            await this.#writePendingRevocations([
-              ...await this.#readPendingRevocations(),
-              { clientId: credential.clientId, refreshToken: credential.refreshToken }
-            ]);
+            const pending = await this.#readPendingRevocations();
+            if (!pending.some((grant) => grant.refreshToken === credential.refreshToken)) {
+              if (pending.length >= MAX_PENDING_REVOCATIONS) {
+                throw new ConfirmedRemoteFailure(
+                  "n8n has not confirmed revoking earlier sign-ins. Try disconnecting again later."
+                );
+              }
+              await this.#writePendingRevocations([
+                ...pending,
+                { clientId: credential.clientId, refreshToken: credential.refreshToken }
+              ]);
+            }
           }
         }
         await this.#secrets.remove(N8N_SECRET_SUFFIX);

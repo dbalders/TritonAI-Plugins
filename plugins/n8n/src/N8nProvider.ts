@@ -1136,22 +1136,41 @@ interface PendingRevocation {
 // because a new sign-in is refused while it is full, and each connection adds at most one grant.
 const MAX_PENDING_REVOCATIONS = 16;
 
-function parsePendingRevocations(encoded: string, serverUrl: string): PendingRevocation[] {
+// Recovers every usable grant from the stored queue, whatever envelope wrote it, so a record from
+// another plugin version is retried rather than discarded. Only bytes that are not JSON at all
+// yield nothing: they hold no token that could still be revoked.
+function parsePendingRevocations(encoded: string): PendingRevocation[] {
+  let value: unknown;
   try {
-    const value = asRecord(JSON.parse(encoded));
-    if (value.version !== 2 || value.serverUrl !== serverUrl || !Array.isArray(value.grants)) {
-      return [];
-    }
-    return value.grants.map((entry) => {
-      const grant = asRecord(entry);
-      return {
-        clientId: boundedString(grant.clientId, MAX_CLIENT_ID_CHARS),
-        refreshToken: boundedString(grant.refreshToken, MAX_TOKEN_CHARS),
-      };
-    });
+    value = JSON.parse(encoded);
   } catch {
     return [];
   }
+  const record = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const entries = record
+    ? Array.isArray((record as Record<string, unknown>).grants)
+      ? ((record as Record<string, unknown>).grants as unknown[])
+      : [record]
+    : Array.isArray(value)
+      ? value
+      : [];
+  const grants: PendingRevocation[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const { clientId, refreshToken } = entry as Record<string, unknown>;
+    if (
+      typeof clientId === "string" &&
+      clientId.length > 0 &&
+      clientId.length <= MAX_CLIENT_ID_CHARS &&
+      typeof refreshToken === "string" &&
+      refreshToken.length > 0 &&
+      refreshToken.length <= MAX_TOKEN_CHARS &&
+      !grants.some((grant) => grant.refreshToken === refreshToken)
+    ) {
+      grants.push({ clientId, refreshToken });
+    }
+  }
+  return grants;
 }
 
 async function readResponseBytes(response: Response, maximumBytes: number): Promise<Uint8Array> {
@@ -2709,7 +2728,7 @@ export class N8nProvider implements IntegrationProvider {
 
   async #readPendingRevocations(): Promise<PendingRevocation[]> {
     const encoded = await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX);
-    return encoded === null ? [] : parsePendingRevocations(encoded, this.#server.toString());
+    return encoded === null ? [] : parsePendingRevocations(encoded);
   }
 
   async #writePendingRevocations(grants: ReadonlyArray<PendingRevocation>): Promise<void> {
@@ -2794,10 +2813,21 @@ export class N8nProvider implements IntegrationProvider {
             }
           }
           if (!revoked) {
-            await this.#writePendingRevocations([
-              ...(await this.#readPendingRevocations()),
-              { clientId: credential.clientId, refreshToken: credential.refreshToken },
-            ]);
+            const pending = await this.#readPendingRevocations();
+            // A retried disconnect finds this grant already queued.
+            if (!pending.some((grant) => grant.refreshToken === credential.refreshToken)) {
+              if (pending.length >= MAX_PENDING_REVOCATIONS) {
+                // Unreachable while sign-in is refused at the bound, but never evict: keep the
+                // credential so it can still be revoked later.
+                throw new ConfirmedRemoteFailure(
+                  "n8n has not confirmed revoking earlier sign-ins. Try disconnecting again later.",
+                );
+              }
+              await this.#writePendingRevocations([
+                ...pending,
+                { clientId: credential.clientId, refreshToken: credential.refreshToken },
+              ]);
+            }
           }
         }
         await this.#secrets.remove(N8N_SECRET_SUFFIX);
