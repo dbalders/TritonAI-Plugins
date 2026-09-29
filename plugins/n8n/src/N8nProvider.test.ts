@@ -981,10 +981,8 @@ describe("N8nProvider", () => {
       { serverUrl: SERVER },
       failing.fetchImplementation,
     );
-    await expect(interrupted.prepare(lifecycle())).rejects.toThrow();
-    await expect(interrupted.prepare(lifecycle())).rejects.not.toMatchObject({
-      _tag: "ExternalCommitOutcomeUnknown",
-    });
+    await expect(interrupted.prepare(lifecycle())).resolves.toBeUndefined();
+    await expect(interrupted.prepare(lifecycle())).rejects.toThrow("HTTP 503");
     const stored = JSON.parse(
       new TextDecoder().decode(secrets.values.get(N8N_SECRET_SUFFIX)),
     ) as Record<string, unknown>;
@@ -1007,6 +1005,40 @@ describe("N8nProvider", () => {
     );
     await expect(resumed.status()).resolves.toMatchObject({ state: "connected" });
     await resumed.close();
+  });
+
+  it("settles a refresh when cancellation arrives after the replacement is stored", async () => {
+    const secrets = memorySecrets();
+    const first = oauthMcpFetch();
+    const connected = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      first.fetchImplementation,
+    );
+    await authorize(connected, first.requests);
+    await connected.close();
+    const controller = new AbortController();
+    const store: IntegrationSecretStore = {
+      ...secrets.service,
+      set: async (name, value) => {
+        await secrets.service.set(name, value);
+        controller.abort();
+      },
+    };
+    const mock = oauthMcpFetch();
+    const restored = new N8nProvider(store, { serverUrl: SERVER }, mock.fetchImplementation);
+    await expect(
+      restored.prepare({
+        signal: new AbortController().signal,
+        beginCommit: async () => controller.signal,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(restored.status()).resolves.toMatchObject({ state: "connected" });
+    await expect(restored.prepare(lifecycle())).resolves.toBeUndefined();
+    await expect(
+      restored.invoke("n8n.search_projects", {}, invocation(false)),
+    ).resolves.toBeDefined();
+    await restored.close();
   });
 
   it("clears the credential and asks for a reconnect when n8n rejects the refresh token", async () => {
@@ -1032,7 +1064,7 @@ describe("N8nProvider", () => {
     }) as unknown as typeof fetch;
     const restored = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
 
-    await expect(restored.prepare(lifecycle())).rejects.toThrow("n8n sign-in expired.");
+    await expect(restored.prepare(lifecycle())).resolves.toBeUndefined();
     expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
     await expect(restored.status()).resolves.toMatchObject({ state: "not_connected" });
     await restored.close();
