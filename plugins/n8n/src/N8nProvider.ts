@@ -1605,9 +1605,14 @@ export class N8nProvider implements IntegrationProvider {
     return value === null ? null : parseCredential(value, this.#server.toString());
   }
 
-  async #writeCredential(credential: Credential, signal: AbortSignal): Promise<void> {
+  async #writeCredential(
+    credential: Credential,
+    signal: AbortSignal,
+    onPersisted?: () => void,
+  ): Promise<void> {
     signal.throwIfAborted();
     await this.#secrets.set(N8N_SECRET_SUFFIX, JSON.stringify(credential));
+    onPersisted?.();
     signal.throwIfAborted();
   }
 
@@ -2413,7 +2418,11 @@ export class N8nProvider implements IntegrationProvider {
             await this.#secrets.remove(N8N_SECRET_SUFFIX);
             this.#accessToken = null;
             this.#credentialRevision += 1;
-            throw new IntegrationProviderPublicError("n8n sign-in expired. Connect n8n again.");
+            this.#sessionId = null;
+            this.#sessionVerified = false;
+            this.#availableTools = new Set();
+            // A known reset must settle admission successfully so Harness permits reconnect.
+            return;
           }
           throw new IntegrationProviderPublicError(
             "n8n access could not be refreshed. Disconnect and reconnect.",
@@ -2439,19 +2448,21 @@ export class N8nProvider implements IntegrationProvider {
         // the replacement is the only way back into this grant. Persist it before the MCP
         // session round-trip, which fails routinely on a waking laptop or a restarting
         // instance and would otherwise strand a grant n8n has already moved past.
-        await this.#writeCredential(parsed.credential, commitSignal);
-        credentialPersisted = true;
-        this.#credentialRevision += 1;
-        this.#accessToken = parsed.access;
-        this.#sessionId = null;
-        this.#sessionVerified = false;
-        this.#availableTools = new Set();
+        await this.#writeCredential(parsed.credential, commitSignal, () => {
+          credentialPersisted = true;
+          this.#credentialRevision += 1;
+          this.#accessToken = parsed.access;
+          this.#sessionId = null;
+          this.#sessionVerified = false;
+          this.#availableTools = new Set();
+        });
         await this.#initializeSession(parsed.access, commitSignal);
       } catch (error) {
-        // Once the rotated credential is durable the grant is known-good, so a later
-        // session failure stays an ordinary retryable error rather than an uncertain
-        // commit the user can only clear by disconnecting.
-        if (admitted && !credentialPersisted && (!responseSettled || credentialIssued)) {
+        // Harness faults every rejected admitted operation. Settle a durable rotation even
+        // when session setup fails; invoke reports the missing session, and the next prepare
+        // retries setup before admission using the saved access token.
+        if (credentialPersisted) return;
+        if (admitted && (!responseSettled || credentialIssued)) {
           this.#uncertainCredentialState = true;
           throw new ExternalCommitOutcomeUnknownError(
             "The n8n credential refresh may have completed. Disconnect before retrying.",
