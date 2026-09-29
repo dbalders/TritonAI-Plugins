@@ -2,14 +2,18 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  N8N_REVOCATION_SECRET_SUFFIX,
   N8N_SECRET_SUFFIX,
   N8N_TOOLS,
   N8nProvider,
+  type ReviewedTool,
   expectedSchema,
   firstSchemaDifference,
   schemaContract,
   validateToolInventory,
 } from "./N8nProvider.ts";
+
+const REVIEWED_TOOLS = N8N_TOOLS as ReadonlyArray<ReviewedTool>;
 import type {
   IntegrationInvocationContext,
   IntegrationLifecycleContext,
@@ -114,12 +118,12 @@ function authorizationMetadata(scopes: ReadonlyArray<string> = SCOPES) {
 }
 
 function toolInventory(options: { mutate?: (tools: Record<string, unknown>[]) => void } = {}) {
-  const tools = N8N_TOOLS.map((tool) => ({
+  const tools = REVIEWED_TOOLS.map((tool) => ({
     name: tool.name.slice("n8n.".length),
     description: tool.description,
     inputSchema: Schema.toJsonSchemaDocument(tool.input).schema,
     annotations: {
-      readOnlyHint: tool.readOnly,
+      readOnlyHint: tool.upstreamReadOnly,
       destructiveHint: tool.destructive,
       idempotentHint: tool.idempotent,
       openWorldHint: tool.openWorld,
@@ -784,7 +788,7 @@ describe("N8nProvider", () => {
   });
 
   it(`matches every tool in the pinned n8n ${UPSTREAM_N8N_VERSION} catalog`, () => {
-    const reviewed = new Map(N8N_TOOLS.map((tool) => [tool.name.slice("n8n.".length), tool]));
+    const reviewed = new Map(REVIEWED_TOOLS.map((tool) => [tool.name.slice("n8n.".length), tool]));
     expect([...reviewed.keys()].toSorted()).toEqual(UPSTREAM_TOOLS.map(({ name }) => name));
     for (const upstream of UPSTREAM_TOOLS) {
       const tool = reviewed.get(upstream.name)!;
@@ -797,7 +801,7 @@ describe("N8nProvider", () => {
       ).toBeNull();
       expect(
         {
-          readOnlyHint: tool.readOnly,
+          readOnlyHint: tool.upstreamReadOnly,
           destructiveHint: tool.destructive,
           idempotentHint: tool.idempotent,
           openWorldHint: tool.openWorld,
@@ -814,6 +818,16 @@ describe("N8nProvider", () => {
     });
     expect(inventory.paused).toEqual([]);
     expect(inventory.available.size).toBe(UPSTREAM_TOOLS.length);
+    // Every tool n8n does not mark read-only goes through Harness approval, and one it does mark
+    // read-only is overridden because it sends a stored credential to a caller-chosen URL.
+    for (const tool of REVIEWED_TOOLS) {
+      if (!tool.upstreamReadOnly) expect(tool.readOnly, tool.name).toBe(false);
+    }
+    expect(
+      REVIEWED_TOOLS.filter((tool) => tool.upstreamReadOnly && !tool.readOnly).map(
+        ({ name }) => name,
+      ),
+    ).toEqual(["n8n.verify_agent_mcp_server"]);
   });
 
   it("decodes upstream-derived inputs strictly", async () => {
@@ -1015,9 +1029,131 @@ describe("N8nProvider", () => {
 
       await expect(provider.disconnect(lifecycle())).resolves.toBeUndefined();
       expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
-      await expect(provider.status()).resolves.toMatchObject({ state: "not_connected" });
+      expect(
+        JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_REVOCATION_SECRET_SUFFIX))),
+      ).toMatchObject({ clientId: "dynamic-client-fixture", refreshToken: "refresh-fixture" });
+      await expect(provider.status()).resolves.toMatchObject({
+        state: "not_connected",
+        message: expect.stringMatching(/not confirmed revoking/u),
+      });
+
+      connected = false;
+      const revokesBefore = mock.requests.filter(({ url }) => url.endsWith("/mcp-oauth/revoke"));
+      await expect(provider.connect(["read"], lifecycle())).resolves.toMatchObject({
+        kind: "authorization_url",
+      });
+      const revokes = mock.requests
+        .filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))
+        .slice(revokesBefore.length);
+      expect(revokes).toHaveLength(1);
+      expect(new URLSearchParams(String(revokes[0]!.init?.body)).get("token")).toBe(
+        "refresh-fixture",
+      );
+      expect(secrets.values.has(N8N_REVOCATION_SECRET_SUFFIX)).toBe(false);
+      await expect(provider.status()).resolves.toMatchObject({ message: null });
       await provider.close();
     }
+  });
+
+  it("does not discard the credential when secret storage fails during disconnect", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch();
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    await authorize(provider, mock.requests);
+    const get = secrets.service.get;
+    secrets.service.get = async () => {
+      throw new Error("fixture keychain unavailable");
+    };
+    await expect(provider.disconnect(lifecycle())).rejects.toThrow(/keychain unavailable/u);
+    secrets.service.get = get;
+    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(true);
+    expect(mock.requests.filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))).toHaveLength(0);
+    await provider.close();
+  });
+
+  it("refuses a Write sign-in when the instance offers no write scope", async () => {
+    const mock = oauthMcpFetch({ advertisedScopes: READ_SCOPES });
+    const provider = new N8nProvider(
+      memorySecrets().service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    await expect(provider.connect(["read", "write"], lifecycle())).rejects.toThrow(
+      /does not currently offer write access/u,
+    );
+    await expect(provider.connect(["read"], lifecycle())).resolves.toMatchObject({
+      kind: "authorization_url",
+    });
+    await provider.close();
+  });
+
+  it("requires write approval for credential-backed MCP server verification", async () => {
+    const mock = oauthMcpFetch();
+    const provider = new N8nProvider(
+      memorySecrets().service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    await authorize(provider, mock.requests);
+    const input = { projectId: "p", name: "probe", url: "https://example.com/mcp" };
+    await expect(
+      provider.invoke("n8n.verify_agent_mcp_server", input, invocation(false)),
+    ).rejects.toThrow(/explicit Harness approval/u);
+    const events: string[] = [];
+    await expect(
+      provider.invoke("n8n.verify_agent_mcp_server", input, invocation(true, events)),
+    ).resolves.toMatchObject({ content: [{ type: "text", text: "ok" }] });
+    expect(events).toEqual(["beginCommit"]);
+    await provider.close();
+  });
+
+  it("does not retry a call into a tool the recovered session paused", async () => {
+    let listCalls = 0;
+    let expireNextCall = false;
+    const mock = oauthMcpFetch({
+      mutateTools: (tools) => {
+        listCalls += 1;
+        if (listCalls > 1) {
+          const search = tools.find(({ name }) => name === "search_projects")!;
+          search.inputSchema = { type: "object", properties: { injected: { type: "string" } } };
+        }
+      },
+    });
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (expireNextCall && String(input) === SERVER && body.includes('"tools/call"')) {
+        expireNextCall = false;
+        return new Response("", { status: 404 });
+      }
+      const response = await mock.fetchImplementation(input, init);
+      if (String(input) !== SERVER) return response;
+      const headers = new Headers(response.headers);
+      headers.set("mcp-session-id", "session-fixture");
+      return new Response(await response.text(), { status: response.status, headers });
+    }) as unknown as typeof fetch;
+    const provider = new N8nProvider(
+      memorySecrets().service,
+      { serverUrl: SERVER },
+      fetchImplementation,
+    );
+    await authorize(provider, mock.requests);
+    expireNextCall = true;
+    await expect(
+      provider.invoke("n8n.search_projects", { limit: 1 }, invocation(false)),
+    ).rejects.toThrow(/not available/u);
+    expect(listCalls).toBe(2);
+    expect(
+      mock.requests.filter(
+        ({ body }) =>
+          body?.method === "tools/call" &&
+          (body.params as { name?: string } | undefined)?.name === "search_projects",
+      ),
+    ).toHaveLength(0);
+    await provider.close();
   });
 
   it("removes an unreadable stored credential on disconnect", async () => {
@@ -1032,7 +1168,7 @@ describe("N8nProvider", () => {
     await expect(provider.status()).resolves.toMatchObject({ state: "error" });
     await expect(provider.disconnect(lifecycle())).resolves.toBeUndefined();
     expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
-    expect(mock.requests).toHaveLength(0);
+    expect(mock.requests.filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))).toHaveLength(0);
     await provider.close();
   });
 

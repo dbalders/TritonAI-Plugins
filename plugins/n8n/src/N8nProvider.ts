@@ -24,6 +24,8 @@ import { UPSTREAM_TOOLS } from "./upstream-tools.js";
 
 export const N8N_PROVIDER_ID = "n8n";
 export const N8N_SECRET_SUFFIX = "oauth";
+/** A disconnected grant n8n has not yet confirmed revoking, retried on the next connect or disconnect. */
+export const N8N_REVOCATION_SECRET_SUFFIX = "oauth-revocation";
 
 const REVIEWED_SERVER_URL = "https://n8n.tritonai.ucsd.edu/mcp-server/http";
 const CALLBACK_PATH = "/oauth2/callback";
@@ -514,9 +516,11 @@ const AddDataTableRowsInput = Schema.Struct({
   ),
 });
 
-interface ReviewedTool extends IntegrationProviderTool {
+export interface ReviewedTool extends IntegrationProviderTool {
   readonly upstreamName: string;
   readonly capability: (typeof CAPABILITIES)[number];
+  /** n8n's own readOnlyHint, which drift detection compares against. */
+  readonly upstreamReadOnly: boolean;
 }
 
 function reviewedTool(
@@ -529,6 +533,8 @@ function reviewedTool(
     readonly destructive?: boolean;
     readonly idempotent?: boolean;
     readonly openWorld?: boolean;
+    /** Route a call n8n marks read-only through Harness write approval anyway. */
+    readonly requireApproval?: boolean;
   } = {},
 ): ReviewedTool {
   const readOnly = options.readOnly ?? true;
@@ -538,7 +544,8 @@ function reviewedTool(
     description,
     input,
     capability,
-    readOnly,
+    readOnly: readOnly && options.requireApproval !== true,
+    upstreamReadOnly: readOnly,
     destructive: options.destructive ?? false,
     idempotent: options.idempotent ?? readOnly,
     openWorld: options.openWorld ?? false,
@@ -769,6 +776,7 @@ function upstreamTool(
   upstreamName: string,
   description: string,
   capability: ReviewedTool["capability"],
+  options: { readonly requireApproval?: boolean } = {},
 ): ReviewedTool {
   const upstream = UPSTREAM_TOOL_BY_NAME.get(upstreamName);
   if (!upstream) throw new Error(`n8n upstream tool ${upstreamName} is not in the pinned catalog.`);
@@ -782,6 +790,7 @@ function upstreamTool(
       destructive: upstream.annotations.destructiveHint,
       idempotent: upstream.annotations.idempotentHint,
       openWorld: upstream.annotations.openWorldHint,
+      requireApproval: options.requireApproval,
     },
   );
 }
@@ -852,10 +861,13 @@ const UPSTREAM_REVIEWED_TOOLS = [
     "Read the n8n Agent configuration and mutation reference.",
     "read",
   ),
+  // n8n marks this read-only, but it connects to a caller-chosen URL using a stored credential, so
+  // a prompt could send that credential anywhere. Require the same approval as a write.
   upstreamTool(
     "verify_agent_mcp_server",
     "Test an MCP server with an accessible credential and list its tools.",
     "write",
+    { requireApproval: true },
   ),
   upstreamTool("create_agent", "Create an n8n Agent draft.", "write"),
   upstreamTool(
@@ -1113,6 +1125,28 @@ function parseCredential(encoded: string, serverUrl: string): Credential {
     scopes,
     updatedAt: value.updatedAt,
   };
+}
+
+interface PendingRevocation {
+  readonly version: 1;
+  readonly serverUrl: string;
+  readonly clientId: string;
+  readonly refreshToken: string;
+}
+
+function parsePendingRevocation(encoded: string, serverUrl: string): PendingRevocation | null {
+  try {
+    const value = asRecord(JSON.parse(encoded));
+    if (value.version !== 1 || value.serverUrl !== serverUrl) return null;
+    return {
+      version: 1,
+      serverUrl,
+      clientId: boundedString(value.clientId, MAX_CLIENT_ID_CHARS),
+      refreshToken: boundedString(value.refreshToken, MAX_TOKEN_CHARS),
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function readResponseBytes(response: Response, maximumBytes: number): Promise<Uint8Array> {
@@ -1479,7 +1513,7 @@ export function validateToolInventory(value: unknown): ToolInventory {
     if (
       !NodeUtil.isDeepStrictEqual(upstreamContract, reviewedContract) ||
       !hints ||
-      hints.readOnlyHint !== reviewed.readOnly ||
+      hints.readOnlyHint !== reviewed.upstreamReadOnly ||
       hints.destructiveHint !== reviewed.destructive ||
       hints.idempotentHint !== reviewed.idempotent ||
       hints.openWorldHint !== reviewed.openWorld
@@ -2240,11 +2274,14 @@ export class N8nProvider implements IntegrationProvider {
         throw new Error("n8n connection changed during status.");
       }
       if (!credential) {
+        const revocationPending = (await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX)) !== null;
         return {
           state: this.#pending.size > 0 ? "connecting" : "not_connected",
           accountLabel: null,
           grantedCapabilities: [],
-          message: null,
+          message: revocationPending
+            ? "Disconnected here, but n8n has not confirmed revoking the previous sign-in. It is retried on the next connect or disconnect."
+            : null,
         };
       }
       return {
@@ -2306,10 +2343,15 @@ export class N8nProvider implements IntegrationProvider {
     const requestedScopes = scopesForCapabilities(capabilities).filter((scope) =>
       discovery.scopes.includes(scope),
     );
-    if (requestedScopes.length === 0) {
-      throw new IntegrationProviderPublicError(
-        "n8n does not currently offer the requested access for this instance.",
-      );
+    // Each requested kind of access needs at least one offered scope, or sign-in could only ever
+    // produce a narrower connection than the user asked for.
+    for (const capability of capabilities) {
+      const group = capability === "write" ? WRITE_OAUTH_SCOPE_SET : READ_OAUTH_SCOPE_SET;
+      if (!requestedScopes.some((scope) => group.has(scope))) {
+        throw new IntegrationProviderPublicError(
+          `n8n does not currently offer ${capability} access on this instance.`,
+        );
+      }
     }
     await this.#clearPendingFlows();
     const flowId = NodeCrypto.randomUUID();
@@ -2324,6 +2366,11 @@ export class N8nProvider implements IntegrationProvider {
     try {
       const commitSignal = await this.#beginCommit(context);
       admitted = true;
+      try {
+        await this.#retryPendingRevocation(discovery, commitSignal);
+      } catch (error) {
+        if (commitSignal.aborted) throw error;
+      }
       const clientId = await this.#registerClient(discovery, flow.redirectUri, commitSignal);
       if (
         generation !== this.#generation ||
@@ -2650,6 +2697,21 @@ export class N8nProvider implements IntegrationProvider {
     });
   }
 
+  async #retryPendingRevocation(discovery: OAuthDiscovery, signal: AbortSignal): Promise<void> {
+    const encoded = await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX);
+    if (encoded === null) return;
+    const pending = parsePendingRevocation(encoded, this.#server.toString());
+    if (pending) {
+      try {
+        await this.#revokeToken(discovery, pending.refreshToken, pending.clientId, signal);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        return;
+      }
+    }
+    await this.#secrets.remove(N8N_REVOCATION_SECRET_SUFFIX);
+  }
+
   disconnect(context?: IntegrationLifecycleContext): Promise<void> {
     return this.#serializeCredential(async () => {
       this.#disconnecting = true;
@@ -2662,29 +2724,54 @@ export class N8nProvider implements IntegrationProvider {
       await this.#clearPendingFlows();
       let admitted = false;
       try {
-        // An unreadable credential cannot be revoked, but it must still be removable: status
-        // tells the user to disconnect to reset exactly this state.
-        const credential = await this.#readCredential(context?.signal).catch((error: unknown) => {
-          if (context?.signal?.aborted) throw error;
-          return null;
-        });
+        // Storage failures propagate. Only a stored value that cannot be parsed counts as
+        // unreadable: it cannot be revoked, but it must still be removable because status tells
+        // the user to disconnect to reset exactly this state.
+        const encoded = await this.#secrets.get(N8N_SECRET_SUFFIX);
+        context?.signal?.throwIfAborted();
+        let credential: Credential | null = null;
+        if (encoded !== null) {
+          try {
+            credential = parseCredential(encoded, this.#server.toString());
+          } catch {
+            credential = null;
+          }
+        }
         const commitSignal = await this.#beginCommit(context);
         admitted = true;
+        let discovery: OAuthDiscovery | null = null;
+        try {
+          discovery = await this.#discover(commitSignal);
+          await this.#retryPendingRevocation(discovery, commitSignal);
+        } catch (error) {
+          if (commitSignal.aborted) throw error;
+        }
         if (credential) {
-          // Revocation is best effort. The local credential is the only copy of the refresh
-          // token, so deleting it ends this plugin's access either way. Requiring a successful
-          // revoke would strand the user whenever n8n is unreachable or its OAuth metadata
-          // changes, with no way to reset the connection.
-          try {
-            const discovery = await this.#discover(commitSignal);
-            await this.#revokeToken(
-              discovery,
-              credential.refreshToken,
-              credential.clientId,
-              commitSignal,
-            );
-          } catch (error) {
-            if (commitSignal.aborted) throw error;
+          // Revocation is best effort so an unreachable n8n or changed OAuth metadata cannot
+          // strand the user. A grant n8n did not confirm revoking is kept aside, retried on the
+          // next connect or disconnect, and reported by status until it succeeds.
+          let revoked = false;
+          if (discovery) {
+            try {
+              await this.#revokeToken(
+                discovery,
+                credential.refreshToken,
+                credential.clientId,
+                commitSignal,
+              );
+              revoked = true;
+            } catch (error) {
+              if (commitSignal.aborted) throw error;
+            }
+          }
+          if (!revoked) {
+            const pending: PendingRevocation = {
+              version: 1,
+              serverUrl: this.#server.toString(),
+              clientId: credential.clientId,
+              refreshToken: credential.refreshToken,
+            };
+            await this.#secrets.set(N8N_REVOCATION_SECRET_SUFFIX, JSON.stringify(pending));
           }
         }
         await this.#secrets.remove(N8N_SECRET_SUFFIX);
@@ -2735,11 +2822,14 @@ export class N8nProvider implements IntegrationProvider {
         "n8n access is not prepared. Reconnect if this continues.",
       );
     }
-    if (!this.#availableTools.has(reviewed.upstreamName)) {
-      throw new IntegrationProviderPublicError(
-        "This n8n tool is not available under the connected user's grant or instance configuration.",
-      );
-    }
+    const assertAvailable = () => {
+      if (!this.#availableTools.has(reviewed.upstreamName)) {
+        throw new IntegrationProviderPublicError(
+          "This n8n tool is not available under the connected user's grant or instance configuration.",
+        );
+      }
+    };
+    assertAvailable();
     let admitted = false;
     const signal = reviewed.readOnly
       ? context?.signal
@@ -2755,6 +2845,9 @@ export class N8nProvider implements IntegrationProvider {
     const timeout =
       reviewed.upstreamName === "test_workflow" ? TEST_REQUEST_TIMEOUT_MS : this.#requestTimeoutMs;
     const call = async () => {
+      // Re-checked on every attempt: a recovered session re-verifies the catalog and may have
+      // paused or dropped this tool.
+      assertAvailable();
       const result = asRecord(
         await this.#mcpRpc(
           access,
@@ -2789,11 +2882,11 @@ export class N8nProvider implements IntegrationProvider {
     try {
       return await call();
     } catch (error) {
-      if (error instanceof SessionInvalidError && reviewed.readOnly) {
+      if (error instanceof SessionInvalidError && reviewed.upstreamReadOnly) {
         await this.#initializeSession(access, signal);
         return call();
       }
-      if (!reviewed.readOnly && admitted) {
+      if (!reviewed.upstreamReadOnly && admitted) {
         this.#uncertainCredentialState = true;
         throw new ExternalCommitOutcomeUnknownError(
           "The n8n operation may have completed. Verify its result before retrying.",

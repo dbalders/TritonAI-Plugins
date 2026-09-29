@@ -10358,6 +10358,7 @@ var UPSTREAM_TOOLS = [
 // src/N8nProvider.ts
 var N8N_PROVIDER_ID = "n8n";
 var N8N_SECRET_SUFFIX = "oauth";
+var N8N_REVOCATION_SECRET_SUFFIX = "oauth-revocation";
 var REVIEWED_SERVER_URL = "https://n8n.tritonai.ucsd.edu/mcp-server/http";
 var CALLBACK_PATH = "/oauth2/callback";
 var MCP_PROTOCOL_VERSION = "2026-07-28";
@@ -10842,7 +10843,8 @@ function reviewedTool(upstreamName, description, input, capability, options = {}
     description,
     input,
     capability,
-    readOnly,
+    readOnly: readOnly && options.requireApproval !== true,
+    upstreamReadOnly: readOnly,
     destructive: options.destructive ?? false,
     idempotent: options.idempotent ?? readOnly,
     openWorld: options.openWorld ?? false
@@ -11063,7 +11065,7 @@ var HAND_REVIEWED_TOOLS = [
   )
 ];
 var UPSTREAM_TOOL_BY_NAME = new Map(UPSTREAM_TOOLS.map((tool) => [tool.name, tool]));
-function upstreamTool(upstreamName, description, capability) {
+function upstreamTool(upstreamName, description, capability, options = {}) {
   const upstream = UPSTREAM_TOOL_BY_NAME.get(upstreamName);
   if (!upstream) throw new Error(`n8n upstream tool ${upstreamName} is not in the pinned catalog.`);
   return reviewedTool(
@@ -11075,7 +11077,8 @@ function upstreamTool(upstreamName, description, capability) {
       readOnly: upstream.annotations.readOnlyHint,
       destructive: upstream.annotations.destructiveHint,
       idempotent: upstream.annotations.idempotentHint,
-      openWorld: upstream.annotations.openWorldHint
+      openWorld: upstream.annotations.openWorldHint,
+      requireApproval: options.requireApproval
     }
   );
 }
@@ -11145,10 +11148,13 @@ var UPSTREAM_REVIEWED_TOOLS = [
     "Read the n8n Agent configuration and mutation reference.",
     "read"
   ),
+  // n8n marks this read-only, but it connects to a caller-chosen URL using a stored credential, so
+  // a prompt could send that credential anywhere. Require the same approval as a write.
   upstreamTool(
     "verify_agent_mcp_server",
     "Test an MCP server with an accessible credential and list its tools.",
-    "write"
+    "write",
+    { requireApproval: true }
   ),
   upstreamTool("create_agent", "Create an n8n Agent draft.", "write"),
   upstreamTool(
@@ -11291,6 +11297,20 @@ function parseCredential(encoded, serverUrl) {
     scopes,
     updatedAt: value.updatedAt
   };
+}
+function parsePendingRevocation(encoded, serverUrl) {
+  try {
+    const value = asRecord(JSON.parse(encoded));
+    if (value.version !== 1 || value.serverUrl !== serverUrl) return null;
+    return {
+      version: 1,
+      serverUrl,
+      clientId: boundedString(value.clientId, MAX_CLIENT_ID_CHARS),
+      refreshToken: boundedString(value.refreshToken, MAX_TOKEN_CHARS)
+    };
+  } catch {
+    return null;
+  }
 }
 async function readResponseBytes(response, maximumBytes) {
   const declared = Number(response.headers.get("content-length"));
@@ -11535,7 +11555,7 @@ function validateToolInventory(value) {
     const reviewedContract = schemaContract(expectedSchema(reviewed));
     const annotations = upstream.annotations;
     const hints = annotations && typeof annotations === "object" && !Array.isArray(annotations) ? annotations : null;
-    if (!NodeUtil.isDeepStrictEqual(upstreamContract, reviewedContract) || !hints || hints.readOnlyHint !== reviewed.readOnly || hints.destructiveHint !== reviewed.destructive || hints.idempotentHint !== reviewed.idempotent || hints.openWorldHint !== reviewed.openWorld) {
+    if (!NodeUtil.isDeepStrictEqual(upstreamContract, reviewedContract) || !hints || hints.readOnlyHint !== reviewed.upstreamReadOnly || hints.destructiveHint !== reviewed.destructive || hints.idempotentHint !== reviewed.idempotent || hints.openWorldHint !== reviewed.openWorld) {
       paused.push(reviewed.upstreamName);
       continue;
     }
@@ -12138,11 +12158,12 @@ var N8nProvider = class {
         throw new Error("n8n connection changed during status.");
       }
       if (!credential) {
+        const revocationPending = await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX) !== null;
         return {
           state: this.#pending.size > 0 ? "connecting" : "not_connected",
           accountLabel: null,
           grantedCapabilities: [],
-          message: null
+          message: revocationPending ? "Disconnected here, but n8n has not confirmed revoking the previous sign-in. It is retried on the next connect or disconnect." : null
         };
       }
       return {
@@ -12189,10 +12210,13 @@ var N8nProvider = class {
     const requestedScopes = scopesForCapabilities(capabilities).filter(
       (scope2) => discovery.scopes.includes(scope2)
     );
-    if (requestedScopes.length === 0) {
-      throw new IntegrationProviderPublicError(
-        "n8n does not currently offer the requested access for this instance."
-      );
+    for (const capability of capabilities) {
+      const group = capability === "write" ? WRITE_OAUTH_SCOPE_SET : READ_OAUTH_SCOPE_SET;
+      if (!requestedScopes.some((scope2) => group.has(scope2))) {
+        throw new IntegrationProviderPublicError(
+          `n8n does not currently offer ${capability} access on this instance.`
+        );
+      }
     }
     await this.#clearPendingFlows();
     const flowId = NodeCrypto.randomUUID();
@@ -12207,6 +12231,11 @@ var N8nProvider = class {
     try {
       const commitSignal = await this.#beginCommit(context2);
       admitted = true;
+      try {
+        await this.#retryPendingRevocation(discovery, commitSignal);
+      } catch (error) {
+        if (commitSignal.aborted) throw error;
+      }
       const clientId = await this.#registerClient(discovery, flow.redirectUri, commitSignal);
       if (generation !== this.#generation || revision !== this.#credentialRevision || attempt !== this.#connectAttempt || this.#closed || this.#disconnecting) {
         throw new Error("n8n sign-in was superseded while starting.");
@@ -12487,6 +12516,20 @@ var N8nProvider = class {
       }
     });
   }
+  async #retryPendingRevocation(discovery, signal) {
+    const encoded = await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX);
+    if (encoded === null) return;
+    const pending = parsePendingRevocation(encoded, this.#server.toString());
+    if (pending) {
+      try {
+        await this.#revokeToken(discovery, pending.refreshToken, pending.clientId, signal);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        return;
+      }
+    }
+    await this.#secrets.remove(N8N_REVOCATION_SECRET_SUFFIX);
+  }
   disconnect(context2) {
     return this.#serializeCredential(async () => {
       this.#disconnecting = true;
@@ -12499,23 +12542,48 @@ var N8nProvider = class {
       await this.#clearPendingFlows();
       let admitted = false;
       try {
-        const credential = await this.#readCredential(context2?.signal).catch((error) => {
-          if (context2?.signal?.aborted) throw error;
-          return null;
-        });
+        const encoded = await this.#secrets.get(N8N_SECRET_SUFFIX);
+        context2?.signal?.throwIfAborted();
+        let credential = null;
+        if (encoded !== null) {
+          try {
+            credential = parseCredential(encoded, this.#server.toString());
+          } catch {
+            credential = null;
+          }
+        }
         const commitSignal = await this.#beginCommit(context2);
         admitted = true;
+        let discovery = null;
+        try {
+          discovery = await this.#discover(commitSignal);
+          await this.#retryPendingRevocation(discovery, commitSignal);
+        } catch (error) {
+          if (commitSignal.aborted) throw error;
+        }
         if (credential) {
-          try {
-            const discovery = await this.#discover(commitSignal);
-            await this.#revokeToken(
-              discovery,
-              credential.refreshToken,
-              credential.clientId,
-              commitSignal
-            );
-          } catch (error) {
-            if (commitSignal.aborted) throw error;
+          let revoked = false;
+          if (discovery) {
+            try {
+              await this.#revokeToken(
+                discovery,
+                credential.refreshToken,
+                credential.clientId,
+                commitSignal
+              );
+              revoked = true;
+            } catch (error) {
+              if (commitSignal.aborted) throw error;
+            }
+          }
+          if (!revoked) {
+            const pending = {
+              version: 1,
+              serverUrl: this.#server.toString(),
+              clientId: credential.clientId,
+              refreshToken: credential.refreshToken
+            };
+            await this.#secrets.set(N8N_REVOCATION_SECRET_SUFFIX, JSON.stringify(pending));
           }
         }
         await this.#secrets.remove(N8N_SECRET_SUFFIX);
@@ -12554,11 +12622,14 @@ var N8nProvider = class {
         "n8n access is not prepared. Reconnect if this continues."
       );
     }
-    if (!this.#availableTools.has(reviewed.upstreamName)) {
-      throw new IntegrationProviderPublicError(
-        "This n8n tool is not available under the connected user's grant or instance configuration."
-      );
-    }
+    const assertAvailable = () => {
+      if (!this.#availableTools.has(reviewed.upstreamName)) {
+        throw new IntegrationProviderPublicError(
+          "This n8n tool is not available under the connected user's grant or instance configuration."
+        );
+      }
+    };
+    assertAvailable();
     let admitted = false;
     const signal = reviewed.readOnly ? context2?.signal : typeof context2?.beginCommit === "function" ? await context2.beginCommit().then((commitSignal) => {
       admitted = true;
@@ -12569,6 +12640,7 @@ var N8nProvider = class {
     if (!signal) throw new Error("n8n invocation requires a cancellation signal.");
     const timeout2 = reviewed.upstreamName === "test_workflow" ? TEST_REQUEST_TIMEOUT_MS : this.#requestTimeoutMs;
     const call = async () => {
+      assertAvailable();
       const result2 = asRecord(
         await this.#mcpRpc(
           access,
@@ -12603,11 +12675,11 @@ var N8nProvider = class {
     try {
       return await call();
     } catch (error) {
-      if (error instanceof SessionInvalidError && reviewed.readOnly) {
+      if (error instanceof SessionInvalidError && reviewed.upstreamReadOnly) {
         await this.#initializeSession(access, signal);
         return call();
       }
-      if (!reviewed.readOnly && admitted) {
+      if (!reviewed.upstreamReadOnly && admitted) {
         this.#uncertainCredentialState = true;
         throw new ExternalCommitOutcomeUnknownError(
           "The n8n operation may have completed. Verify its result before retrying."
