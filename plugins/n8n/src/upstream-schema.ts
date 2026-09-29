@@ -1,4 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import * as Schema from "effect/Schema";
+import * as NodeUtil from "node:util";
 
 export interface UpstreamToolSnapshot {
   readonly name: string;
@@ -46,13 +48,79 @@ function unicodePattern(pattern: string): string {
   }
 }
 
+const LOWER_BOUNDS = new Set(["exclusiveMinimum", "minItems", "minLength", "minimum"]);
+const UPPER_BOUNDS = new Set(["exclusiveMaximum", "maxItems", "maxLength", "maximum"]);
+const ANNOTATIONS = new Set(["$comment", "default", "description", "examples", "title"]);
+
+function plainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Folds `allOf` members into their parent as the intersection of their constraints: required
+ * lists combine, properties merge by name, and numeric bounds keep the stricter value. Returns
+ * null when members constrain the same keyword in ways a single schema cannot express, such as
+ * two different types or patterns, so callers can fail closed instead of dropping a constraint.
+ */
+export function mergeAllOfMembers(
+  parent: Record<string, unknown>,
+  members: ReadonlyArray<unknown>,
+): Record<string, unknown> | null {
+  const merged: Record<string, unknown> = { ...parent };
+  for (const raw of members) {
+    if (!plainRecord(raw)) return null;
+    let member: Record<string, unknown> = raw;
+    if (Array.isArray(member.allOf)) {
+      const { allOf, ...rest } = member;
+      const nested = mergeAllOfMembers(rest, allOf as unknown[]);
+      if (!nested) return null;
+      member = nested;
+    }
+    for (const [key, value] of Object.entries(member)) {
+      if (!(key in merged)) {
+        merged[key] = value;
+        continue;
+      }
+      const current = merged[key];
+      if (NodeUtil.isDeepStrictEqual(current, value) || ANNOTATIONS.has(key)) continue;
+      if (key === "required" && Array.isArray(current) && Array.isArray(value)) {
+        merged.required = [...new Set([...current, ...value])];
+        continue;
+      }
+      if (key === "properties" && plainRecord(current) && plainRecord(value)) {
+        const properties: Record<string, unknown> = { ...current };
+        for (const [name, schema] of Object.entries(value)) {
+          if (name in properties && !NodeUtil.isDeepStrictEqual(properties[name], schema)) {
+            return null;
+          }
+          properties[name] = schema;
+        }
+        merged.properties = properties;
+        continue;
+      }
+      if (typeof current === "number" && typeof value === "number") {
+        if (LOWER_BOUNDS.has(key)) {
+          merged[key] = Math.max(current, value);
+          continue;
+        }
+        if (UPPER_BOUNDS.has(key)) {
+          merged[key] = Math.min(current, value);
+          continue;
+        }
+      }
+      return null;
+    }
+  }
+  return merged;
+}
+
 function mergeAllOf(schema: JsonSchema, path: string): JsonSchema {
   if (!Array.isArray(schema.allOf)) return schema;
   const { allOf, ...rest } = schema;
-  let merged: Record<string, unknown> = { ...rest };
-  (allOf as unknown[]).forEach((member, index) => {
-    merged = { ...mergeAllOf(asSchema(member, `${path}.allOf[${index}]`), path), ...merged };
-  });
+  const merged = mergeAllOfMembers(rest, allOf as unknown[]);
+  if (!merged) {
+    throw new Error(`n8n upstream schema at ${path} has allOf members that cannot be merged.`);
+  }
   return merged;
 }
 

@@ -19,7 +19,7 @@ import {
   type JsonObject,
   type JsonValue,
 } from "./host-contract.js";
-import { EmptyInput, decoderFromJsonSchema } from "./upstream-schema.js";
+import { EmptyInput, decoderFromJsonSchema, mergeAllOfMembers } from "./upstream-schema.js";
 import { UPSTREAM_TOOLS } from "./upstream-tools.js";
 
 export const N8N_PROVIDER_ID = "n8n";
@@ -1355,16 +1355,17 @@ export function schemaContract(
     }
   }
   // zod emits stacked refinements as allOf members, which may carry the only `type`. Fold them
-  // into the parent so they compare equal to a single constrained schema.
+  // into the parent so they compare equal to a single constrained schema. A composition that
+  // cannot be folded without losing a constraint stays visible, so it never matches a pinned
+  // contract and the tool is paused as drift.
   if (Array.isArray(record.allOf)) {
     const { allOf, ...rest } = record;
-    let merged: Record<string, unknown> = rest;
-    for (const member of allOf as unknown[]) {
-      if (member && typeof member === "object" && !Array.isArray(member)) {
-        merged = { ...(member as Record<string, unknown>), ...merged };
-      }
-    }
-    return schemaContract(merged, root, activeReferences);
+    const merged = mergeAllOfMembers(rest, allOf as unknown[]);
+    if (merged) return schemaContract(merged, root, activeReferences);
+    return {
+      ...(schemaContract(rest, root, activeReferences) as Record<string, unknown>),
+      allOf: (allOf as unknown[]).map((member) => schemaContract(member, root, activeReferences)),
+    };
   }
   // A type list is the same contract as a union of single-type members.
   if (Array.isArray(record.type) && !("anyOf" in record)) {

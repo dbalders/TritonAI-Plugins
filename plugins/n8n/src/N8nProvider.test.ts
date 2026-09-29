@@ -830,6 +830,37 @@ describe("N8nProvider", () => {
     ).toEqual(["n8n.verify_agent_mcp_server"]);
   });
 
+  it("treats constraints added through allOf as schema drift", () => {
+    const pinned = {
+      type: "object",
+      properties: { agentId: { type: "string" }, versionId: { type: "string" } },
+      required: ["agentId"],
+    };
+    for (const drifted of [
+      { ...pinned, allOf: [{ required: ["versionId"] }] },
+      { ...pinned, allOf: [{ properties: { extra: { type: "number" } }, required: ["extra"] }] },
+      { ...pinned, allOf: [{ properties: { agentId: { type: "number" } } }] },
+      { type: "string", allOf: [{ type: "number" }] },
+    ]) {
+      expect(schemaContract(drifted), JSON.stringify(drifted)).not.toEqual(
+        schemaContract(drifted.type === "string" ? { type: "string" } : pinned),
+      );
+    }
+    // Stacked refinements still fold into the single constrained schema they describe.
+    expect(
+      schemaContract({
+        description: "Folder name",
+        allOf: [{ type: "string" }, { type: "string", maxLength: 128 }],
+      }),
+    ).toEqual(schemaContract({ type: "string", maxLength: 128 }));
+    expect(
+      schemaContract({
+        ...pinned,
+        allOf: [{ required: ["versionId"] }],
+      }),
+    ).toEqual(schemaContract({ ...pinned, required: ["agentId", "versionId"] }));
+  });
+
   it("decodes upstream-derived inputs strictly", async () => {
     const createFolder = N8N_TOOLS.find(({ name }) => name === "n8n.create_folder")!;
     await expect(

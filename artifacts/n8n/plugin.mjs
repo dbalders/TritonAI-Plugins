@@ -6293,7 +6293,7 @@ function toCodecJsonBase(ast, recur2) {
 // src/N8nProvider.ts
 import * as NodeCrypto from "node:crypto";
 import * as NodeHttp from "node:http";
-import * as NodeUtil from "node:util";
+import * as NodeUtil2 from "node:util";
 
 // src/host-contract.ts
 var IntegrationProviderPublicError = class extends Error {
@@ -6316,6 +6316,7 @@ var ExternalCommitOutcomeUnknownError = class extends Error {
 };
 
 // src/upstream-schema.ts
+import * as NodeUtil from "node:util";
 var EmptyInput = Record(String4, Unknown2).pipe(
   check(makeFilter2((input) => Object.keys(input).length === 0))
 );
@@ -6339,13 +6340,67 @@ function unicodePattern(pattern) {
     return repaired;
   }
 }
+var LOWER_BOUNDS = /* @__PURE__ */ new Set(["exclusiveMinimum", "minItems", "minLength", "minimum"]);
+var UPPER_BOUNDS = /* @__PURE__ */ new Set(["exclusiveMaximum", "maxItems", "maxLength", "maximum"]);
+var ANNOTATIONS = /* @__PURE__ */ new Set(["$comment", "default", "description", "examples", "title"]);
+function plainRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function mergeAllOfMembers(parent, members) {
+  const merged = { ...parent };
+  for (const raw of members) {
+    if (!plainRecord(raw)) return null;
+    let member = raw;
+    if (Array.isArray(member.allOf)) {
+      const { allOf, ...rest } = member;
+      const nested = mergeAllOfMembers(rest, allOf);
+      if (!nested) return null;
+      member = nested;
+    }
+    for (const [key, value] of Object.entries(member)) {
+      if (!(key in merged)) {
+        merged[key] = value;
+        continue;
+      }
+      const current = merged[key];
+      if (NodeUtil.isDeepStrictEqual(current, value) || ANNOTATIONS.has(key)) continue;
+      if (key === "required" && Array.isArray(current) && Array.isArray(value)) {
+        merged.required = [.../* @__PURE__ */ new Set([...current, ...value])];
+        continue;
+      }
+      if (key === "properties" && plainRecord(current) && plainRecord(value)) {
+        const properties = { ...current };
+        for (const [name, schema] of Object.entries(value)) {
+          if (name in properties && !NodeUtil.isDeepStrictEqual(properties[name], schema)) {
+            return null;
+          }
+          properties[name] = schema;
+        }
+        merged.properties = properties;
+        continue;
+      }
+      if (typeof current === "number" && typeof value === "number") {
+        if (LOWER_BOUNDS.has(key)) {
+          merged[key] = Math.max(current, value);
+          continue;
+        }
+        if (UPPER_BOUNDS.has(key)) {
+          merged[key] = Math.min(current, value);
+          continue;
+        }
+      }
+      return null;
+    }
+  }
+  return merged;
+}
 function mergeAllOf(schema, path) {
   if (!Array.isArray(schema.allOf)) return schema;
   const { allOf, ...rest } = schema;
-  let merged = { ...rest };
-  allOf.forEach((member, index) => {
-    merged = { ...mergeAllOf(asSchema(member, `${path}.allOf[${index}]`), path), ...merged };
-  });
+  const merged = mergeAllOfMembers(rest, allOf);
+  if (!merged) {
+    throw new Error(`n8n upstream schema at ${path} has allOf members that cannot be merged.`);
+  }
   return merged;
 }
 function describe(schema, source) {
@@ -11476,13 +11531,12 @@ function schemaContract(value, root = value, activeReferences = /* @__PURE__ */ 
   }
   if (Array.isArray(record2.allOf)) {
     const { allOf, ...rest } = record2;
-    let merged = rest;
-    for (const member of allOf) {
-      if (member && typeof member === "object" && !Array.isArray(member)) {
-        merged = { ...member, ...merged };
-      }
-    }
-    return schemaContract(merged, root, activeReferences);
+    const merged = mergeAllOfMembers(rest, allOf);
+    if (merged) return schemaContract(merged, root, activeReferences);
+    return {
+      ...schemaContract(rest, root, activeReferences),
+      allOf: allOf.map((member) => schemaContract(member, root, activeReferences))
+    };
   }
   if (Array.isArray(record2.type) && !("anyOf" in record2)) {
     const { type, ...rest } = record2;
@@ -11561,7 +11615,7 @@ function validateToolInventory(value) {
     const reviewedContract = schemaContract(expectedSchema(reviewed));
     const annotations = upstream.annotations;
     const hints = annotations && typeof annotations === "object" && !Array.isArray(annotations) ? annotations : null;
-    if (!NodeUtil.isDeepStrictEqual(upstreamContract, reviewedContract) || !hints || hints.readOnlyHint !== reviewed.upstreamReadOnly || hints.destructiveHint !== reviewed.destructive || hints.idempotentHint !== reviewed.idempotent || hints.openWorldHint !== reviewed.openWorld) {
+    if (!NodeUtil2.isDeepStrictEqual(upstreamContract, reviewedContract) || !hints || hints.readOnlyHint !== reviewed.upstreamReadOnly || hints.destructiveHint !== reviewed.destructive || hints.idempotentHint !== reviewed.idempotent || hints.openWorldHint !== reviewed.openWorld) {
       paused.push(reviewed.upstreamName);
       continue;
     }
