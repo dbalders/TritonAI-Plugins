@@ -1031,7 +1031,9 @@ describe("N8nProvider", () => {
       expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
       expect(
         JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_REVOCATION_SECRET_SUFFIX))),
-      ).toMatchObject({ clientId: "dynamic-client-fixture", refreshToken: "refresh-fixture" });
+      ).toMatchObject({
+        grants: [{ clientId: "dynamic-client-fixture", refreshToken: "refresh-fixture" }],
+      });
       await expect(provider.status()).resolves.toMatchObject({
         state: "not_connected",
         message: expect.stringMatching(/not confirmed revoking/u),
@@ -1053,6 +1055,47 @@ describe("N8nProvider", () => {
       await expect(provider.status()).resolves.toMatchObject({ message: null });
       await provider.close();
     }
+  });
+
+  it("keeps every unrevoked grant across repeated failed disconnects", async () => {
+    const secrets = memorySecrets();
+    secrets.values.set(
+      N8N_REVOCATION_SECRET_SUFFIX,
+      new TextEncoder().encode(
+        JSON.stringify({
+          version: 2,
+          serverUrl: SERVER,
+          grants: [{ clientId: "dynamic-client-fixture", refreshToken: "older-refresh" }],
+        }),
+      ),
+    );
+    const mock = oauthMcpFetch();
+    let revokeFails = true;
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (revokeFails && String(input).endsWith("/mcp-oauth/revoke")) {
+        return json({ error: "fixture failure" }, 503);
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
+    await authorize(provider, mock.requests);
+    await expect(provider.disconnect(lifecycle())).resolves.toBeUndefined();
+    const pending = () =>
+      JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_REVOCATION_SECRET_SUFFIX)))
+        .grants as Array<{ refreshToken: string }>;
+    expect(pending().map(({ refreshToken }) => refreshToken)).toEqual([
+      "older-refresh",
+      "refresh-fixture",
+    ]);
+
+    revokeFails = false;
+    await provider.connect(["read"], lifecycle());
+    const revoked = mock.requests
+      .filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))
+      .map(({ init }) => new URLSearchParams(String(init?.body)).get("token"));
+    expect(revoked).toEqual(["older-refresh", "refresh-fixture"]);
+    expect(secrets.values.has(N8N_REVOCATION_SECRET_SUFFIX)).toBe(false);
+    await provider.close();
   });
 
   it("does not discard the credential when secret storage fails during disconnect", async () => {

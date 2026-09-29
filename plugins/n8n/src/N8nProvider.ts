@@ -1128,24 +1128,29 @@ function parseCredential(encoded: string, serverUrl: string): Credential {
 }
 
 interface PendingRevocation {
-  readonly version: 1;
-  readonly serverUrl: string;
   readonly clientId: string;
   readonly refreshToken: string;
 }
 
-function parsePendingRevocation(encoded: string, serverUrl: string): PendingRevocation | null {
+// Enough for any realistic run of failed disconnects. Past it the oldest grant is dropped; its
+// refresh token still expires on n8n's own schedule.
+const MAX_PENDING_REVOCATIONS = 16;
+
+function parsePendingRevocations(encoded: string, serverUrl: string): PendingRevocation[] {
   try {
     const value = asRecord(JSON.parse(encoded));
-    if (value.version !== 1 || value.serverUrl !== serverUrl) return null;
-    return {
-      version: 1,
-      serverUrl,
-      clientId: boundedString(value.clientId, MAX_CLIENT_ID_CHARS),
-      refreshToken: boundedString(value.refreshToken, MAX_TOKEN_CHARS),
-    };
+    if (value.version !== 2 || value.serverUrl !== serverUrl || !Array.isArray(value.grants)) {
+      return [];
+    }
+    return value.grants.slice(-MAX_PENDING_REVOCATIONS).map((entry) => {
+      const grant = asRecord(entry);
+      return {
+        clientId: boundedString(grant.clientId, MAX_CLIENT_ID_CHARS),
+        refreshToken: boundedString(grant.refreshToken, MAX_TOKEN_CHARS),
+      };
+    });
   } catch {
-    return null;
+    return [];
   }
 }
 
@@ -2367,7 +2372,7 @@ export class N8nProvider implements IntegrationProvider {
       const commitSignal = await this.#beginCommit(context);
       admitted = true;
       try {
-        await this.#retryPendingRevocation(discovery, commitSignal);
+        await this.#retryPendingRevocations(discovery, commitSignal);
       } catch (error) {
         if (commitSignal.aborted) throw error;
       }
@@ -2697,19 +2702,38 @@ export class N8nProvider implements IntegrationProvider {
     });
   }
 
-  async #retryPendingRevocation(discovery: OAuthDiscovery, signal: AbortSignal): Promise<void> {
+  async #readPendingRevocations(): Promise<PendingRevocation[]> {
     const encoded = await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX);
-    if (encoded === null) return;
-    const pending = parsePendingRevocation(encoded, this.#server.toString());
-    if (pending) {
+    return encoded === null ? [] : parsePendingRevocations(encoded, this.#server.toString());
+  }
+
+  async #writePendingRevocations(grants: ReadonlyArray<PendingRevocation>): Promise<void> {
+    if (grants.length === 0) {
+      await this.#secrets.remove(N8N_REVOCATION_SECRET_SUFFIX);
+      return;
+    }
+    await this.#secrets.set(
+      N8N_REVOCATION_SECRET_SUFFIX,
+      JSON.stringify({
+        version: 2,
+        serverUrl: this.#server.toString(),
+        grants: grants.slice(-MAX_PENDING_REVOCATIONS),
+      }),
+    );
+  }
+
+  async #retryPendingRevocations(discovery: OAuthDiscovery, signal: AbortSignal): Promise<void> {
+    if ((await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX)) === null) return;
+    const remaining: PendingRevocation[] = [];
+    for (const grant of await this.#readPendingRevocations()) {
       try {
-        await this.#revokeToken(discovery, pending.refreshToken, pending.clientId, signal);
+        await this.#revokeToken(discovery, grant.refreshToken, grant.clientId, signal);
       } catch (error) {
         if (signal.aborted) throw error;
-        return;
+        remaining.push(grant);
       }
     }
-    await this.#secrets.remove(N8N_REVOCATION_SECRET_SUFFIX);
+    await this.#writePendingRevocations(remaining);
   }
 
   disconnect(context?: IntegrationLifecycleContext): Promise<void> {
@@ -2742,7 +2766,7 @@ export class N8nProvider implements IntegrationProvider {
         let discovery: OAuthDiscovery | null = null;
         try {
           discovery = await this.#discover(commitSignal);
-          await this.#retryPendingRevocation(discovery, commitSignal);
+          await this.#retryPendingRevocations(discovery, commitSignal);
         } catch (error) {
           if (commitSignal.aborted) throw error;
         }
@@ -2765,13 +2789,10 @@ export class N8nProvider implements IntegrationProvider {
             }
           }
           if (!revoked) {
-            const pending: PendingRevocation = {
-              version: 1,
-              serverUrl: this.#server.toString(),
-              clientId: credential.clientId,
-              refreshToken: credential.refreshToken,
-            };
-            await this.#secrets.set(N8N_REVOCATION_SECRET_SUFFIX, JSON.stringify(pending));
+            await this.#writePendingRevocations([
+              ...(await this.#readPendingRevocations()),
+              { clientId: credential.clientId, refreshToken: credential.refreshToken },
+            ]);
           }
         }
         await this.#secrets.remove(N8N_SECRET_SUFFIX);

@@ -11298,18 +11298,22 @@ function parseCredential(encoded, serverUrl) {
     updatedAt: value.updatedAt
   };
 }
-function parsePendingRevocation(encoded, serverUrl) {
+var MAX_PENDING_REVOCATIONS = 16;
+function parsePendingRevocations(encoded, serverUrl) {
   try {
     const value = asRecord(JSON.parse(encoded));
-    if (value.version !== 1 || value.serverUrl !== serverUrl) return null;
-    return {
-      version: 1,
-      serverUrl,
-      clientId: boundedString(value.clientId, MAX_CLIENT_ID_CHARS),
-      refreshToken: boundedString(value.refreshToken, MAX_TOKEN_CHARS)
-    };
+    if (value.version !== 2 || value.serverUrl !== serverUrl || !Array.isArray(value.grants)) {
+      return [];
+    }
+    return value.grants.slice(-MAX_PENDING_REVOCATIONS).map((entry) => {
+      const grant = asRecord(entry);
+      return {
+        clientId: boundedString(grant.clientId, MAX_CLIENT_ID_CHARS),
+        refreshToken: boundedString(grant.refreshToken, MAX_TOKEN_CHARS)
+      };
+    });
   } catch {
-    return null;
+    return [];
   }
 }
 async function readResponseBytes(response, maximumBytes) {
@@ -12232,7 +12236,7 @@ var N8nProvider = class {
       const commitSignal = await this.#beginCommit(context2);
       admitted = true;
       try {
-        await this.#retryPendingRevocation(discovery, commitSignal);
+        await this.#retryPendingRevocations(discovery, commitSignal);
       } catch (error) {
         if (commitSignal.aborted) throw error;
       }
@@ -12516,19 +12520,36 @@ var N8nProvider = class {
       }
     });
   }
-  async #retryPendingRevocation(discovery, signal) {
+  async #readPendingRevocations() {
     const encoded = await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX);
-    if (encoded === null) return;
-    const pending = parsePendingRevocation(encoded, this.#server.toString());
-    if (pending) {
+    return encoded === null ? [] : parsePendingRevocations(encoded, this.#server.toString());
+  }
+  async #writePendingRevocations(grants) {
+    if (grants.length === 0) {
+      await this.#secrets.remove(N8N_REVOCATION_SECRET_SUFFIX);
+      return;
+    }
+    await this.#secrets.set(
+      N8N_REVOCATION_SECRET_SUFFIX,
+      JSON.stringify({
+        version: 2,
+        serverUrl: this.#server.toString(),
+        grants: grants.slice(-MAX_PENDING_REVOCATIONS)
+      })
+    );
+  }
+  async #retryPendingRevocations(discovery, signal) {
+    if (await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX) === null) return;
+    const remaining = [];
+    for (const grant of await this.#readPendingRevocations()) {
       try {
-        await this.#revokeToken(discovery, pending.refreshToken, pending.clientId, signal);
+        await this.#revokeToken(discovery, grant.refreshToken, grant.clientId, signal);
       } catch (error) {
         if (signal.aborted) throw error;
-        return;
+        remaining.push(grant);
       }
     }
-    await this.#secrets.remove(N8N_REVOCATION_SECRET_SUFFIX);
+    await this.#writePendingRevocations(remaining);
   }
   disconnect(context2) {
     return this.#serializeCredential(async () => {
@@ -12557,7 +12578,7 @@ var N8nProvider = class {
         let discovery = null;
         try {
           discovery = await this.#discover(commitSignal);
-          await this.#retryPendingRevocation(discovery, commitSignal);
+          await this.#retryPendingRevocations(discovery, commitSignal);
         } catch (error) {
           if (commitSignal.aborted) throw error;
         }
@@ -12577,13 +12598,10 @@ var N8nProvider = class {
             }
           }
           if (!revoked) {
-            const pending = {
-              version: 1,
-              serverUrl: this.#server.toString(),
-              clientId: credential.clientId,
-              refreshToken: credential.refreshToken
-            };
-            await this.#secrets.set(N8N_REVOCATION_SECRET_SUFFIX, JSON.stringify(pending));
+            await this.#writePendingRevocations([
+              ...await this.#readPendingRevocations(),
+              { clientId: credential.clientId, refreshToken: credential.refreshToken }
+            ]);
           }
         }
         await this.#secrets.remove(N8N_SECRET_SUFFIX);
