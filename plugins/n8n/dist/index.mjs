@@ -11305,7 +11305,7 @@ function parsePendingRevocations(encoded, serverUrl) {
     if (value.version !== 2 || value.serverUrl !== serverUrl || !Array.isArray(value.grants)) {
       return [];
     }
-    return value.grants.slice(-MAX_PENDING_REVOCATIONS).map((entry) => {
+    return value.grants.map((entry) => {
       const grant = asRecord(entry);
       return {
         clientId: boundedString(grant.clientId, MAX_CLIENT_ID_CHARS),
@@ -12240,6 +12240,11 @@ var N8nProvider = class {
       } catch (error) {
         if (commitSignal.aborted) throw error;
       }
+      if ((await this.#readPendingRevocations()).length >= MAX_PENDING_REVOCATIONS) {
+        throw new ConfirmedRemoteFailure(
+          "n8n has not confirmed revoking earlier sign-ins. Try again once n8n accepts revocation."
+        );
+      }
       const clientId = await this.#registerClient(discovery, flow.redirectUri, commitSignal);
       if (generation !== this.#generation || revision !== this.#credentialRevision || attempt !== this.#connectAttempt || this.#closed || this.#disconnecting) {
         throw new Error("n8n sign-in was superseded while starting.");
@@ -12534,7 +12539,7 @@ var N8nProvider = class {
       JSON.stringify({
         version: 2,
         serverUrl: this.#server.toString(),
-        grants: grants.slice(-MAX_PENDING_REVOCATIONS)
+        grants
       })
     );
   }

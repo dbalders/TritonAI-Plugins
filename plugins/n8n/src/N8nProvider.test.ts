@@ -1098,6 +1098,48 @@ describe("N8nProvider", () => {
     await provider.close();
   });
 
+  it("refuses new sign-ins instead of dropping grants when the revocation queue is full", async () => {
+    const secrets = memorySecrets();
+    const grants = Array.from({ length: 16 }, (_, index) => ({
+      clientId: "dynamic-client-fixture",
+      refreshToken: `pending-${index}`,
+    }));
+    secrets.values.set(
+      N8N_REVOCATION_SECRET_SUFFIX,
+      new TextEncoder().encode(JSON.stringify({ version: 2, serverUrl: SERVER, grants })),
+    );
+    const mock = oauthMcpFetch();
+    let revokeFails = true;
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (revokeFails && String(input).endsWith("/mcp-oauth/revoke")) {
+        return json({ error: "fixture failure" }, 503);
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
+
+    await expect(provider.connect(["read"], lifecycle())).rejects.toThrow(
+      /not confirmed revoking earlier sign-ins/u,
+    );
+    expect(mock.requests.some(({ url }) => url.endsWith("/mcp-oauth/register"))).toBe(false);
+    expect(
+      JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_REVOCATION_SECRET_SUFFIX))).grants,
+    ).toEqual(grants);
+    await expect(provider.status()).resolves.toMatchObject({ state: "not_connected" });
+
+    revokeFails = false;
+    await expect(provider.connect(["read"], lifecycle())).resolves.toMatchObject({
+      kind: "authorization_url",
+    });
+    expect(
+      mock.requests
+        .filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))
+        .map(({ init }) => new URLSearchParams(String(init?.body)).get("token")),
+    ).toEqual(grants.map(({ refreshToken }) => refreshToken));
+    expect(secrets.values.has(N8N_REVOCATION_SECRET_SUFFIX)).toBe(false);
+    await provider.close();
+  });
+
   it("does not discard the credential when secret storage fails during disconnect", async () => {
     const secrets = memorySecrets();
     const mock = oauthMcpFetch();

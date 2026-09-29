@@ -1132,8 +1132,8 @@ interface PendingRevocation {
   readonly refreshToken: string;
 }
 
-// Enough for any realistic run of failed disconnects. Past it the oldest grant is dropped; its
-// refresh token still expires on n8n's own schedule.
+// Grants are never dropped from this queue before n8n confirms revoking them. It stays bounded
+// because a new sign-in is refused while it is full, and each connection adds at most one grant.
 const MAX_PENDING_REVOCATIONS = 16;
 
 function parsePendingRevocations(encoded: string, serverUrl: string): PendingRevocation[] {
@@ -1142,7 +1142,7 @@ function parsePendingRevocations(encoded: string, serverUrl: string): PendingRev
     if (value.version !== 2 || value.serverUrl !== serverUrl || !Array.isArray(value.grants)) {
       return [];
     }
-    return value.grants.slice(-MAX_PENDING_REVOCATIONS).map((entry) => {
+    return value.grants.map((entry) => {
       const grant = asRecord(entry);
       return {
         clientId: boundedString(grant.clientId, MAX_CLIENT_ID_CHARS),
@@ -2376,6 +2376,11 @@ export class N8nProvider implements IntegrationProvider {
       } catch (error) {
         if (commitSignal.aborted) throw error;
       }
+      if ((await this.#readPendingRevocations()).length >= MAX_PENDING_REVOCATIONS) {
+        throw new ConfirmedRemoteFailure(
+          "n8n has not confirmed revoking earlier sign-ins. Try again once n8n accepts revocation.",
+        );
+      }
       const clientId = await this.#registerClient(discovery, flow.redirectUri, commitSignal);
       if (
         generation !== this.#generation ||
@@ -2717,7 +2722,7 @@ export class N8nProvider implements IntegrationProvider {
       JSON.stringify({
         version: 2,
         serverUrl: this.#server.toString(),
-        grants: grants.slice(-MAX_PENDING_REVOCATIONS),
+        grants,
       }),
     );
   }
