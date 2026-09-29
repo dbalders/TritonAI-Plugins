@@ -35,6 +35,7 @@ const MCP_CLIENT_CAPABILITIES_META_KEY = "io.modelcontextprotocol/clientCapabili
 const MCP_CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo";
 const MCP_CLIENT_INFO = { name: "TritonAI Harness", version: "1.0.0" } as const;
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
+const REVOCATION_RETRY_BUDGET_MS = 5_000;
 const TEST_REQUEST_TIMEOUT_MS = 5 * 60_000 + 10_000;
 const FLOW_LIFETIME_MS = 5 * 60_000;
 const FLOW_CALLBACK_CLAIM_MS = 60_000;
@@ -2761,10 +2762,20 @@ export class N8nProvider implements IntegrationProvider {
 
   async #retryPendingRevocations(discovery: OAuthDiscovery, signal: AbortSignal): Promise<void> {
     if ((await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX)) === null) return;
+    // One shared budget leaves room for registration or local cleanup inside the host's
+    // lifecycle deadline, regardless of how many old grants are queued.
+    const budget = AbortSignal.timeout(
+      Math.min(REVOCATION_RETRY_BUDGET_MS, this.#requestTimeoutMs),
+    );
+    const retrySignal = AbortSignal.any([signal, budget]);
     const remaining: PendingRevocation[] = [];
     for (const grant of await this.#readPendingRevocations()) {
+      if (budget.aborted) {
+        remaining.push(grant);
+        continue;
+      }
       try {
-        await this.#revokeToken(discovery, grant.refreshToken, grant.clientId, signal);
+        await this.#revokeToken(discovery, grant.refreshToken, grant.clientId, retrySignal);
       } catch (error) {
         if (signal.aborted) throw error;
         remaining.push(grant);
@@ -2800,54 +2811,45 @@ export class N8nProvider implements IntegrationProvider {
         }
         const commitSignal = await this.#beginCommit(context);
         admitted = true;
-        let discovery: OAuthDiscovery | null = null;
-        try {
-          discovery = await this.#discover(commitSignal);
-          await this.#retryPendingRevocations(discovery, commitSignal);
-        } catch (error) {
-          if (commitSignal.aborted) throw error;
-        }
         if (credential) {
-          // Revocation is best effort so an unreachable n8n or changed OAuth metadata cannot
-          // strand the user. A grant n8n did not confirm revoking is kept aside, retried on the
-          // next connect or disconnect, and reported by status until it succeeds.
-          let revoked = false;
-          if (discovery) {
-            try {
-              await this.#revokeToken(
-                discovery,
-                credential.refreshToken,
-                credential.clientId,
-                commitSignal,
+          const pending = await this.#readPendingRevocations();
+          if (!pending.some((grant) => grant.refreshToken === credential.refreshToken)) {
+            if (pending.length >= MAX_PENDING_REVOCATIONS) {
+              throw new ConfirmedRemoteFailure(
+                "n8n has not confirmed revoking earlier sign-ins. Try disconnecting again later.",
               );
-              revoked = true;
-            } catch (error) {
-              if (commitSignal.aborted) throw error;
             }
-          }
-          if (!revoked) {
-            const pending = await this.#readPendingRevocations();
-            // A retried disconnect finds this grant already queued.
-            if (!pending.some((grant) => grant.refreshToken === credential.refreshToken)) {
-              if (pending.length >= MAX_PENDING_REVOCATIONS) {
-                // Unreachable while sign-in is refused at the bound, but never evict: keep the
-                // credential so it can still be revoked later.
-                throw new ConfirmedRemoteFailure(
-                  "n8n has not confirmed revoking earlier sign-ins. Try disconnecting again later.",
-                );
-              }
-              await this.#writePendingRevocations([
-                ...pending,
-                { clientId: credential.clientId, refreshToken: credential.refreshToken },
-              ]);
-            }
+            // Queue before removal so a failed or interrupted revoke never loses the grant.
+            await this.#writePendingRevocations([
+              ...pending,
+              { clientId: credential.clientId, refreshToken: credential.refreshToken },
+            ]);
           }
         }
         await this.#secrets.remove(N8N_SECRET_SUFFIX);
-        commitSignal.throwIfAborted();
         this.#accessToken = null;
         this.#credentialRevision += 1;
         this.#uncertainCredentialState = false;
+        // Local reset is already durable. Network cleanup is bounded and best effort; an
+        // outage or cancellation cannot turn it into a faulted connection again.
+        let discovery: OAuthDiscovery;
+        try {
+          discovery = await this.#discover(
+            AbortSignal.any([
+              commitSignal,
+              AbortSignal.timeout(Math.min(REVOCATION_RETRY_BUDGET_MS, this.#requestTimeoutMs)),
+            ]),
+          );
+        } catch {
+          return;
+        }
+        if (!commitSignal.aborted) {
+          try {
+            await this.#retryPendingRevocations(discovery, commitSignal);
+          } catch (error) {
+            if (!commitSignal.aborted) throw error;
+          }
+        }
       } catch (error) {
         if (admitted) {
           this.#uncertainCredentialState = true;

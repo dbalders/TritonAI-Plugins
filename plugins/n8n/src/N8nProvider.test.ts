@@ -1120,6 +1120,58 @@ describe("N8nProvider", () => {
     }
   });
 
+  it("clears local access and retains every queued grant when revocation stalls", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch();
+    let stalled = false;
+    const accessDuringRevocation: boolean[] = [];
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (stalled && String(input).endsWith("/mcp-oauth/revoke")) {
+        // Local disconnect must be durable before any optional network cleanup starts.
+        accessDuringRevocation.push(secrets.values.has(N8N_SECRET_SUFFIX));
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (signal?.aborted) reject(signal.reason);
+          else signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      fetchImplementation,
+      100,
+    );
+    await authorize(provider, mock.requests);
+    const oldGrants = ["older-1", "older-2"].map((refreshToken) => ({
+      clientId: "dynamic-client-fixture",
+      refreshToken,
+    }));
+    await secrets.service.set(
+      N8N_REVOCATION_SECRET_SUFFIX,
+      JSON.stringify({ version: 2, serverUrl: SERVER, grants: oldGrants }),
+    );
+    stalled = true;
+    await expect(provider.disconnect(lifecycle())).resolves.toBeUndefined();
+    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+    const pending = JSON.parse(
+      new TextDecoder().decode(secrets.values.get(N8N_REVOCATION_SECRET_SUFFIX)),
+    );
+    expect(pending.grants).toEqual([
+      ...oldGrants,
+      { clientId: "dynamic-client-fixture", refreshToken: "refresh-fixture" },
+    ]);
+    expect(accessDuringRevocation).toEqual([false]);
+    await expect(provider.status()).resolves.toMatchObject({ state: "not_connected" });
+    stalled = false;
+    await expect(provider.connect(["read"], lifecycle())).resolves.toMatchObject({
+      kind: "authorization_url",
+    });
+    expect(secrets.values.has(N8N_REVOCATION_SECRET_SUFFIX)).toBe(false);
+    await provider.close();
+  });
+
   it("keeps every unrevoked grant across repeated failed disconnects", async () => {
     const secrets = memorySecrets();
     secrets.values.set(

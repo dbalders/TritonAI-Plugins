@@ -10422,6 +10422,7 @@ var MCP_CLIENT_CAPABILITIES_META_KEY = "io.modelcontextprotocol/clientCapabiliti
 var MCP_CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo";
 var MCP_CLIENT_INFO = { name: "TritonAI Harness", version: "1.0.0" };
 var DEFAULT_REQUEST_TIMEOUT_MS = 2e4;
+var REVOCATION_RETRY_BUDGET_MS = 5e3;
 var TEST_REQUEST_TIMEOUT_MS = 5 * 6e4 + 1e4;
 var FLOW_LIFETIME_MS = 5 * 6e4;
 var FLOW_CALLBACK_CLAIM_MS = 6e4;
@@ -11842,9 +11843,10 @@ var N8nProvider = class {
     if (signal?.aborted) throw new IntegrationProviderPublicError("n8n request was cancelled.");
     return value === null ? null : parseCredential(value, this.#server.toString());
   }
-  async #writeCredential(credential, signal) {
+  async #writeCredential(credential, signal, onPersisted) {
     signal.throwIfAborted();
     await this.#secrets.set(N8N_SECRET_SUFFIX, JSON.stringify(credential));
+    onPersisted?.();
     signal.throwIfAborted();
   }
   async #beginCommit(context2) {
@@ -12539,7 +12541,11 @@ var N8nProvider = class {
             await this.#secrets.remove(N8N_SECRET_SUFFIX);
             this.#accessToken = null;
             this.#credentialRevision += 1;
-            throw new IntegrationProviderPublicError("n8n sign-in expired. Connect n8n again.");
+            this.#sessionId = null;
+            this.#sessionVerified = false;
+            this.#availableTools = /* @__PURE__ */ new Set();
+            this.#pausedTools = [];
+            return;
           }
           throw new IntegrationProviderPublicError(
             "n8n access could not be refreshed. Disconnect and reconnect."
@@ -12561,17 +12567,19 @@ var N8nProvider = class {
         if (generation !== this.#generation || revision !== this.#credentialRevision) {
           throw new Error("n8n connection changed while refreshing.");
         }
-        await this.#writeCredential(parsed.credential, commitSignal);
-        credentialPersisted = true;
-        this.#credentialRevision += 1;
-        this.#accessToken = parsed.access;
-        this.#sessionId = null;
-        this.#sessionVerified = false;
-        this.#availableTools = /* @__PURE__ */ new Set();
-        this.#pausedTools = [];
+        await this.#writeCredential(parsed.credential, commitSignal, () => {
+          credentialPersisted = true;
+          this.#credentialRevision += 1;
+          this.#accessToken = parsed.access;
+          this.#sessionId = null;
+          this.#sessionVerified = false;
+          this.#availableTools = /* @__PURE__ */ new Set();
+          this.#pausedTools = [];
+        });
         await this.#initializeSession(parsed.access, commitSignal);
       } catch (error) {
-        if (admitted && !credentialPersisted && (!responseSettled || credentialIssued)) {
+        if (credentialPersisted) return;
+        if (admitted && (!responseSettled || credentialIssued)) {
           this.#uncertainCredentialState = true;
           throw new ExternalCommitOutcomeUnknownError(
             "The n8n credential refresh may have completed. Disconnect before retrying."
@@ -12601,10 +12609,18 @@ var N8nProvider = class {
   }
   async #retryPendingRevocations(discovery, signal) {
     if (await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX) === null) return;
+    const budget = AbortSignal.timeout(
+      Math.min(REVOCATION_RETRY_BUDGET_MS, this.#requestTimeoutMs)
+    );
+    const retrySignal = AbortSignal.any([signal, budget]);
     const remaining = [];
     for (const grant of await this.#readPendingRevocations()) {
+      if (budget.aborted) {
+        remaining.push(grant);
+        continue;
+      }
       try {
-        await this.#revokeToken(discovery, grant.refreshToken, grant.clientId, signal);
+        await this.#revokeToken(discovery, grant.refreshToken, grant.clientId, retrySignal);
       } catch (error) {
         if (signal.aborted) throw error;
         remaining.push(grant);
@@ -12636,48 +12652,42 @@ var N8nProvider = class {
         }
         const commitSignal = await this.#beginCommit(context2);
         admitted = true;
-        let discovery = null;
-        try {
-          discovery = await this.#discover(commitSignal);
-          await this.#retryPendingRevocations(discovery, commitSignal);
-        } catch (error) {
-          if (commitSignal.aborted) throw error;
-        }
         if (credential) {
-          let revoked = false;
-          if (discovery) {
-            try {
-              await this.#revokeToken(
-                discovery,
-                credential.refreshToken,
-                credential.clientId,
-                commitSignal
+          const pending = await this.#readPendingRevocations();
+          if (!pending.some((grant) => grant.refreshToken === credential.refreshToken)) {
+            if (pending.length >= MAX_PENDING_REVOCATIONS) {
+              throw new ConfirmedRemoteFailure(
+                "n8n has not confirmed revoking earlier sign-ins. Try disconnecting again later."
               );
-              revoked = true;
-            } catch (error) {
-              if (commitSignal.aborted) throw error;
             }
-          }
-          if (!revoked) {
-            const pending = await this.#readPendingRevocations();
-            if (!pending.some((grant) => grant.refreshToken === credential.refreshToken)) {
-              if (pending.length >= MAX_PENDING_REVOCATIONS) {
-                throw new ConfirmedRemoteFailure(
-                  "n8n has not confirmed revoking earlier sign-ins. Try disconnecting again later."
-                );
-              }
-              await this.#writePendingRevocations([
-                ...pending,
-                { clientId: credential.clientId, refreshToken: credential.refreshToken }
-              ]);
-            }
+            await this.#writePendingRevocations([
+              ...pending,
+              { clientId: credential.clientId, refreshToken: credential.refreshToken }
+            ]);
           }
         }
         await this.#secrets.remove(N8N_SECRET_SUFFIX);
-        commitSignal.throwIfAborted();
         this.#accessToken = null;
         this.#credentialRevision += 1;
         this.#uncertainCredentialState = false;
+        let discovery;
+        try {
+          discovery = await this.#discover(
+            AbortSignal.any([
+              commitSignal,
+              AbortSignal.timeout(Math.min(REVOCATION_RETRY_BUDGET_MS, this.#requestTimeoutMs))
+            ])
+          );
+        } catch {
+          return;
+        }
+        if (!commitSignal.aborted) {
+          try {
+            await this.#retryPendingRevocations(discovery, commitSignal);
+          } catch (error) {
+            if (!commitSignal.aborted) throw error;
+          }
+        }
       } catch (error) {
         if (admitted) {
           this.#uncertainCredentialState = true;
