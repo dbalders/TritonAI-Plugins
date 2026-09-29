@@ -147,6 +147,9 @@ function isNotUndefined(input) {
 function isNotNullish(input) {
   return input != null;
 }
+function isNever(_) {
+  return false;
+}
 function isUnknown(_) {
   return true;
 }
@@ -3192,6 +3195,18 @@ var Null = class extends Base2 {
   }
 };
 var null_ = /* @__PURE__ */ new Null();
+var Never = class extends Base2 {
+  _tag = "Never";
+  /** @internal */
+  getParser() {
+    return fromRefinement(this, isNever);
+  }
+  /** @internal */
+  getExpected() {
+    return "never";
+  }
+};
+var never2 = /* @__PURE__ */ new Never();
 var Unknown = class extends Base2 {
   _tag = "Unknown";
   /** @internal */
@@ -5571,6 +5586,7 @@ function Literal2(literal) {
   });
   return out;
 }
+var Never2 = /* @__PURE__ */ make7(never2);
 var Unknown2 = /* @__PURE__ */ make7(unknown);
 var Null2 = /* @__PURE__ */ make7(null_);
 var String4 = /* @__PURE__ */ make7(string2);
@@ -5698,6 +5714,84 @@ function isBase64(annotations) {
   });
 }
 var Finite = /* @__PURE__ */ make7(finite);
+function makeIsGreaterThan(options) {
+  const gt = isGreaterThan(options.order);
+  const formatter = options.formatter ?? format;
+  return (exclusiveMinimum, annotations) => {
+    return makeFilter2((input) => gt(input, exclusiveMinimum), {
+      expected: `a value greater than ${formatter(exclusiveMinimum)}`,
+      arbitrary: {
+        constraint: {
+          ordered: {
+            order: options.order,
+            minimum: exclusiveMinimum,
+            exclusiveMinimum: true
+          }
+        }
+      },
+      ...options.annotate?.(exclusiveMinimum),
+      ...annotations
+    });
+  };
+}
+function makeIsGreaterThanOrEqualTo(options) {
+  const gte = isGreaterThanOrEqualTo(options.order);
+  const formatter = options.formatter ?? format;
+  return (minimum, annotations) => {
+    return makeFilter2((input) => gte(input, minimum), {
+      expected: `a value greater than or equal to ${formatter(minimum)}`,
+      arbitrary: {
+        constraint: {
+          ordered: {
+            order: options.order,
+            minimum
+          }
+        }
+      },
+      ...options.annotate?.(minimum),
+      ...annotations
+    });
+  };
+}
+function makeIsLessThan(options) {
+  const lt = isLessThan(options.order);
+  const formatter = options.formatter ?? format;
+  return (exclusiveMaximum, annotations) => {
+    return makeFilter2((input) => lt(input, exclusiveMaximum), {
+      expected: `a value less than ${formatter(exclusiveMaximum)}`,
+      arbitrary: {
+        constraint: {
+          ordered: {
+            order: options.order,
+            maximum: exclusiveMaximum,
+            exclusiveMaximum: true
+          }
+        }
+      },
+      ...options.annotate?.(exclusiveMaximum),
+      ...annotations
+    });
+  };
+}
+function makeIsLessThanOrEqualTo(options) {
+  const lte = isLessThanOrEqualTo(options.order);
+  const formatter = options.formatter ?? format;
+  return (maximum, annotations) => {
+    return makeFilter2((input) => lte(input, maximum), {
+      expected: `a value less than or equal to ${formatter(maximum)}`,
+      arbitrary: {
+        constraint: {
+          ordered: {
+            order: options.order,
+            maximum
+          }
+        }
+      },
+      ...options.annotate?.(maximum),
+      ...annotations
+    });
+  };
+}
 function makeIsBetween(deriveOptions) {
   const greaterThanOrEqualTo = isGreaterThanOrEqualTo(deriveOptions.order);
   const greaterThan = isGreaterThan(deriveOptions.order);
@@ -5735,6 +5829,74 @@ function encodeNumberPayload(number3) {
   }
   return number3;
 }
+var isGreaterThan2 = /* @__PURE__ */ makeIsGreaterThan({
+  order: Number2,
+  annotate: (exclusiveMinimum) => ({
+    representation: {
+      id: "effect/schema/isGreaterThan",
+      payload: {
+        exclusiveMinimum: encodeNumberPayload(exclusiveMinimum)
+      }
+    },
+    toJsonSchema: () => ({
+      exclusiveMinimum
+    }),
+    toCode: () => ({
+      runtime: `Schema.isGreaterThan(${format(exclusiveMinimum)})`
+    })
+  })
+});
+var isGreaterThanOrEqualTo2 = /* @__PURE__ */ makeIsGreaterThanOrEqualTo({
+  order: Number2,
+  annotate: (minimum) => ({
+    representation: {
+      id: "effect/schema/isGreaterThanOrEqualTo",
+      payload: {
+        minimum: encodeNumberPayload(minimum)
+      }
+    },
+    toJsonSchema: () => ({
+      minimum
+    }),
+    toCode: () => ({
+      runtime: `Schema.isGreaterThanOrEqualTo(${format(minimum)})`
+    })
+  })
+});
+var isLessThan2 = /* @__PURE__ */ makeIsLessThan({
+  order: Number2,
+  annotate: (exclusiveMaximum) => ({
+    representation: {
+      id: "effect/schema/isLessThan",
+      payload: {
+        exclusiveMaximum: encodeNumberPayload(exclusiveMaximum)
+      }
+    },
+    toJsonSchema: () => ({
+      exclusiveMaximum
+    }),
+    toCode: () => ({
+      runtime: `Schema.isLessThan(${format(exclusiveMaximum)})`
+    })
+  })
+});
+var isLessThanOrEqualTo2 = /* @__PURE__ */ makeIsLessThanOrEqualTo({
+  order: Number2,
+  annotate: (maximum) => ({
+    representation: {
+      id: "effect/schema/isLessThanOrEqualTo",
+      payload: {
+        maximum: encodeNumberPayload(maximum)
+      }
+    },
+    toJsonSchema: () => ({
+      maximum
+    }),
+    toCode: () => ({
+      runtime: `Schema.isLessThanOrEqualTo(${format(maximum)})`
+    })
+  })
+});
 var isBetween = /* @__PURE__ */ makeIsBetween({
   order: Number2,
   annotate: (options) => {
@@ -6153,6 +6315,4046 @@ var ExternalCommitOutcomeUnknownError = class extends Error {
   }
 };
 
+// src/upstream-schema.ts
+var EmptyInput = Record(String4, Unknown2).pipe(
+  check(makeFilter2((input) => Object.keys(input).length === 0))
+);
+function asSchema(value, path) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`n8n upstream schema at ${path} is not an object.`);
+  }
+  return value;
+}
+function numberKeyword(schema, key) {
+  const value = schema[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : void 0;
+}
+function unicodePattern(pattern) {
+  try {
+    new RegExp(pattern, "u");
+    return pattern;
+  } catch {
+    const repaired = pattern.replace(/\\([=!:<>@#%&'",;~`])/gu, "$1");
+    new RegExp(repaired, "u");
+    return repaired;
+  }
+}
+function mergeAllOf(schema, path) {
+  if (!Array.isArray(schema.allOf)) return schema;
+  const { allOf, ...rest } = schema;
+  let merged = { ...rest };
+  allOf.forEach((member, index) => {
+    merged = { ...mergeAllOf(asSchema(member, `${path}.allOf[${index}]`), path), ...merged };
+  });
+  return merged;
+}
+function describe(schema, source) {
+  return typeof source.description === "string" ? schema.annotate({ description: source.description }) : schema;
+}
+function stringSchema(schema) {
+  const checks = [];
+  const minimum = numberKeyword(schema, "minLength");
+  const maximum = numberKeyword(schema, "maxLength");
+  if (minimum !== void 0) checks.push(isMinLength(minimum));
+  if (maximum !== void 0) checks.push(isMaxLength(maximum));
+  if (typeof schema.pattern === "string") {
+    checks.push(isPattern2(new RegExp(unicodePattern(schema.pattern), "u")));
+  }
+  return checks.length === 0 ? String4 : String4.check(...checks);
+}
+function numberSchema(schema, integer) {
+  const checks = [];
+  const minimum = numberKeyword(schema, "minimum");
+  const maximum = numberKeyword(schema, "maximum");
+  const exclusiveMinimum = numberKeyword(schema, "exclusiveMinimum");
+  const exclusiveMaximum = numberKeyword(schema, "exclusiveMaximum");
+  if (minimum !== void 0) checks.push(isGreaterThanOrEqualTo2(minimum));
+  if (maximum !== void 0) checks.push(isLessThanOrEqualTo2(maximum));
+  if (exclusiveMinimum !== void 0) checks.push(isGreaterThan2(exclusiveMinimum));
+  if (exclusiveMaximum !== void 0) checks.push(isLessThan2(exclusiveMaximum));
+  const base = integer ? Int : Finite;
+  return checks.length === 0 ? base : base.check(...checks);
+}
+function arraySchema(schema, path) {
+  const items = schema.items === void 0 ? Unknown2 : decoderFromJsonSchema(asSchema(schema.items, `${path}.items`), `${path}.items`);
+  const checks = [];
+  const minimum = numberKeyword(schema, "minItems");
+  const maximum = numberKeyword(schema, "maxItems");
+  if (minimum !== void 0) checks.push(isMinLength(minimum));
+  if (maximum !== void 0) checks.push(isMaxLength(maximum));
+  const array2 = ArraySchema(items);
+  return checks.length === 0 ? array2 : array2.check(...checks);
+}
+function objectSchema(schema, path) {
+  const properties = schema.properties === void 0 ? {} : asSchema(schema.properties, `${path}.properties`);
+  const names = Object.keys(properties);
+  if (names.length === 0) {
+    if (schema.additionalProperties === false) return EmptyInput;
+    const values = schema.additionalProperties === void 0 || schema.additionalProperties === true ? Unknown2 : decoderFromJsonSchema(
+      asSchema(schema.additionalProperties, `${path}.additionalProperties`),
+      `${path}.additionalProperties`
+    );
+    return Record(String4, values);
+  }
+  if (schema.additionalProperties !== void 0 && schema.additionalProperties !== false) {
+    throw new Error(`n8n upstream schema at ${path} mixes properties with open members.`);
+  }
+  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  const fields = {};
+  for (const name of names) {
+    const field = decoderFromJsonSchema(
+      asSchema(properties[name], `${path}.properties.${name}`),
+      `${path}.properties.${name}`
+    );
+    fields[name] = required.has(name) ? field : optionalKey2(field);
+  }
+  return Struct(fields);
+}
+function literalSchema(values, path) {
+  if (values.length === 0 || !values.every(
+    (value) => value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value)
+  )) {
+    throw new Error(`n8n upstream schema at ${path} has unsupported literal values.`);
+  }
+  const literals = values;
+  if (literals.length === 1) {
+    return literals[0] === null ? Null2 : Literal2(literals[0]);
+  }
+  if (literals.some((value) => value === null)) {
+    throw new Error(`n8n upstream schema at ${path} mixes null into an enum.`);
+  }
+  return Literals(literals);
+}
+function typedSchema(schema, type, path) {
+  switch (type) {
+    case "string":
+      return stringSchema(schema);
+    case "number":
+      return numberSchema(schema, false);
+    case "integer":
+      return numberSchema(schema, true);
+    case "boolean":
+      return Boolean3;
+    case "null":
+      return Null2;
+    case "array":
+      return arraySchema(schema, path);
+    case "object":
+      return objectSchema(schema, path);
+    default:
+      throw new Error(`n8n upstream schema at ${path} has unsupported type ${type}.`);
+  }
+}
+function decoderFromJsonSchema(source, path = "$") {
+  const schema = mergeAllOf(source, path);
+  if (schema.not !== void 0) {
+    const negated = asSchema(schema.not, `${path}.not`);
+    if (Object.keys(negated).length !== 0) {
+      throw new Error(`n8n upstream schema at ${path} negates a non-empty schema.`);
+    }
+    return Never2;
+  }
+  if (Array.isArray(schema.anyOf) || Array.isArray(schema.oneOf)) {
+    const members = (schema.anyOf ?? schema.oneOf).map(
+      (member, index) => decoderFromJsonSchema(asSchema(member, `${path}.anyOf[${index}]`), `${path}.anyOf[${index}]`)
+    );
+    return describe(Union2(members), schema);
+  }
+  if ("const" in schema) return describe(literalSchema([schema.const], path), schema);
+  if (Array.isArray(schema.enum)) return describe(literalSchema(schema.enum, path), schema);
+  if (Array.isArray(schema.type)) {
+    const members = schema.type.map((type) => {
+      if (typeof type !== "string") {
+        throw new Error(`n8n upstream schema at ${path} has an invalid type list.`);
+      }
+      return typedSchema(schema, type, path);
+    });
+    return describe(Union2(members), schema);
+  }
+  if (typeof schema.type === "string") {
+    return describe(typedSchema(schema, schema.type, path), schema);
+  }
+  if (Object.keys(schema).every((key) => key === "description" || key === "default")) {
+    return describe(Unknown2, schema);
+  }
+  throw new Error(`n8n upstream schema at ${path} is not a supported shape.`);
+}
+
+// src/upstream-tools.ts
+var UPSTREAM_TOOLS = [
+  {
+    name: "add_data_table_column",
+    title: "Add Data Table Column",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        dataTableId: {
+          type: "string",
+          description: "The ID of the data table to add a column to"
+        },
+        projectId: {
+          type: "string",
+          description: "The project ID the data table belongs to"
+        },
+        name: {
+          type: "string",
+          minLength: 1,
+          maxLength: 63,
+          pattern: "^[a-zA-Z][a-zA-Z0-9_]*$",
+          description: "Column name. Must start with a letter, contain only letters, numbers, and underscores (max 63 chars)"
+        },
+        type: {
+          type: "string",
+          enum: ["string", "number", "boolean", "date"],
+          description: "The data type of the new column"
+        }
+      },
+      required: ["dataTableId", "projectId", "name", "type"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "add_data_table_rows",
+    title: "Add Data Table Rows",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        dataTableId: {
+          type: "string",
+          description: "The ID of the data table to insert rows into"
+        },
+        projectId: {
+          type: "string",
+          description: "The project ID the data table belongs to"
+        },
+        rows: {
+          type: "array",
+          minItems: 1,
+          maxItems: 1e3,
+          description: "Array of row objects to insert. Each object maps column names to values. Maximum 1000 rows per call.",
+          items: {
+            type: "object",
+            additionalProperties: {
+              type: ["string", "number", "boolean", "null"]
+            }
+          }
+        }
+      },
+      required: ["dataTableId", "projectId", "rows"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "archive_workflow",
+    title: "Archiving workflow",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "The ID of the workflow to archive"
+        }
+      },
+      required: ["workflowId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "call_agent",
+    title: "Call Agent",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: {
+          type: "string",
+          minLength: 1,
+          description: "Agent ID"
+        },
+        request: {
+          anyOf: [
+            {
+              type: "object",
+              properties: {
+                type: {
+                  type: "string",
+                  const: "message"
+                },
+                message: {
+                  type: "string",
+                  minLength: 1
+                },
+                sessionId: {
+                  type: "string",
+                  minLength: 1
+                }
+              },
+              required: ["type", "message"],
+              additionalProperties: false
+            },
+            {
+              type: "object",
+              properties: {
+                type: {
+                  type: "string",
+                  const: "approval"
+                },
+                approved: {
+                  type: "boolean"
+                },
+                continuation: {
+                  type: "object",
+                  properties: {
+                    runId: {
+                      type: "string"
+                    },
+                    toolCallId: {
+                      type: "string"
+                    },
+                    sessionId: {
+                      type: "string"
+                    },
+                    response: {
+                      type: "string"
+                    }
+                  },
+                  required: ["runId", "toolCallId", "sessionId", "response"],
+                  additionalProperties: false
+                }
+              },
+              required: ["type", "approved", "continuation"],
+              additionalProperties: false
+            }
+          ]
+        }
+      },
+      required: ["agentId", "request"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "create_agent",
+    title: "Create Agent",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: {
+          type: "string",
+          minLength: 1
+        },
+        name: {
+          type: "string",
+          minLength: 1,
+          maxLength: 128
+        },
+        config: {
+          type: "object",
+          properties: {
+            model: {
+              anyOf: [
+                {
+                  type: "string",
+                  const: ""
+                },
+                {
+                  type: "string",
+                  minLength: 1,
+                  pattern: "^[a-z0-9-]+\\/(?:[a-z0-9._:-]+\\/)*[a-z0-9._:-]+$"
+                }
+              ]
+            },
+            credential: {
+              type: "string"
+            },
+            modelDeploymentName: {
+              type: "string"
+            },
+            instructions: {
+              type: "string"
+            },
+            personalisation: {
+              type: "object",
+              properties: {
+                icon: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: 64
+                },
+                gradient: {
+                  type: "object",
+                  properties: {
+                    from: {
+                      type: "string",
+                      pattern: "^#[0-9A-Fa-f]{6}$"
+                    },
+                    to: {
+                      type: "string",
+                      pattern: "^#[0-9A-Fa-f]{6}$"
+                    },
+                    angle: {
+                      type: "integer",
+                      minimum: 0,
+                      maximum: 359,
+                      default: 135
+                    },
+                    fromStop: {
+                      type: "integer",
+                      minimum: 0,
+                      maximum: 45,
+                      default: 0
+                    },
+                    toStop: {
+                      type: "integer",
+                      minimum: 55,
+                      maximum: 100,
+                      default: 100
+                    }
+                  },
+                  required: ["from", "to"],
+                  additionalProperties: false,
+                  default: {
+                    from: "#FF1500",
+                    to: "#FF6900",
+                    angle: 135,
+                    fromStop: 0,
+                    toStop: 100
+                  }
+                }
+              },
+              required: ["icon"],
+              additionalProperties: false
+            },
+            memory: {
+              type: "object",
+              properties: {
+                enabled: {
+                  type: "boolean"
+                },
+                storage: {
+                  type: "string",
+                  enum: ["n8n"]
+                },
+                observationalMemory: {
+                  type: "object",
+                  properties: {
+                    enabled: {
+                      type: "boolean"
+                    },
+                    observerModel: {
+                      type: "object",
+                      properties: {
+                        model: {
+                          type: "string",
+                          minLength: 1,
+                          pattern: "^[a-z0-9-]+\\/(?:[a-z0-9._:-]+\\/)*[a-z0-9._:-]+$"
+                        },
+                        credential: {
+                          type: "string"
+                        }
+                      },
+                      required: ["model", "credential"],
+                      additionalProperties: false
+                    },
+                    reflectorModel: {
+                      type: "object",
+                      properties: {
+                        model: {
+                          type: "string",
+                          minLength: 1,
+                          pattern: "^[a-z0-9-]+\\/(?:[a-z0-9._:-]+\\/)*[a-z0-9._:-]+$"
+                        },
+                        credential: {
+                          type: "string"
+                        }
+                      },
+                      required: ["model", "credential"],
+                      additionalProperties: false
+                    },
+                    observerThresholdTokens: {
+                      type: "integer",
+                      minimum: 1
+                    },
+                    reflectorThresholdTokens: {
+                      type: "integer",
+                      minimum: 1
+                    },
+                    renderTokenBudget: {
+                      type: "integer",
+                      minimum: 1
+                    },
+                    observationLogTailLimit: {
+                      type: "integer",
+                      minimum: 1
+                    },
+                    lockTtlMs: {
+                      type: "integer",
+                      minimum: 0
+                    }
+                  },
+                  additionalProperties: false
+                },
+                episodicMemory: {
+                  anyOf: [
+                    {
+                      type: "object",
+                      properties: {
+                        enabled: {
+                          type: "boolean",
+                          const: false
+                        }
+                      },
+                      required: ["enabled"],
+                      additionalProperties: false
+                    },
+                    {
+                      type: "object",
+                      properties: {
+                        enabled: {
+                          type: "boolean",
+                          const: true
+                        },
+                        credential: {
+                          anyOf: [
+                            {
+                              type: "string",
+                              const: "managed"
+                            },
+                            {
+                              type: "string"
+                            }
+                          ]
+                        },
+                        reflectorModel: {
+                          type: "object",
+                          properties: {
+                            model: {
+                              type: "string",
+                              minLength: 1,
+                              pattern: "^[a-z0-9-]+\\/(?:[a-z0-9._:-]+\\/)*[a-z0-9._:-]+$"
+                            },
+                            credential: {
+                              type: "string"
+                            }
+                          },
+                          required: ["model", "credential"],
+                          additionalProperties: false
+                        },
+                        topK: {
+                          type: "integer",
+                          minimum: 1,
+                          maximum: 100
+                        },
+                        maxEntriesPerRun: {
+                          type: "integer",
+                          minimum: 1,
+                          maximum: 50
+                        }
+                      },
+                      required: ["enabled", "credential"],
+                      additionalProperties: false
+                    }
+                  ]
+                }
+              },
+              required: ["enabled", "storage"],
+              additionalProperties: false
+            },
+            subAgents: {
+              type: "object",
+              properties: {
+                maxChildren: {
+                  type: "integer",
+                  minimum: 1,
+                  maximum: 20,
+                  description: "Maximum number of child sub-agent runs this parent agent may run in parallel. Defaults to 10 when unset."
+                },
+                agents: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      agentId: {
+                        type: "string",
+                        minLength: 1
+                      },
+                      useWhen: {
+                        type: "string",
+                        maxLength: 512
+                      }
+                    },
+                    required: ["agentId"],
+                    additionalProperties: false
+                  }
+                },
+                modelsByDifficulty: {
+                  type: "object",
+                  properties: {
+                    low: {
+                      type: "object",
+                      properties: {
+                        model: {
+                          type: "string",
+                          minLength: 1,
+                          pattern: "^[a-z0-9-]+\\/(?:[a-z0-9._:-]+\\/)*[a-z0-9._:-]+$"
+                        },
+                        credential: {
+                          type: "string"
+                        }
+                      },
+                      required: ["model", "credential"],
+                      additionalProperties: false
+                    },
+                    medium: {
+                      type: "object",
+                      properties: {
+                        model: {
+                          type: "string",
+                          minLength: 1,
+                          pattern: "^[a-z0-9-]+\\/(?:[a-z0-9._:-]+\\/)*[a-z0-9._:-]+$"
+                        },
+                        credential: {
+                          type: "string"
+                        }
+                      },
+                      required: ["model", "credential"],
+                      additionalProperties: false
+                    },
+                    high: {
+                      type: "object",
+                      properties: {
+                        model: {
+                          type: "string",
+                          minLength: 1,
+                          pattern: "^[a-z0-9-]+\\/(?:[a-z0-9._:-]+\\/)*[a-z0-9._:-]+$"
+                        },
+                        credential: {
+                          type: "string"
+                        }
+                      },
+                      required: ["model", "credential"],
+                      additionalProperties: false
+                    }
+                  },
+                  additionalProperties: false,
+                  description: "Optional inline sub-agent model mappings by task difficulty. Missing mappings fall back to the parent agent model."
+                }
+              },
+              additionalProperties: false
+            },
+            tools: {
+              type: "array",
+              items: {
+                anyOf: [
+                  {
+                    type: "object",
+                    properties: {
+                      type: {
+                        type: "string",
+                        const: "custom"
+                      },
+                      id: {
+                        type: "string",
+                        minLength: 1,
+                        pattern: "^[A-Za-z0-9_]+$"
+                      },
+                      requireApproval: {
+                        type: "boolean"
+                      }
+                    },
+                    required: ["type", "id"],
+                    additionalProperties: false
+                  },
+                  {
+                    type: "object",
+                    properties: {
+                      type: {
+                        type: "string",
+                        const: "workflow"
+                      },
+                      workflowId: {
+                        type: "string",
+                        minLength: 1,
+                        description: "The workflow's stable ID."
+                      },
+                      workflow: {
+                        type: "string",
+                        minLength: 1,
+                        description: "The workflow's display name and legacy lookup key."
+                      },
+                      name: {
+                        type: "string"
+                      },
+                      description: {
+                        type: "string"
+                      },
+                      requireApproval: {
+                        type: "boolean"
+                      },
+                      allOutputs: {
+                        type: "boolean",
+                        description: "Whether to return all node outputs instead of just the last node"
+                      },
+                      inputs: {
+                        type: "object",
+                        additionalProperties: {
+                          anyOf: [
+                            {
+                              type: "object",
+                              properties: {
+                                mode: {
+                                  type: "string",
+                                  const: "ai"
+                                }
+                              },
+                              required: ["mode"],
+                              additionalProperties: false
+                            },
+                            {
+                              type: "object",
+                              properties: {
+                                mode: {
+                                  type: "string",
+                                  const: "fixed"
+                                },
+                                value: {
+                                  anyOf: [
+                                    {
+                                      type: "string"
+                                    },
+                                    {
+                                      type: "number"
+                                    },
+                                    {
+                                      type: "boolean"
+                                    },
+                                    {
+                                      type: "null"
+                                    },
+                                    {
+                                      type: "object",
+                                      additionalProperties: {}
+                                    },
+                                    {
+                                      type: "array",
+                                      items: {}
+                                    }
+                                  ]
+                                }
+                              },
+                              required: ["mode", "value"],
+                              additionalProperties: false
+                            }
+                          ]
+                        },
+                        description: "Optional per-field bindings for Execute Workflow Trigger inputs. Missing keys default to AI-determined."
+                      }
+                    },
+                    required: ["type", "workflow"],
+                    additionalProperties: false
+                  },
+                  {
+                    type: "object",
+                    properties: {
+                      type: {
+                        type: "string",
+                        const: "node"
+                      },
+                      name: {
+                        type: "string",
+                        minLength: 1
+                      },
+                      description: {
+                        type: "string"
+                      },
+                      inputSchema: {
+                        not: {}
+                      },
+                      node: {
+                        type: "object",
+                        properties: {
+                          nodeType: {
+                            type: "string",
+                            minLength: 1
+                          },
+                          nodeTypeVersion: {
+                            type: "number"
+                          },
+                          nodeParameters: {
+                            type: "object",
+                            additionalProperties: {},
+                            default: {}
+                          },
+                          credentials: {
+                            type: "object",
+                            additionalProperties: {
+                              anyOf: [
+                                {
+                                  type: "object",
+                                  properties: {
+                                    id: {
+                                      type: "string"
+                                    },
+                                    name: {
+                                      type: "string"
+                                    }
+                                  },
+                                  required: ["id", "name"],
+                                  additionalProperties: false
+                                },
+                                {
+                                  type: "object",
+                                  properties: {
+                                    id: {
+                                      type: "null"
+                                    },
+                                    name: {
+                                      type: "string"
+                                    },
+                                    __aiGatewayManaged: {
+                                      type: "boolean",
+                                      const: true
+                                    }
+                                  },
+                                  required: ["id", "name", "__aiGatewayManaged"],
+                                  additionalProperties: false
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        required: ["nodeType", "nodeTypeVersion"],
+                        additionalProperties: false
+                      },
+                      requireApproval: {
+                        type: "boolean"
+                      }
+                    },
+                    required: ["type", "name", "node"],
+                    additionalProperties: false
+                  }
+                ]
+              }
+            },
+            providerTools: {
+              type: "object",
+              additionalProperties: {
+                type: "object",
+                additionalProperties: {}
+              }
+            },
+            mcpServers: {
+              type: "array",
+              maxItems: 20,
+              items: {
+                type: "object",
+                properties: {
+                  name: {
+                    type: "string",
+                    minLength: 1,
+                    maxLength: 64,
+                    description: "Unique display name. The SDK normalizes it when building model-facing tool names"
+                  },
+                  description: {
+                    type: "string",
+                    maxLength: 512,
+                    description: "Human-readable server description"
+                  },
+                  url: {
+                    type: "string",
+                    description: "MCP server endpoint URL. Empty string means setup is incomplete"
+                  },
+                  transport: {
+                    type: "string",
+                    enum: ["sse", "streamableHttp"],
+                    default: "streamableHttp",
+                    description: "Transport protocol"
+                  },
+                  authentication: {
+                    anyOf: [
+                      {
+                        type: "string",
+                        enum: [
+                          "none",
+                          "bearerAuth",
+                          "headerAuth",
+                          "multipleHeadersAuth",
+                          "mcpOAuth2Api"
+                        ]
+                      },
+                      {
+                        type: "string",
+                        pattern: "^(?:oAuth2Api|.*OAuth2(?:Api)?)$"
+                      }
+                    ],
+                    default: "none",
+                    description: "Auth method. Named variants or an OAuth2 credential type returned by the registry"
+                  },
+                  credential: {
+                    type: "string",
+                    description: 'Credential id from ask_credential. Required when authentication is not "none"'
+                  },
+                  metadata: {
+                    type: "object",
+                    properties: {
+                      nodeTypeName: {
+                        type: "string",
+                        description: "Source node type for registry servers (e.g. @n8n/mcp-registry.github). Enables correct UI form"
+                      }
+                    },
+                    additionalProperties: false,
+                    description: "Server-generated metadata. Do not set this manually; only copy it from an MCP discovery result when present"
+                  },
+                  toolFilter: {
+                    anyOf: [
+                      {
+                        type: "object",
+                        properties: {
+                          mode: {
+                            type: "string",
+                            const: "allow"
+                          },
+                          tools: {
+                            type: "array",
+                            default: [],
+                            items: {
+                              type: "string",
+                              minLength: 1
+                            }
+                          }
+                        },
+                        required: ["mode"],
+                        additionalProperties: false
+                      },
+                      {
+                        type: "object",
+                        properties: {
+                          mode: {
+                            type: "string",
+                            const: "exclude"
+                          },
+                          tools: {
+                            type: "array",
+                            default: [],
+                            items: {
+                              type: "string",
+                              minLength: 1
+                            }
+                          }
+                        },
+                        required: ["mode"],
+                        additionalProperties: false
+                      }
+                    ],
+                    description: "Restricts which tools are surfaced. Tools matched by original un-prefixed name"
+                  },
+                  approval: {
+                    anyOf: [
+                      {
+                        type: "object",
+                        properties: {
+                          mode: {
+                            type: "string",
+                            const: "global"
+                          }
+                        },
+                        required: ["mode"],
+                        additionalProperties: false
+                      },
+                      {
+                        type: "object",
+                        properties: {
+                          mode: {
+                            type: "string",
+                            const: "selected"
+                          },
+                          tools: {
+                            type: "array",
+                            minItems: 1,
+                            items: {
+                              type: "string",
+                              minLength: 1
+                            }
+                          }
+                        },
+                        required: ["mode", "tools"],
+                        additionalProperties: false
+                      }
+                    ],
+                    description: "Human-in-the-loop approval. Absent = no approval required"
+                  },
+                  connectionTimeoutMs: {
+                    type: "integer",
+                    minimum: 1,
+                    maximum: 12e4,
+                    description: "Connection timeout in milliseconds"
+                  }
+                },
+                required: ["name", "url"],
+                additionalProperties: false
+              }
+            },
+            vectorStores: {
+              type: "array",
+              maxItems: 20,
+              items: {
+                anyOf: [
+                  {
+                    type: "object",
+                    properties: {
+                      provider: {
+                        type: "string",
+                        const: "pinecone"
+                      },
+                      name: {
+                        type: "string",
+                        minLength: 1,
+                        maxLength: 64,
+                        pattern: "^[a-zA-Z0-9_-]+$",
+                        description: "Unique connection name, also used as the SDK tool-name suffix: search_<name>"
+                      },
+                      credential: {
+                        type: "string"
+                      },
+                      useWhen: {
+                        type: "string",
+                        minLength: 1,
+                        maxLength: 512
+                      },
+                      embedding: {
+                        type: "object",
+                        properties: {
+                          model: {
+                            type: "string",
+                            minLength: 1,
+                            pattern: "^[a-z0-9-]+\\/(?:[a-z0-9._:-]+\\/)*[a-z0-9._:-]+$"
+                          },
+                          credential: {
+                            type: "string"
+                          }
+                        },
+                        required: ["model", "credential"],
+                        additionalProperties: false
+                      },
+                      indexName: {
+                        type: "string",
+                        minLength: 1
+                      },
+                      namespace: {
+                        type: "string"
+                      }
+                    },
+                    required: [
+                      "provider",
+                      "name",
+                      "credential",
+                      "useWhen",
+                      "embedding",
+                      "indexName"
+                    ],
+                    additionalProperties: false
+                  },
+                  {
+                    type: "object",
+                    properties: {
+                      provider: {
+                        type: "string",
+                        const: "qdrant"
+                      },
+                      name: {
+                        type: "string",
+                        minLength: 1,
+                        maxLength: 64,
+                        pattern: "^[a-zA-Z0-9_-]+$",
+                        description: "Unique connection name, also used as the SDK tool-name suffix: search_<name>"
+                      },
+                      credential: {
+                        type: "string"
+                      },
+                      useWhen: {
+                        type: "string",
+                        minLength: 1,
+                        maxLength: 512
+                      },
+                      embedding: {
+                        type: "object",
+                        properties: {
+                          model: {
+                            type: "string",
+                            minLength: 1,
+                            pattern: "^[a-z0-9-]+\\/(?:[a-z0-9._:-]+\\/)*[a-z0-9._:-]+$"
+                          },
+                          credential: {
+                            type: "string"
+                          }
+                        },
+                        required: ["model", "credential"],
+                        additionalProperties: false
+                      },
+                      collectionName: {
+                        type: "string",
+                        minLength: 1
+                      }
+                    },
+                    required: [
+                      "provider",
+                      "name",
+                      "credential",
+                      "useWhen",
+                      "embedding",
+                      "collectionName"
+                    ],
+                    additionalProperties: false
+                  },
+                  {
+                    type: "object",
+                    properties: {
+                      provider: {
+                        type: "string",
+                        const: "supabase"
+                      },
+                      name: {
+                        type: "string",
+                        minLength: 1,
+                        maxLength: 64,
+                        pattern: "^[a-zA-Z0-9_-]+$",
+                        description: "Unique connection name, also used as the SDK tool-name suffix: search_<name>"
+                      },
+                      credential: {
+                        type: "string"
+                      },
+                      useWhen: {
+                        type: "string",
+                        minLength: 1,
+                        maxLength: 512
+                      },
+                      embedding: {
+                        type: "object",
+                        properties: {
+                          model: {
+                            type: "string",
+                            minLength: 1,
+                            pattern: "^[a-z0-9-]+\\/(?:[a-z0-9._:-]+\\/)*[a-z0-9._:-]+$"
+                          },
+                          credential: {
+                            type: "string"
+                          }
+                        },
+                        required: ["model", "credential"],
+                        additionalProperties: false
+                      },
+                      tableName: {
+                        type: "string",
+                        minLength: 1
+                      },
+                      queryName: {
+                        type: "string"
+                      }
+                    },
+                    required: [
+                      "provider",
+                      "name",
+                      "credential",
+                      "useWhen",
+                      "embedding",
+                      "tableName"
+                    ],
+                    additionalProperties: false
+                  },
+                  {
+                    type: "object",
+                    properties: {
+                      provider: {
+                        type: "string",
+                        const: "postgres"
+                      },
+                      name: {
+                        type: "string",
+                        minLength: 1,
+                        maxLength: 64,
+                        pattern: "^[a-zA-Z0-9_-]+$",
+                        description: "Unique connection name, also used as the SDK tool-name suffix: search_<name>"
+                      },
+                      credential: {
+                        type: "string"
+                      },
+                      useWhen: {
+                        type: "string",
+                        minLength: 1,
+                        maxLength: 512
+                      },
+                      embedding: {
+                        type: "object",
+                        properties: {
+                          model: {
+                            type: "string",
+                            minLength: 1,
+                            pattern: "^[a-z0-9-]+\\/(?:[a-z0-9._:-]+\\/)*[a-z0-9._:-]+$"
+                          },
+                          credential: {
+                            type: "string"
+                          }
+                        },
+                        required: ["model", "credential"],
+                        additionalProperties: false
+                      },
+                      tableName: {
+                        type: "string",
+                        minLength: 1
+                      }
+                    },
+                    required: [
+                      "provider",
+                      "name",
+                      "credential",
+                      "useWhen",
+                      "embedding",
+                      "tableName"
+                    ],
+                    additionalProperties: false
+                  }
+                ]
+              }
+            },
+            config: {
+              type: "object",
+              properties: {
+                reasoning: {
+                  type: "string",
+                  enum: ["low", "medium", "high"]
+                },
+                promptCaching: {
+                  type: "object",
+                  properties: {
+                    enabled: {
+                      type: "boolean"
+                    },
+                    anthropic: {
+                      type: "object",
+                      properties: {
+                        ttl: {
+                          type: "string",
+                          enum: ["5m", "1h"]
+                        }
+                      },
+                      additionalProperties: false
+                    }
+                  },
+                  required: ["enabled"],
+                  additionalProperties: false
+                },
+                webSearch: {
+                  type: "object",
+                  properties: {
+                    enabled: {
+                      type: "boolean"
+                    },
+                    provider: {
+                      type: "string",
+                      enum: ["auto", "native", "brave", "searxng"]
+                    },
+                    credential: {
+                      type: "string"
+                    }
+                  },
+                  required: ["enabled"],
+                  additionalProperties: false
+                },
+                toolCallConcurrency: {
+                  type: "integer",
+                  minimum: 1,
+                  maximum: 100
+                },
+                maxIterations: {
+                  type: "integer",
+                  minimum: 1,
+                  maximum: 200,
+                  description: "Maximum number of agent loop iterations per run. Do not set unless the user explicitly asks."
+                }
+              },
+              additionalProperties: false
+            }
+          },
+          required: ["model", "instructions"],
+          additionalProperties: false,
+          description: "Optional initial Agent config without name, skills, tasks, or custom tools. The top-level name is injected into the config."
+        }
+      },
+      required: ["projectId", "name"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "create_data_table",
+    title: "Create Data Table",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: {
+          type: "string",
+          description: "The project ID where the data table will be created"
+        },
+        name: {
+          type: "string",
+          minLength: 1,
+          maxLength: 128,
+          description: "The name of the data table (must be unique within the project)"
+        },
+        columns: {
+          type: "array",
+          minItems: 1,
+          description: "The columns to create in the data table. At least one column is required.",
+          items: {
+            type: "object",
+            properties: {
+              name: {
+                type: "string",
+                minLength: 1,
+                maxLength: 63,
+                pattern: "^[a-zA-Z][a-zA-Z0-9_]*$",
+                description: "Column name. Must start with a letter, contain only letters, numbers, and underscores (max 63 chars)"
+              },
+              type: {
+                type: "string",
+                enum: ["string", "number", "boolean", "date"],
+                description: "The data type of the column"
+              }
+            },
+            required: ["name", "type"],
+            additionalProperties: false
+          }
+        }
+      },
+      required: ["projectId", "name", "columns"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "create_folder",
+    title: "Create Folder",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: {
+          type: "string",
+          description: "The ID of the project to create the folder in. Use search_projects to resolve a project name to an ID."
+        },
+        name: {
+          allOf: [
+            {
+              type: "string"
+            },
+            {
+              type: "string",
+              maxLength: 128
+            }
+          ],
+          description: "The name of the folder to create"
+        },
+        parentFolderId: {
+          type: "string",
+          maxLength: 36,
+          description: 'Optional parent folder ID to nest the new folder under. Must belong to the same project \u2014 use search_folders to find it. Omit it or pass "0" to create the folder at the project root.'
+        }
+      },
+      required: ["projectId", "name"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "create_workflow_from_code",
+    title: "Creating workflow from code",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        code: {
+          type: "string",
+          maxLength: 3e5,
+          description: "Full TypeScript/JavaScript workflow code using the n8n Workflow SDK. Must be validated first with validate_workflow. Max 300000 characters."
+        },
+        skillsUsed: {
+          type: "array",
+          description: 'IDs of n8n skills used to prepare this call, e.g. "workflow-builder". An optional plugin prefix is allowed, e.g. "n8n-skills:workflow-builder". Entries are normalized server-side (trimmed, lowercased, deduped); invalid identifiers are dropped.',
+          items: {
+            type: "string"
+          }
+        },
+        name: {
+          type: "string",
+          maxLength: 128,
+          description: "Optional workflow name. If not provided, uses the name from the code."
+        },
+        description: {
+          type: "string",
+          description: "Workflow description. Longer text is shortened to 255 chars before saving."
+        },
+        versionName: {
+          type: "string",
+          minLength: 1,
+          maxLength: 80,
+          description: `Short summary of this initial version, shown in the workflow's version history (e.g. "Initial Slack notification workflow"). Always provide it.`
+        },
+        versionDescription: {
+          type: "string",
+          maxLength: 1e3,
+          description: "Longer description of what this version does, shown in the version history alongside the version name."
+        },
+        projectId: {
+          type: "string",
+          description: "Project ID to create the workflow in. If the user named a project (e.g. 'in my Marketing project'), you MUST call search_projects first to resolve the name to an ID and pass it here \u2014 do not guess. If search_projects returns multiple partial matches with no exact match, ask the user to clarify before creating the workflow. Only omit this field when the user did not mention a project at all; in that case it defaults to the user's personal project."
+        },
+        folderId: {
+          type: "string",
+          description: "Optional folder ID to create the workflow in. Requires projectId to be set. Use search_folders to find a folder by name within a project; when multiple folders match the name, ask the user which one they meant before creating."
+        }
+      },
+      required: ["code"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "delete_agent",
+    title: "Delete Agent",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: {
+          type: "string",
+          minLength: 1,
+          description: "Agent ID"
+        }
+      },
+      required: ["agentId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "delete_data_table_column",
+    title: "Delete Data Table Column",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        dataTableId: {
+          type: "string",
+          description: "The ID of the data table containing the column"
+        },
+        projectId: {
+          type: "string",
+          description: "The project ID the data table belongs to"
+        },
+        columnId: {
+          type: "string",
+          description: "The ID of the column to delete"
+        }
+      },
+      required: ["dataTableId", "projectId", "columnId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "discover_agent_assets",
+    title: "Discover Agent Assets",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: {
+          type: "string",
+          minLength: 1
+        },
+        kind: {
+          type: "string",
+          enum: ["models", "integrations", "workflows", "subagents", "mcpServers"]
+        },
+        query: {
+          type: "string",
+          minLength: 1,
+          description: "Optional filter for workflows, subagents, or MCP servers"
+        },
+        provider: {
+          type: "string",
+          enum: [
+            "openai",
+            "anthropic",
+            "google",
+            "azure-openai",
+            "aws-bedrock",
+            "xai",
+            "groq",
+            "openrouter",
+            "deepseek",
+            "cohere",
+            "mistral",
+            "vercel",
+            "nvidia",
+            "moonshotai",
+            "alibaba",
+            "minimax"
+          ],
+          description: "Model provider for kind=models; omit to get a provider summary without model lists"
+        },
+        credentialId: {
+          type: "string",
+          minLength: 1,
+          description: "Accessible credential used to verify models for the selected provider"
+        },
+        excludeAgentId: {
+          type: "string",
+          description: "Agent to omit when kind=subagents"
+        }
+      },
+      required: ["projectId", "kind"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "execute_workflow",
+    title: "Execute Workflow",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "The ID of the workflow to execute"
+        },
+        executionMode: {
+          type: "string",
+          enum: ["manual", "production"],
+          description: 'Required execution intent. Use "manual" for testing or validating the current workflow, including tests against live external services. Use "production" only when intentionally running the published workflow as a live execution.'
+        },
+        triggerNodeName: {
+          type: "string",
+          description: "Name of the trigger node to execute. Required when providing inputs. If omitted, the workflow must have exactly one trigger that does not require inputs (Schedule Trigger, or Manual Trigger in manual mode). Use get_workflow_details to see available trigger names."
+        },
+        inputs: {
+          anyOf: [
+            {
+              type: "object",
+              properties: {
+                chatInput: {
+                  type: "string",
+                  description: "Input for chat-based workflows"
+                }
+              },
+              required: ["chatInput"],
+              additionalProperties: false
+            },
+            {
+              type: "object",
+              properties: {
+                formData: {
+                  type: "object",
+                  additionalProperties: {},
+                  description: "Input data for form-based workflows"
+                }
+              },
+              required: ["formData"],
+              additionalProperties: false
+            },
+            {
+              type: "object",
+              properties: {
+                webhookData: {
+                  type: "object",
+                  properties: {
+                    method: {
+                      type: "string",
+                      enum: ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+                      default: "GET",
+                      description: "HTTP method (defaults to GET)"
+                    },
+                    query: {
+                      type: "object",
+                      additionalProperties: {
+                        type: "string"
+                      },
+                      description: "Query string parameters"
+                    },
+                    body: {
+                      type: "object",
+                      additionalProperties: {},
+                      description: "Request body data (main webhook payload)"
+                    },
+                    headers: {
+                      type: "object",
+                      additionalProperties: {
+                        type: "string"
+                      },
+                      description: "HTTP headers (e.g., authorization, content-type)"
+                    }
+                  },
+                  additionalProperties: false,
+                  description: "Input data for webhook-based workflows"
+                }
+              },
+              required: ["webhookData"],
+              additionalProperties: false
+            }
+          ],
+          description: "Trigger payload. Required for webhook, chat, and form triggers. Must be omitted for schedule and manual triggers. Use get_workflow_details to see the expected payload for each trigger."
+        }
+      },
+      required: ["workflowId", "executionMode"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "expand_instance_activity",
+    title: "Expand Instance Activity Entry",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "integer",
+          description: "The entry id, as returned by get_instance_activity."
+        },
+        projectId: {
+          type: "string",
+          minLength: 1,
+          description: "Restrict the lookup to one project. Obtain it from search_projects."
+        }
+      },
+      required: ["id"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "explore_node_resources",
+    title: "Exploring node resources",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        nodeType: {
+          type: "string",
+          description: 'Fully-qualified node type ID from search_nodes / get_node_types, e.g. "n8n-nodes-base.slack".'
+        },
+        version: {
+          type: "number",
+          description: "Node version, e.g. 4.7. Must match a version returned by search_nodes."
+        },
+        methodName: {
+          type: "string",
+          description: "The exact method name from the node's `@searchListMethod` or `@loadOptionsMethod` annotation in the type definition. Call get_node_types first to read the real method name. Do not invent or guess."
+        },
+        methodType: {
+          type: "string",
+          enum: ["listSearch", "loadOptions"],
+          description: '"listSearch" for `@searchListMethod` annotations (supports filter/pagination); "loadOptions" for `@loadOptionsMethod` annotations.'
+        },
+        credentialType: {
+          type: "string",
+          description: 'Credential type key for the node, e.g. "slackApi" or "googleSheetsOAuth2Api".'
+        },
+        credentialId: {
+          type: "string",
+          description: "ID of a credential the user can access, obtained from list_credentials."
+        },
+        filter: {
+          type: "string",
+          description: "Optional search/filter text to narrow results."
+        },
+        paginationToken: {
+          type: "string",
+          description: "Pagination token from a previous call to fetch the next page (listSearch only)."
+        },
+        currentNodeParameters: {
+          type: "object",
+          additionalProperties: {},
+          description: 'Current node parameters for dependent lookups. Some methods require prior selections \u2014 e.g. listing sheets within a spreadsheet needs `{ documentId: { __rl: true, mode: "id", value: "<spreadsheetId>" } }`. Check the type definition\'s displayOptions to know which parameters a method depends on.'
+        }
+      },
+      required: [
+        "nodeType",
+        "version",
+        "methodName",
+        "methodType",
+        "credentialType",
+        "credentialId"
+      ],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_agent",
+    title: "Get Agent",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: {
+          type: "string",
+          minLength: 1,
+          description: "Agent ID"
+        },
+        versionId: {
+          type: "string",
+          minLength: 1,
+          description: "Read a published version snapshot instead of the draft, e.g. the activeVersionId. Snapshots are read-only, so the response has no configHash."
+        }
+      },
+      required: ["agentId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_agent_builder_reference",
+    title: "Get Agent Builder Reference",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_data_table_rows",
+    title: "Get Data Table Rows",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        dataTableId: {
+          type: "string",
+          description: "The ID of the data table to read rows from"
+        },
+        projectId: {
+          type: "string",
+          description: "The project ID the data table belongs to"
+        },
+        filter: {
+          type: "object",
+          properties: {
+            type: {
+              type: "string",
+              enum: ["and", "or"],
+              default: "and",
+              description: "How to combine the filters: all must match (and) or any may match (or)"
+            },
+            filters: {
+              type: "array",
+              minItems: 1,
+              items: {
+                type: "object",
+                properties: {
+                  columnName: {
+                    type: "string",
+                    minLength: 1,
+                    maxLength: 63,
+                    pattern: "^[a-zA-Z][a-zA-Z0-9_]*$",
+                    description: "Column to filter on. System columns 'id', 'createdAt' and 'updatedAt' are also allowed"
+                  },
+                  condition: {
+                    type: "string",
+                    enum: [
+                      "eq",
+                      "neq",
+                      "like",
+                      "ilike",
+                      "gt",
+                      "gte",
+                      "lt",
+                      "lte",
+                      "isEmpty",
+                      "isNotEmpty"
+                    ],
+                    default: "eq",
+                    description: "Comparison operator. 'like' (case-sensitive) and 'ilike' (case-insensitive) match substrings; include % wildcards for custom patterns. 'neq' also matches rows where the column is null"
+                  },
+                  value: {
+                    type: ["string", "number", "boolean", "null"],
+                    description: "Value to compare against. For date columns, pass an ISO 8601 string. Pass null with eq/neq to match rows where the column is null / not null"
+                  }
+                },
+                required: ["columnName", "value"],
+                additionalProperties: false
+              }
+            }
+          },
+          required: ["filters"],
+          additionalProperties: false,
+          description: "Filter conditions to select rows. Omit to return all rows"
+        },
+        sortBy: {
+          type: "string",
+          pattern: "^[^:]+:(asc|desc)$",
+          description: "Sort order as '<columnName>:<asc|desc>', e.g. 'createdAt:desc'"
+        },
+        limit: {
+          type: "integer",
+          maximum: 100,
+          description: "Limit the number of results (max 100)",
+          exclusiveMinimum: 0
+        },
+        skip: {
+          type: "integer",
+          minimum: 0,
+          description: "Number of rows to skip, for paginating through large result sets"
+        }
+      },
+      required: ["dataTableId", "projectId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_instance_activity",
+    title: "Get Instance Activity",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        category: {
+          type: "string",
+          enum: ["workflow", "credential"],
+          description: "Restrict to one kind of entry."
+        },
+        resourceId: {
+          type: "string",
+          minLength: 1,
+          description: "Restrict to one resource, e.g. a single workflow id."
+        },
+        beforeId: {
+          type: "integer",
+          description: "Page backwards \u2014 only entries older than this id."
+        },
+        projectId: {
+          type: "string",
+          minLength: 1,
+          description: "Read one project instead of every project you can see. Obtain it from search_projects. Read-only, so it narrows what you can already see rather than widening it."
+        },
+        limit: {
+          type: "integer",
+          maximum: 100,
+          description: "Limit the number of results (max 100)",
+          exclusiveMinimum: 0
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_instance_context",
+    title: "Get Instance Context",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: {
+          type: "string",
+          minLength: 1,
+          description: "Read one project instead of every project you can see. Obtain it from search_projects."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_node_types",
+    title: "Getting node definitions",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        nodeIds: {
+          type: "array",
+          minItems: 1,
+          description: "Node type requests to get definitions for. Always pass an array of objects, even for a single node. Include discriminators from search_nodes results when available.",
+          items: {
+            type: "object",
+            properties: {
+              nodeId: {
+                type: "string",
+                description: 'The node type ID (e.g. "n8n-nodes-base.gmail")'
+              },
+              version: {
+                type: "string",
+                description: 'Specific version (e.g. "2.1")'
+              },
+              resource: {
+                type: "string",
+                description: 'Resource discriminator (e.g. "message")'
+              },
+              operation: {
+                type: "string",
+                description: 'Operation discriminator (e.g. "send")'
+              },
+              mode: {
+                type: "string",
+                description: "Mode discriminator"
+              }
+            },
+            required: ["nodeId"],
+            additionalProperties: false
+          }
+        }
+      },
+      required: ["nodeIds"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_node_usage",
+    title: "Get Node Usage",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        nodeType: {
+          type: "string",
+          minLength: 1,
+          description: 'Fully qualified node type, e.g. "n8n-nodes-base.httpRequest". Given one, returns the workflows using it. Omitted, returns the histogram of every node type in use.'
+        },
+        projectId: {
+          type: "string",
+          minLength: 1,
+          description: "Read one project instead of every workflow you can see. Obtain it from search_projects."
+        },
+        limit: {
+          type: "integer",
+          maximum: 100,
+          description: "Limit the number of results (max 100)",
+          exclusiveMinimum: 0
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_user_preferences",
+    title: "Get User Preferences",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: {
+          type: "string",
+          minLength: 1,
+          description: "Read one project instead of every project you can see. The instance and personal preferences are always included. Obtain the id from search_projects."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_workflow_best_practices",
+    title: "Getting workflow best practices",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        technique: {
+          type: "string",
+          enum: [
+            "list",
+            "scheduling",
+            "chatbot",
+            "form_input",
+            "scraping_and_research",
+            "monitoring",
+            "enrichment",
+            "triage",
+            "content_generation",
+            "document_processing",
+            "data_extraction",
+            "data_analysis",
+            "data_transformation",
+            "data_persistence",
+            "notification",
+            "knowledge_base",
+            "human_in_the_loop",
+            "web_app"
+          ],
+          description: 'Workflow technique key to fetch best-practices guidance for. Pass "list" to discover all available techniques. One of: list, scheduling, chatbot, form_input, scraping_and_research, monitoring, enrichment, triage, content_generation, document_processing, data_extraction, data_analysis, data_transformation, data_persistence, notification, knowledge_base, human_in_the_loop, web_app.'
+        }
+      },
+      required: ["technique"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_workflow_details",
+    title: "Get Workflow Details",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "The ID of the workflow to retrieve"
+        },
+        detailLevel: {
+          type: "string",
+          enum: ["full", "execution"],
+          default: "full",
+          description: "Level of detail to return. 'full' (default) includes the complete workflow payload. 'execution' returns only the workflow metadata and trigger information needed to run it \u2014 prefer it when the goal is just to execute the workflow via execute_workflow."
+        }
+      },
+      required: ["workflowId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_workflow_execution",
+    title: "Get Workflow Execution",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "The ID of the workflow the execution belongs to"
+        },
+        executionId: {
+          type: "string",
+          description: "The ID of the execution to retrieve"
+        },
+        includeData: {
+          type: "boolean",
+          description: "Whether to include the full execution result data. Defaults to false (metadata only). Set to true to include node inputs/outputs. Use `false` to quickly check execution status"
+        },
+        nodeNames: {
+          type: "array",
+          description: "When includeData is true, return data only for these node names. If omitted, data for all nodes is included.",
+          items: {
+            type: "string"
+          }
+        },
+        truncateData: {
+          type: "integer",
+          description: "When includeData is true, limit the number of data items returned per node output to this value. If omitted, all items are returned.",
+          exclusiveMinimum: 0
+        }
+      },
+      required: ["workflowId", "executionId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_workflow_history",
+    title: "Get Workflow History",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "The ID of the workflow to read version history for"
+        },
+        limit: {
+          type: "integer",
+          maximum: 50,
+          description: "Limit the number of results (max 50)",
+          exclusiveMinimum: 0
+        },
+        offset: {
+          type: "integer",
+          minimum: 0,
+          description: "Number of versions to skip for pagination (default 0)"
+        }
+      },
+      required: ["workflowId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_workflow_sdk_reference",
+    title: "Getting workflow SDK reference",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        section: {
+          type: "string",
+          enum: [
+            "patterns",
+            "patterns_detailed",
+            "expressions",
+            "functions",
+            "rules",
+            "import",
+            "guidelines",
+            "design",
+            "groups",
+            "all"
+          ],
+          description: "Optional section to retrieve. Omit this for the full reference, or use a section for targeted lookup."
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_workflow_version",
+    title: "Get Workflow Version",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "The ID of the workflow the version belongs to"
+        },
+        versionId: {
+          type: "string",
+          description: "The version ID to retrieve, as returned by get_workflow_history"
+        }
+      },
+      required: ["workflowId", "versionId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "get_workflow_versions_diff",
+    title: "Get Workflow Versions Diff",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "The ID of the workflow the versions belong to"
+        },
+        fromVersionId: {
+          type: "string",
+          description: "The base (older) version ID, as returned by get_workflow_history"
+        },
+        toVersionId: {
+          type: "string",
+          description: "The target (newer) version ID, as returned by get_workflow_history"
+        }
+      },
+      required: ["workflowId", "fromVersionId", "toVersionId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "install_community_node",
+    title: "Install Community Node",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        nodeType: {
+          type: "string",
+          minLength: 1,
+          description: 'Full node type of a verified community node reported by search_nodes as not installed, e.g. "@mendable/n8n-nodes-firecrawl.firecrawl". The package that ships it is installed.'
+        }
+      },
+      required: ["nodeType"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "list_agent_versions",
+    title: "List Agent Versions",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: {
+          type: "string",
+          minLength: 1,
+          description: "Agent ID"
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          default: 20
+        },
+        offset: {
+          type: "integer",
+          minimum: 0,
+          default: 0
+        }
+      },
+      required: ["agentId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "list_credentials",
+    title: "List Credentials",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "integer",
+          maximum: 200,
+          description: "Limit the number of results (max 200)",
+          exclusiveMinimum: 0
+        },
+        query: {
+          type: "string",
+          description: "Filter credentials by name (partial match)"
+        },
+        type: {
+          type: "string",
+          description: 'Filter by credential type (e.g. "slackApi", "httpHeaderAuth"). Partial match.'
+        },
+        projectId: {
+          type: "string",
+          description: "Restrict results to credentials belonging to this project"
+        },
+        onlySharedWithMe: {
+          type: "boolean",
+          description: "Only return credentials shared directly with the current user"
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "list_n8n_gateway_services",
+    title: "List services available with Gateway credits",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
+  },
+  {
+    name: "list_workflow_tags",
+    title: "List Workflow Tags",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "integer",
+          maximum: 500,
+          description: "Limit the number of results (max 500)",
+          exclusiveMinimum: 0
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "move_workflows_to_folder",
+    title: "Move Workflows to Folder",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowIds: {
+          type: "array",
+          minItems: 1,
+          maxItems: 20,
+          description: "The IDs of the workflows to move (up to 20 at a time)",
+          items: {
+            type: "string"
+          }
+        },
+        folderId: {
+          type: "string",
+          maxLength: 36,
+          description: 'The ID of the destination folder. It must belong to the project that owns the workflows \u2014 use search_folders to find it by name. Pass "0" to move the workflows to the project root.'
+        }
+      },
+      required: ["workflowIds", "folderId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "mutate_agent",
+    title: "Mutate Agent",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: {
+          type: "string",
+          minLength: 1,
+          description: "Agent ID"
+        },
+        baseConfigHash: {
+          type: "string",
+          minLength: 1,
+          description: "Latest configHash returned by get_agent or a successful mutation"
+        },
+        operation: {
+          anyOf: [
+            {
+              type: "object",
+              properties: {
+                type: {
+                  type: "string",
+                  const: "config.replace"
+                },
+                config: {
+                  type: "object",
+                  additionalProperties: {}
+                }
+              },
+              required: ["type", "config"],
+              additionalProperties: false
+            },
+            {
+              type: "object",
+              properties: {
+                type: {
+                  type: "string",
+                  const: "config.patch"
+                },
+                patch: {
+                  type: "array",
+                  minItems: 1,
+                  items: {
+                    anyOf: [
+                      {
+                        type: "object",
+                        properties: {
+                          op: {
+                            type: "string",
+                            const: "add"
+                          },
+                          path: {
+                            type: "string"
+                          },
+                          value: {
+                            anyOf: [
+                              {
+                                type: "null"
+                              },
+                              {
+                                type: "boolean"
+                              },
+                              {
+                                type: "number"
+                              },
+                              {
+                                type: "string"
+                              },
+                              {
+                                type: "array",
+                                items: {}
+                              },
+                              {
+                                type: "object",
+                                additionalProperties: {}
+                              }
+                            ]
+                          }
+                        },
+                        required: ["op", "path", "value"],
+                        additionalProperties: false
+                      },
+                      {
+                        type: "object",
+                        properties: {
+                          op: {
+                            type: "string",
+                            const: "remove"
+                          },
+                          path: {
+                            type: "string"
+                          }
+                        },
+                        required: ["op", "path"],
+                        additionalProperties: false
+                      },
+                      {
+                        type: "object",
+                        properties: {
+                          op: {
+                            type: "string",
+                            const: "replace"
+                          },
+                          path: {
+                            type: "string"
+                          },
+                          value: {
+                            anyOf: [
+                              {
+                                type: "null"
+                              },
+                              {
+                                type: "boolean"
+                              },
+                              {
+                                type: "number"
+                              },
+                              {
+                                type: "string"
+                              },
+                              {
+                                type: "array",
+                                items: {}
+                              },
+                              {
+                                type: "object",
+                                additionalProperties: {}
+                              }
+                            ]
+                          }
+                        },
+                        required: ["op", "path", "value"],
+                        additionalProperties: false
+                      },
+                      {
+                        type: "object",
+                        properties: {
+                          op: {
+                            type: "string",
+                            const: "move"
+                          },
+                          from: {
+                            type: "string"
+                          },
+                          path: {
+                            type: "string"
+                          }
+                        },
+                        required: ["op", "from", "path"],
+                        additionalProperties: false
+                      },
+                      {
+                        type: "object",
+                        properties: {
+                          op: {
+                            type: "string",
+                            const: "copy"
+                          },
+                          from: {
+                            type: "string"
+                          },
+                          path: {
+                            type: "string"
+                          }
+                        },
+                        required: ["op", "from", "path"],
+                        additionalProperties: false
+                      },
+                      {
+                        type: "object",
+                        properties: {
+                          op: {
+                            type: "string",
+                            const: "test"
+                          },
+                          path: {
+                            type: "string"
+                          },
+                          value: {
+                            anyOf: [
+                              {
+                                type: "null"
+                              },
+                              {
+                                type: "boolean"
+                              },
+                              {
+                                type: "number"
+                              },
+                              {
+                                type: "string"
+                              },
+                              {
+                                type: "array",
+                                items: {}
+                              },
+                              {
+                                type: "object",
+                                additionalProperties: {}
+                              }
+                            ]
+                          }
+                        },
+                        required: ["op", "path", "value"],
+                        additionalProperties: false
+                      }
+                    ]
+                  }
+                }
+              },
+              required: ["type", "patch"],
+              additionalProperties: false
+            },
+            {
+              type: "object",
+              properties: {
+                type: {
+                  type: "string",
+                  const: "skill.upsert"
+                },
+                skillId: {
+                  type: "string"
+                },
+                baseSkillHash: {
+                  type: "string",
+                  description: "skillHashes[skillId] from get_agent; when set, the replace is rejected if the skill changed since"
+                },
+                skill: {
+                  type: "object",
+                  properties: {
+                    name: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: 128
+                    },
+                    description: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: 512
+                    },
+                    instructions: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: 65536
+                    },
+                    allowedTools: {
+                      type: "array",
+                      items: {
+                        type: "string",
+                        minLength: 1
+                      }
+                    },
+                    references: {
+                      type: "array",
+                      maxItems: 20,
+                      items: {
+                        type: "object",
+                        properties: {
+                          path: {
+                            type: "string",
+                            minLength: 1,
+                            maxLength: 512
+                          },
+                          content: {
+                            type: "string",
+                            minLength: 1,
+                            maxLength: 65536
+                          }
+                        },
+                        required: ["path", "content"],
+                        additionalProperties: false
+                      }
+                    },
+                    scripts: {
+                      not: {}
+                    },
+                    templates: {
+                      not: {}
+                    },
+                    assets: {
+                      not: {}
+                    },
+                    examples: {
+                      not: {}
+                    },
+                    other: {
+                      not: {}
+                    }
+                  },
+                  required: ["name", "description", "instructions"],
+                  additionalProperties: false
+                }
+              },
+              required: ["type", "skill"],
+              additionalProperties: false
+            },
+            {
+              type: "object",
+              properties: {
+                type: {
+                  type: "string",
+                  const: "skill.delete"
+                },
+                skillId: {
+                  type: "string",
+                  minLength: 1
+                }
+              },
+              required: ["type", "skillId"],
+              additionalProperties: false
+            },
+            {
+              type: "object",
+              properties: {
+                type: {
+                  type: "string",
+                  const: "task.upsert"
+                },
+                taskId: {
+                  type: "string"
+                },
+                task: {
+                  type: "object",
+                  properties: {
+                    name: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: 128
+                    },
+                    objective: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: 1e4
+                    },
+                    cronExpression: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: 128,
+                      description: 'Standard five-field cron expression, for example "0 9 * * *"'
+                    },
+                    timezone: {
+                      anyOf: [
+                        {
+                          type: "string",
+                          minLength: 1,
+                          maxLength: 50,
+                          pattern: "^[A-Za-z0-9_/+-]+$",
+                          description: 'IANA timezone the cron is evaluated in, for example "Europe/London". Omit to use the instance timezone.'
+                        },
+                        {
+                          type: "null"
+                        }
+                      ],
+                      description: 'IANA timezone the cron is evaluated in, for example "Europe/London". Omit to use the instance timezone.'
+                    }
+                  },
+                  required: ["name", "objective", "cronExpression"],
+                  additionalProperties: false
+                },
+                enabled: {
+                  type: "boolean"
+                }
+              },
+              required: ["type", "task"],
+              additionalProperties: false
+            },
+            {
+              type: "object",
+              properties: {
+                type: {
+                  type: "string",
+                  const: "task.delete"
+                },
+                taskId: {
+                  type: "string",
+                  minLength: 1
+                }
+              },
+              required: ["type", "taskId"],
+              additionalProperties: false
+            },
+            {
+              type: "object",
+              properties: {
+                type: {
+                  type: "string",
+                  const: "customTool.upsert"
+                },
+                code: {
+                  type: "string",
+                  minLength: 1
+                }
+              },
+              required: ["type", "code"],
+              additionalProperties: false
+            },
+            {
+              type: "object",
+              properties: {
+                type: {
+                  type: "string",
+                  const: "customTool.delete"
+                },
+                toolId: {
+                  type: "string",
+                  minLength: 1
+                }
+              },
+              required: ["type", "toolId"],
+              additionalProperties: false
+            }
+          ]
+        }
+      },
+      required: ["agentId", "baseConfigHash", "operation"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "prepare_workflow_pin_data",
+    title: "Prepare Workflow Pin Data",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "The ID of the workflow to generate test pin data for"
+        }
+      },
+      required: ["workflowId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "publish_agent",
+    title: "Publish Agent",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: {
+          type: "string",
+          minLength: 1,
+          description: "Agent ID"
+        },
+        versionId: {
+          type: "string",
+          minLength: 1,
+          description: "Republish a previously published version instead of the current draft. The draft is left untouched."
+        }
+      },
+      required: ["agentId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "publish_workflow",
+    title: "Publish Workflow",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "The ID of the workflow to publish"
+        },
+        versionId: {
+          type: "string",
+          description: "Optional version ID to publish. If not provided, publishes the current draft version."
+        }
+      },
+      required: ["workflowId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "rename_data_table",
+    title: "Rename Data Table",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        dataTableId: {
+          type: "string",
+          description: "The ID of the data table to rename"
+        },
+        projectId: {
+          type: "string",
+          description: "The project ID the data table belongs to"
+        },
+        name: {
+          type: "string",
+          minLength: 1,
+          maxLength: 128,
+          description: "The new name for the data table"
+        }
+      },
+      required: ["dataTableId", "projectId", "name"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "rename_data_table_column",
+    title: "Rename Data Table Column",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        dataTableId: {
+          type: "string",
+          description: "The ID of the data table containing the column"
+        },
+        projectId: {
+          type: "string",
+          description: "The project ID the data table belongs to"
+        },
+        columnId: {
+          type: "string",
+          description: "The ID of the column to rename"
+        },
+        name: {
+          type: "string",
+          minLength: 1,
+          maxLength: 63,
+          pattern: "^[a-zA-Z][a-zA-Z0-9_]*$",
+          description: "The new column name"
+        }
+      },
+      required: ["dataTableId", "projectId", "columnId", "name"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "restore_workflow_version",
+    title: "Restore Workflow Version",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "The ID of the workflow to restore"
+        },
+        versionId: {
+          type: "string",
+          description: "The version ID to restore, as returned by get_workflow_history"
+        }
+      },
+      required: ["workflowId", "versionId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "revert_agent",
+    title: "Revert Agent",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: {
+          type: "string",
+          minLength: 1,
+          description: "Agent ID"
+        },
+        versionId: {
+          type: "string",
+          minLength: 1,
+          description: "Published version to restore the draft from; defaults to the currently published version"
+        }
+      },
+      required: ["agentId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "search_agents",
+    title: "Search Agents",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: {
+          type: "string",
+          minLength: 1,
+          description: "Restrict results to one project"
+        },
+        query: {
+          type: "string",
+          description: "Filter by Agent name"
+        },
+        publishedOnly: {
+          type: "boolean",
+          default: false
+        },
+        excludeAgentId: {
+          type: "string",
+          description: "Agent ID to omit, useful for sub-agent search"
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          default: 50
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "search_data_tables",
+    title: "Search Data Tables",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Filter data tables by name (case-insensitive partial match)"
+        },
+        projectId: {
+          type: "string",
+          description: "Filter by project ID"
+        },
+        limit: {
+          type: "integer",
+          maximum: 100,
+          description: "Limit the number of results (max 100)",
+          exclusiveMinimum: 0
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "search_folders",
+    title: "Search Folders",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: {
+          type: "string",
+          description: "The ID of the project to search folders in"
+        },
+        query: {
+          type: "string",
+          description: "Filter folders by name (case-insensitive partial match)"
+        },
+        limit: {
+          type: "integer",
+          maximum: 100,
+          description: "Limit the number of results (max 100)",
+          exclusiveMinimum: 0
+        }
+      },
+      required: ["projectId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "search_nodes",
+    title: "Searching nodes",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        queries: {
+          type: "array",
+          minItems: 1,
+          description: 'Search queries for n8n nodes \u2014 service names (e.g. "gmail", "slack"), trigger types (e.g. "schedule trigger", "webhook"), or utility nodes (e.g. "set", "if", "merge", "code")',
+          items: {
+            type: "string"
+          }
+        },
+        usage: {
+          type: "string",
+          enum: ["workflow", "agentTool"],
+          description: "Use agentTool to return only nodes that can be configured as Agent tools; defaults to workflow"
+        }
+      },
+      required: ["queries"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "search_projects",
+    title: "Search Projects",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Filter projects by name (case-insensitive partial match). Pass the exact project name the user mentioned \u2014 results are ranked with exact case-insensitive matches first, then partial matches."
+        },
+        type: {
+          type: "string",
+          enum: ["personal", "team"],
+          description: "Filter by project type. 'team' for shared team projects, 'personal' for personal projects."
+        },
+        limit: {
+          type: "integer",
+          maximum: 100,
+          description: "Limit the number of results (max 100)",
+          exclusiveMinimum: 0
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "search_workflow_executions",
+    title: "Search Workflow Executions",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "Filter executions by workflow ID"
+        },
+        status: {
+          type: "array",
+          description: "Filter by execution status(es)",
+          items: {
+            type: "string",
+            enum: [
+              "canceled",
+              "crashed",
+              "error",
+              "new",
+              "running",
+              "success",
+              "unknown",
+              "waiting"
+            ]
+          }
+        },
+        startedAfter: {
+          type: "string",
+          format: "date-time",
+          description: "ISO 8601 timestamp \u2014 only return executions that started after this time"
+        },
+        startedBefore: {
+          type: "string",
+          format: "date-time",
+          description: "ISO 8601 timestamp \u2014 only return executions that started before this time"
+        },
+        limit: {
+          type: "integer",
+          maximum: 200,
+          description: "Limit the number of results (max 200)",
+          exclusiveMinimum: 0
+        },
+        cursor: {
+          type: "string",
+          description: "Cursor for pagination \u2014 pass the `nextCursor` from the previous page. Treat it as opaque"
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "search_workflows",
+    title: "Search Workflows",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "integer",
+          maximum: 200,
+          description: "Limit the number of results (max 200)",
+          exclusiveMinimum: 0
+        },
+        query: {
+          type: "string",
+          description: "Filter by name or description"
+        },
+        projectId: {
+          type: "string"
+        },
+        tags: {
+          type: "array",
+          description: "Filter by tag names (AND semantics \u2014 workflow must have all).",
+          items: {
+            type: "string"
+          }
+        },
+        sortBy: {
+          type: "string",
+          enum: [
+            "updatedAt:desc",
+            "updatedAt:asc",
+            "createdAt:desc",
+            "createdAt:asc",
+            "name:asc",
+            "name:desc"
+          ],
+          description: "Sort order for results (default: updatedAt:desc). Use updatedAt:desc to find the most recently edited workflows first."
+        },
+        folderId: {
+          type: "string",
+          maxLength: 36,
+          description: `Filter by folder. Pass a parentFolderId from an earlier result to find a workflow's siblings, or \u2014 when search_folders is available \u2014 use it to resolve a folder name to an id first. Pass "0" for workflows that sit at the project root rather than in a folder.`
+        },
+        includeSubfolders: {
+          type: "boolean",
+          description: `Whether a folderId search also covers that folder's subfolders (default: true). Set false to match only workflows directly inside the folder. Ignored when folderId is "0", which always matches the project root only.`
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "test_workflow",
+    title: "Test Workflow",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "The ID of the workflow to test"
+        },
+        pinData: {
+          type: "object",
+          additionalProperties: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: {}
+            }
+          },
+          description: 'Pin data for all workflow nodes. Use the prepare_workflow_pin_data tool to generate this. Keys are node names, values are arrays of items. Each item MUST be wrapped in a "json" property, e.g. [{"json": {"id": "123", "name": "test"}}]. Do NOT pass flat objects like [{"id": "123"}].'
+        },
+        triggerNodeName: {
+          type: "string",
+          description: "Optional name of the trigger node to start execution from. Useful for workflows with multiple triggers. Defaults to the first trigger node found."
+        },
+        timeout: {
+          type: "integer",
+          maximum: 3600,
+          description: "Optional timeout in seconds before the test execution is interrupted. Defaults to 300 seconds. Increase this to test workflows that take longer to run.",
+          exclusiveMinimum: 0
+        }
+      },
+      required: ["workflowId", "pinData"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "unpublish_agent",
+    title: "Unpublish Agent",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: {
+          type: "string",
+          minLength: 1,
+          description: "Agent ID"
+        }
+      },
+      required: ["agentId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "unpublish_workflow",
+    title: "Unpublish Workflow",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "The ID of the workflow to unpublish"
+        }
+      },
+      required: ["workflowId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "update_agent_integration",
+    title: "Update Agent Integration",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: {
+          type: "string",
+          minLength: 1,
+          description: "Agent ID"
+        },
+        action: {
+          type: "string",
+          enum: ["connect", "disconnect"]
+        },
+        type: {
+          type: "string",
+          minLength: 1,
+          description: "Integration type returned by discover_agent_assets"
+        },
+        credentialId: {
+          type: "string",
+          minLength: 1,
+          description: "Accessible credential for this integration"
+        },
+        settings: {
+          type: "object",
+          additionalProperties: {},
+          description: "Integration settings; required for Telegram connect operations"
+        },
+        replacesCredentialId: {
+          type: "string",
+          minLength: 1,
+          description: "On connect, the credential of the same type this one takes over from. Swaps both in one operation instead of a separate disconnect"
+        }
+      },
+      required: ["agentId", "action", "type", "credentialId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "update_folder",
+    title: "Update Folder",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: {
+          type: "string",
+          description: "The ID of the project the folder belongs to. Use search_projects to resolve a project name to an ID."
+        },
+        folderId: {
+          type: "string",
+          maxLength: 36,
+          description: "The ID of the folder to update. Use search_folders to find it by name."
+        },
+        name: {
+          allOf: [
+            {
+              type: "string"
+            },
+            {
+              type: "string",
+              maxLength: 128
+            }
+          ],
+          description: "New name for the folder (rename)"
+        },
+        parentFolderId: {
+          type: "string",
+          maxLength: 36,
+          description: 'New parent folder ID to move the folder under. Must belong to the same project and must not be a descendant of the folder being moved. Pass "0" to move the folder to the project root. Omit to leave the folder where it is.'
+        }
+      },
+      required: ["projectId", "folderId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "update_workflow",
+    title: "Updating workflow",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflowId: {
+          type: "string",
+          description: "The ID of the workflow to update."
+        },
+        skillsUsed: {
+          type: "array",
+          description: 'IDs of n8n skills used to prepare this call, e.g. "workflow-builder". An optional plugin prefix is allowed, e.g. "n8n-skills:workflow-builder". Entries are normalized server-side (trimmed, lowercased, deduped); invalid identifiers are dropped.',
+          items: {
+            type: "string"
+          }
+        },
+        operations: {
+          type: "array",
+          minItems: 1,
+          maxItems: 100,
+          description: "Ordered operations to apply atomically (max 100). If any op fails, nothing is saved \u2014 except node-group operations (setNodeGroups, addNodeGroup, removeNodeGroup, updateNodeGroup): an invalid one is skipped and reported in skippedOperations, while the rest of the batch still saves. An existing group that these ops leave invalid is removed and reported in removedGroups.",
+          items: {
+            type: "object",
+            properties: {
+              type: {
+                type: "string",
+                enum: [
+                  "updateNodeParameters",
+                  "setNodeParameter",
+                  "addNode",
+                  "removeNode",
+                  "renameNode",
+                  "addConnection",
+                  "removeConnection",
+                  "setNodeCredential",
+                  "setNodePosition",
+                  "setNodeDisabled",
+                  "setNodeSettings",
+                  "setWorkflowMetadata",
+                  "setWorkflowSettings",
+                  "addTags",
+                  "removeTags",
+                  "setNodeGroups",
+                  "addNodeGroup",
+                  "removeNodeGroup",
+                  "updateNodeGroup"
+                ],
+                description: "Operation type."
+              },
+              nodeName: {
+                type: "string",
+                description: "For node-targeted ops."
+              },
+              node: {
+                type: "object",
+                properties: {
+                  name: {
+                    type: "string",
+                    description: "Unique node name."
+                  },
+                  type: {
+                    type: "string",
+                    description: 'Node type, e.g. "n8n-nodes-base.set".'
+                  },
+                  typeVersion: {
+                    type: "number"
+                  },
+                  parameters: {
+                    type: "object",
+                    additionalProperties: {}
+                  },
+                  position: {
+                    type: "array",
+                    minItems: 2,
+                    maxItems: 2,
+                    description: "Canvas [x, y].",
+                    items: {
+                      type: "number"
+                    }
+                  },
+                  credentials: {
+                    type: "object",
+                    additionalProperties: {
+                      type: "object",
+                      properties: {
+                        id: {
+                          type: "string"
+                        },
+                        name: {
+                          type: "string"
+                        }
+                      },
+                      required: ["name"],
+                      additionalProperties: false
+                    }
+                  },
+                  disabled: {
+                    type: "boolean"
+                  },
+                  notes: {
+                    type: "string"
+                  },
+                  id: {
+                    type: "string"
+                  }
+                },
+                required: ["name", "type", "typeVersion"],
+                additionalProperties: false,
+                description: "For addNode."
+              },
+              parameters: {
+                type: "object",
+                additionalProperties: {},
+                description: "For updateNodeParameters."
+              },
+              replace: {
+                type: "boolean",
+                description: "For updateNodeParameters; default false."
+              },
+              path: {
+                type: "string",
+                minLength: 2,
+                description: "For setNodeParameter; JSON Pointer path."
+              },
+              value: {
+                description: "For setNodeParameter."
+              },
+              oldName: {
+                type: "string",
+                description: "For renameNode."
+              },
+              newName: {
+                type: "string",
+                description: "For renameNode or updateNodeGroup."
+              },
+              source: {
+                type: "string",
+                description: "For connection ops."
+              },
+              target: {
+                type: "string",
+                description: "For connection ops."
+              },
+              sourceIndex: {
+                type: "integer",
+                minimum: 0,
+                description: 'For connection ops; which output of the source node the connection starts from. Default 0, the first output. Use it to wire a branch: on an If node the false branch is index 1, and onError "continueErrorOutput" appends an error output after the regular ones (index 1 on a single-output node such as HTTP Request, index 2 on an If node). This is the only field that selects an output.'
+              },
+              targetIndex: {
+                type: "integer",
+                minimum: 0,
+                description: "For connection ops; which input of the target node the connection ends at. Default 0."
+              },
+              connectionType: {
+                type: "string",
+                description: 'For connection ops; default "main".'
+              },
+              credentialKey: {
+                type: "string",
+                description: "For setNodeCredential."
+              },
+              credentialId: {
+                type: "string",
+                description: "For setNodeCredential."
+              },
+              credentialName: {
+                type: "string",
+                description: "For setNodeCredential."
+              },
+              position: {
+                type: "array",
+                minItems: 2,
+                maxItems: 2,
+                description: "For setNodePosition.",
+                items: {
+                  type: "number"
+                }
+              },
+              disabled: {
+                type: "boolean",
+                description: "For setNodeDisabled."
+              },
+              settings: {
+                type: "object",
+                properties: {
+                  onError: {
+                    type: "string",
+                    enum: ["stopWorkflow", "continueRegularOutput", "continueErrorOutput"],
+                    description: `Error behavior. "continueErrorOutput" appends an error output after the node's regular outputs \u2014 index 1 on a single-output node such as HTTP Request. Wire that branch with an addConnection operation whose sourceIndex is that index.`
+                  },
+                  retryOnFail: {
+                    type: "boolean"
+                  },
+                  maxTries: {
+                    type: "integer",
+                    minimum: 2,
+                    maximum: 5
+                  },
+                  waitBetweenTries: {
+                    type: "integer",
+                    minimum: 0,
+                    maximum: 5e3
+                  },
+                  alwaysOutputData: {
+                    type: "boolean"
+                  },
+                  executeOnce: {
+                    type: "boolean"
+                  },
+                  errorWorkflow: {
+                    type: "string",
+                    description: 'ID of a SEPARATE workflow to run whenever THIS workflow fails \u2014 the common best-practice way to send failure alerts (email, Slack, etc.) or log errors via a shared, reusable handler. The referenced workflow must contain an Error Trigger node; find its ID with search_workflows. Pass "DEFAULT" to clear it. There are two ways to handle failures: (a) a dedicated/shared error workflow set here, or (b) an Error Trigger node placed directly inside THIS workflow (n8n fires it automatically on failure, no setting needed). When the user asks for error handling, ask which pattern they prefer before choosing. When errorWorkflow is set, it takes precedence over a same-workflow Error Trigger for the failing run. Failure handling fires for production executions only, not manual/test runs. Distinct from per-node onError/retry (setNodeSettings).'
+                  },
+                  timezone: {
+                    type: "string",
+                    description: 'IANA timezone used by Schedule Triggers and date/time operations, e.g. "America/New_York". Pass "DEFAULT" to inherit the instance timezone.'
+                  },
+                  executionOrder: {
+                    type: "string",
+                    enum: ["v0", "v1"],
+                    description: 'Node execution order. "v1" is the default for new workflows; "v0" is legacy.'
+                  },
+                  saveExecutionProgress: {
+                    anyOf: [
+                      {
+                        type: "boolean"
+                      },
+                      {
+                        type: "string",
+                        const: "DEFAULT"
+                      }
+                    ],
+                    description: "Save execution data after each node finishes. Allows resuming/inspecting partial runs at the cost of speed."
+                  },
+                  saveManualExecutions: {
+                    anyOf: [
+                      {
+                        type: "boolean"
+                      },
+                      {
+                        type: "string",
+                        const: "DEFAULT"
+                      }
+                    ],
+                    description: "Whether manual (test) executions are saved to the execution list."
+                  },
+                  saveDataErrorExecution: {
+                    type: "string",
+                    enum: ["DEFAULT", "all", "none"],
+                    description: "Whether to store execution data for failed runs."
+                  },
+                  saveDataSuccessExecution: {
+                    type: "string",
+                    enum: ["DEFAULT", "all", "none"],
+                    description: "Whether to store execution data for successful runs."
+                  },
+                  executionTimeout: {
+                    type: "integer",
+                    description: "Maximum execution time in seconds before a run is stopped. Use a positive number of seconds (not exceeding the instance maximum, enforced server-side), or -1 for unlimited (no timeout)."
+                  },
+                  timeSavedPerExecution: {
+                    type: "integer",
+                    minimum: 0,
+                    description: "Estimated time saved per execution, in minutes (used for insights/reporting)."
+                  },
+                  callerPolicy: {
+                    type: "string",
+                    enum: ["any", "none", "workflowsFromAList", "workflowsFromSameOwner"],
+                    description: 'Which workflows may call this one via the Execute Sub-workflow node. Defaults to "workflowsFromSameOwner". Do not choose "any": it is deprecated and removed in version 3. Use "workflowsFromAList" with callerIds, or "workflowsFromSameOwner".'
+                  },
+                  callerIds: {
+                    type: "string",
+                    description: 'Comma-separated workflow IDs allowed to call this workflow (only used with callerPolicy "workflowsFromAList").'
+                  }
+                },
+                additionalProperties: false,
+                description: "For setNodeSettings or setWorkflowSettings."
+              },
+              name: {
+                type: "string",
+                maxLength: 128,
+                description: "For setWorkflowMetadata (workflow name) or addNodeGroup (group name)."
+              },
+              description: {
+                type: "string",
+                maxLength: 255,
+                description: "For setWorkflowMetadata, addNodeGroup, or updateNodeGroup."
+              },
+              names: {
+                type: "array",
+                description: "For addTags / removeTags.",
+                items: {
+                  type: "string"
+                }
+              },
+              nodeGroups: {
+                type: "array",
+                description: "For setNodeGroups. Replaces all node groups; pass [] to clear. Group members are node names, not ids.",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: {
+                      type: "string"
+                    },
+                    name: {
+                      type: "string"
+                    },
+                    nodeNames: {
+                      type: "array",
+                      items: {
+                        type: "string"
+                      }
+                    },
+                    description: {
+                      type: "string"
+                    }
+                  },
+                  required: ["name", "nodeNames"],
+                  additionalProperties: false
+                }
+              },
+              groupName: {
+                type: "string",
+                description: "For removeNodeGroup / updateNodeGroup."
+              },
+              nodeNames: {
+                type: "array",
+                description: "For addNodeGroup / updateNodeGroup; group member node names.",
+                items: {
+                  type: "string"
+                }
+              },
+              id: {
+                type: "string",
+                description: "For addNodeGroup; group id, generated if omitted."
+              }
+            },
+            required: ["type"],
+            additionalProperties: false,
+            description: "Workflow update operation. Provide fields matching type."
+          }
+        },
+        versionName: {
+          type: "string",
+          minLength: 1,
+          maxLength: 80,
+          description: `Short summary of what this update changes, shown in the workflow's version history (e.g. "Added Slack notification after HTTP request"). Always provide it.`
+        },
+        versionDescription: {
+          type: "string",
+          maxLength: 1e3,
+          description: "Longer description of what changed and why, shown in the version history alongside the version name."
+        }
+      },
+      required: ["workflowId", "operations"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "validate_agent",
+    title: "Validate Agent",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        agentId: {
+          type: "string",
+          minLength: 1,
+          description: "Agent ID"
+        }
+      },
+      required: ["agentId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "validate_node_config",
+    title: "Validating node config",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        nodes: {
+          type: "array",
+          minItems: 1,
+          maxItems: 50,
+          description: "One or more node configurations to validate independently.",
+          items: {
+            type: "object",
+            properties: {
+              name: {
+                type: "string",
+                description: "Optional node name. Echoed back in the result so callers can correlate."
+              },
+              type: {
+                type: "string",
+                description: 'Full node type, e.g. "n8n-nodes-base.set" or "@n8n/n8n-nodes-langchain.agent".'
+              },
+              typeVersion: {
+                type: "number",
+                default: 1,
+                description: "Node type version. Defaults to 1.",
+                exclusiveMinimum: 0
+              },
+              parameters: {
+                type: "object",
+                additionalProperties: {},
+                default: {},
+                description: "Node parameters object \u2014 same shape as workflow JSON."
+              },
+              subnodes: {
+                description: "Optional subnode config for AI parent nodes (e.g. langchain agent): `{ model, memory, tools: [...] }` of `{ type, version }` refs."
+              },
+              isToolNode: {
+                type: "boolean",
+                description: "Set to true when validating a node that is wired as an AI tool subnode (ai_tool connection). Adjusts which displayOptions branch is evaluated."
+              }
+            },
+            required: ["type"],
+            additionalProperties: false
+          }
+        }
+      },
+      required: ["nodes"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "validate_workflow",
+    title: "Validating workflow",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        code: {
+          type: "string",
+          maxLength: 3e5,
+          description: "Full TypeScript/JavaScript workflow code using the n8n Workflow SDK. Must include the workflow export. Max 300000 characters."
+        }
+      },
+      required: ["code"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "verify_agent_mcp_server",
+    title: "Verify Agent MCP Server",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: {
+          type: "string",
+          minLength: 1
+        },
+        name: {
+          type: "string",
+          minLength: 1,
+          maxLength: 64,
+          pattern: "^[a-zA-Z0-9_-]+$"
+        },
+        url: {
+          anyOf: [
+            {
+              type: "string",
+              format: "uri"
+            },
+            {
+              type: "string",
+              pattern: "^\\="
+            }
+          ],
+          description: "HTTP(S) MCP server endpoint, or a registry `$self`-expression when metadata.nodeTypeName is set"
+        },
+        transport: {
+          type: "string",
+          enum: ["sse", "streamableHttp"],
+          default: "streamableHttp"
+        },
+        authentication: {
+          anyOf: [
+            {
+              type: "string",
+              enum: ["none", "bearerAuth", "headerAuth", "multipleHeadersAuth", "mcpOAuth2Api"]
+            },
+            {
+              type: "string",
+              pattern: "^(?:oAuth2Api|.*OAuth2(?:Api)?)$"
+            }
+          ],
+          default: "none",
+          description: "Authentication method; every value other than none requires credential"
+        },
+        credential: {
+          type: "string",
+          minLength: 1,
+          description: "Accessible credential ID; required when authentication is not none"
+        },
+        metadata: {
+          type: "object",
+          properties: {
+            nodeTypeName: {
+              type: "string"
+            }
+          },
+          additionalProperties: false
+        },
+        connectionTimeoutMs: {
+          type: "integer",
+          minimum: 1,
+          maximum: 12e4
+        }
+      },
+      required: ["projectId", "name", "url"],
+      additionalProperties: false
+    }
+  }
+];
+
 // src/N8nProvider.ts
 var N8N_PROVIDER_ID = "n8n";
 var N8N_SECRET_SUFFIX = "oauth";
@@ -6179,11 +10381,13 @@ var MAX_SESSION_ID_CHARS = 1024;
 var MAX_INPUT_BYTES = 2 * 1024 * 1024;
 var MAX_JSON_DEPTH = 32;
 var MAX_JSON_NODES = 1e5;
-var MAX_MCP_PAGES = 4;
-var MAX_MCP_TOOLS = 64;
+var MAX_MCP_PAGES = 8;
+var MAX_MCP_TOOLS = 256;
 var encoder2 = new TextEncoder();
 var decoder = new TextDecoder("utf-8", { fatal: true });
 var READ_OAUTH_SCOPES = [
+  "agent:read",
+  "aiPreference:read",
   "credential:read",
   "dataTable:read",
   "execution:read",
@@ -6192,6 +10396,9 @@ var READ_OAUTH_SCOPES = [
   "workflow:read"
 ];
 var WRITE_OAUTH_SCOPES = [
+  "agent:execute",
+  "agent:write",
+  "communityPackage:install",
   "dataTable:write",
   "project:write",
   "workflow:execute",
@@ -6199,6 +10406,9 @@ var WRITE_OAUTH_SCOPES = [
 ];
 var OAUTH_SCOPES = [...READ_OAUTH_SCOPES, ...WRITE_OAUTH_SCOPES];
 var OAUTH_SCOPE_SET = new Set(OAUTH_SCOPES);
+var READ_OAUTH_SCOPE_SET = new Set(READ_OAUTH_SCOPES);
+var WRITE_OAUTH_SCOPE_SET = new Set(WRITE_OAUTH_SCOPES);
+var MAX_ADVERTISED_SCOPES = 256;
 var CAPABILITIES = ["read", "write"];
 var CAPABILITY_SET = new Set(CAPABILITIES);
 var BoundedId = String4.check(
@@ -6207,7 +10417,7 @@ var BoundedId = String4.check(
   isPattern2(/^[^\p{Cc}\s]+$/u)
 );
 var BoundedText = String4.check(isMinLength(1), isMaxLength(512));
-var Code = String4.check(isMinLength(1), isMaxLength(1e6));
+var Code = String4.check(isMinLength(1), isMaxLength(3e5));
 var OptionalQuery = optionalKey2(
   String4.check(isMinLength(1), isMaxLength(512))
 );
@@ -6228,9 +10438,6 @@ var OptionalLimit200 = optionalKey2(
 var JsonObject = Record(
   String4.check(isMinLength(1), isMaxLength(256)),
   Unknown2
-);
-var EmptyInput = Record(String4, Unknown2).pipe(
-  check(makeFilter2((input) => Object.keys(input).length === 0))
 );
 var SearchWorkflowsInput = Struct({
   query: OptionalQuery,
@@ -6341,7 +10548,7 @@ var SearchExecutionsInput = Struct({
     String4.check(isMinLength(20), isMaxLength(64))
   ),
   limit: OptionalLimit200,
-  lastId: optionalKey2(BoundedId)
+  cursor: optionalKey2(String4.check(isMinLength(1), isMaxLength(4096)))
 });
 var ListCredentialsInput = Struct({
   limit: OptionalLimit200,
@@ -6641,7 +10848,7 @@ function reviewedTool(upstreamName, description, input, capability, options = {}
     openWorld: options.openWorld ?? false
   };
 }
-var REVIEWED_TOOLS = [
+var HAND_REVIEWED_TOOLS = [
   reviewedTool(
     "search_workflows",
     "Search workflow previews visible to the connected n8n user.",
@@ -6732,8 +10939,8 @@ var REVIEWED_TOOLS = [
     "read"
   ),
   reviewedTool(
-    "list_n8n_connect_services",
-    "List n8n Connect managed-credential coverage without credential values.",
+    "list_n8n_gateway_services",
+    "List n8n Gateway managed-credential coverage without credential values.",
     EmptyInput,
     "read"
   ),
@@ -6855,6 +11062,127 @@ var REVIEWED_TOOLS = [
     { readOnly: false, idempotent: false }
   )
 ];
+var UPSTREAM_TOOL_BY_NAME = new Map(UPSTREAM_TOOLS.map((tool) => [tool.name, tool]));
+function upstreamTool(upstreamName, description, capability) {
+  const upstream = UPSTREAM_TOOL_BY_NAME.get(upstreamName);
+  if (!upstream) throw new Error(`n8n upstream tool ${upstreamName} is not in the pinned catalog.`);
+  return reviewedTool(
+    upstreamName,
+    description,
+    decoderFromJsonSchema(upstream.inputSchema, upstreamName),
+    capability,
+    {
+      readOnly: upstream.annotations.readOnlyHint,
+      destructive: upstream.annotations.destructiveHint,
+      idempotent: upstream.annotations.idempotentHint,
+      openWorld: upstream.annotations.openWorldHint
+    }
+  );
+}
+var UPSTREAM_REVIEWED_TOOLS = [
+  upstreamTool(
+    "get_workflow_versions_diff",
+    "Compare two saved versions of one accessible workflow.",
+    "read"
+  ),
+  upstreamTool(
+    "move_workflows_to_folder",
+    "Move accessible workflows into a folder or to the project root.",
+    "write"
+  ),
+  upstreamTool("create_folder", "Create a folder in an accessible project.", "write"),
+  upstreamTool("update_folder", "Rename a folder or move it within its project.", "write"),
+  upstreamTool(
+    "get_data_table_rows",
+    "Read filtered, sorted, and paginated rows from an accessible data table.",
+    "read"
+  ),
+  upstreamTool(
+    "get_instance_context",
+    "Read an overview of accessible workflows, recent changes, and recent runs.",
+    "read"
+  ),
+  upstreamTool(
+    "get_instance_activity",
+    "Read the activity log of recent workflow and credential changes.",
+    "read"
+  ),
+  upstreamTool(
+    "expand_instance_activity",
+    "Open one activity log entry with the related history of its resource.",
+    "read"
+  ),
+  upstreamTool("get_node_usage", "Read which node types accessible workflows already use.", "read"),
+  upstreamTool(
+    "get_user_preferences",
+    "Read saved instance, personal, and project building preferences.",
+    "read"
+  ),
+  upstreamTool(
+    "install_community_node",
+    "Install a verified community node package onto the n8n instance.",
+    "write"
+  ),
+  upstreamTool("search_agents", "Search n8n Agents visible to the connected user.", "read"),
+  upstreamTool(
+    "get_agent",
+    "Read one Agent draft or published version, including its configHash.",
+    "read"
+  ),
+  upstreamTool("list_agent_versions", "List the publish history of one Agent.", "read"),
+  upstreamTool(
+    "discover_agent_assets",
+    "Discover models, integrations, workflows, sub-agents, or MCP servers for an Agent.",
+    "read"
+  ),
+  upstreamTool(
+    "validate_agent",
+    "Validate an Agent draft and its references without saving.",
+    "read"
+  ),
+  upstreamTool(
+    "get_agent_builder_reference",
+    "Read the n8n Agent configuration and mutation reference.",
+    "read"
+  ),
+  upstreamTool(
+    "verify_agent_mcp_server",
+    "Test an MCP server with an accessible credential and list its tools.",
+    "write"
+  ),
+  upstreamTool("create_agent", "Create an n8n Agent draft.", "write"),
+  upstreamTool(
+    "mutate_agent",
+    "Apply one configuration, skill, task, or custom-tool change to an Agent draft.",
+    "write"
+  ),
+  upstreamTool("revert_agent", "Restore an Agent draft from a published version.", "write"),
+  upstreamTool("delete_agent", "Permanently delete an Agent and its resources.", "write"),
+  upstreamTool(
+    "publish_agent",
+    "Publish an Agent draft, or republish one of its earlier versions.",
+    "write"
+  ),
+  upstreamTool(
+    "unpublish_agent",
+    "Unpublish an Agent and stop its live tasks and integrations.",
+    "write"
+  ),
+  upstreamTool(
+    "update_agent_integration",
+    "Connect or disconnect an Agent's Slack, Telegram, or Linear integration.",
+    "write"
+  ),
+  upstreamTool(
+    "call_agent",
+    "Chat with an Agent draft through Preview, using its real tools and credentials.",
+    "write"
+  )
+];
+var REVIEWED_TOOLS = [
+  ...HAND_REVIEWED_TOOLS,
+  ...UPSTREAM_REVIEWED_TOOLS
+];
 var N8N_TOOLS = REVIEWED_TOOLS;
 function asRecord(value, label = "n8n response") {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -6874,11 +11202,11 @@ function boundedInteger(value, minimum, maximum, label) {
   }
   return value;
 }
-function exactStringSet(value, expected, label) {
-  if (!Array.isArray(value) || value.length !== expected.size || value.some((entry) => typeof entry !== "string" || !expected.has(entry)) || new Set(value).size !== value.length) {
-    throw new Error(`${label} drifted from the reviewed contract.`);
+function advertisedScopes(value, label) {
+  if (!Array.isArray(value) || value.length > MAX_ADVERTISED_SCOPES || value.some((entry) => typeof entry !== "string" || entry.length === 0 || entry.length > 128)) {
+    throw new Error(`${label} is invalid.`);
   }
-  return [...value].toSorted();
+  return new Set(value);
 }
 function validateServerUrl(value) {
   const normalized = value.trim();
@@ -6914,14 +11242,10 @@ function parseScopes(value, label = "n8n OAuth scope grant", allowedScopes = OAU
   return [...values].toSorted();
 }
 function capabilitiesFromScopes(scopes) {
-  const granted = new Set(scopes);
-  if (granted.size === OAUTH_SCOPES.length && OAUTH_SCOPES.every((scope2) => granted.has(scope2))) {
-    return ["read", "write"];
-  }
-  if (granted.size === READ_OAUTH_SCOPES.length && READ_OAUTH_SCOPES.every((scope2) => granted.has(scope2))) {
-    return ["read"];
-  }
-  return [];
+  const capabilities = [];
+  if (scopes.some((scope2) => READ_OAUTH_SCOPE_SET.has(scope2))) capabilities.push("read");
+  if (scopes.some((scope2) => WRITE_OAUTH_SCOPE_SET.has(scope2))) capabilities.push("write");
+  return capabilities;
 }
 function scopesForCapabilities(capabilities) {
   const selected = new Set(capabilities);
@@ -6956,7 +11280,7 @@ function parseCredential(encoded, serverUrl) {
   }
   const scopes = parseScopes(value.scopes, "Stored n8n credential scope");
   if (capabilitiesFromScopes(scopes).length === 0) {
-    throw new Error("Stored n8n credential has an unsupported custom scope grant.");
+    throw new Error("Stored n8n credential has no reviewed scopes.");
   }
   return {
     version: 1,
@@ -7124,6 +11448,24 @@ function schemaContract(value, root = value, activeReferences = /* @__PURE__ */ 
       );
     }
   }
+  if (Array.isArray(record2.allOf)) {
+    const { allOf, ...rest } = record2;
+    let merged = rest;
+    for (const member of allOf) {
+      if (member && typeof member === "object" && !Array.isArray(member)) {
+        merged = { ...member, ...merged };
+      }
+    }
+    return schemaContract(merged, root, activeReferences);
+  }
+  if (Array.isArray(record2.type) && !("anyOf" in record2)) {
+    const { type, ...rest } = record2;
+    return schemaContract(
+      { ...rest, anyOf: type.map((entry) => ({ type: entry })) },
+      root,
+      activeReferences
+    );
+  }
   const normalized = {};
   for (const key of Object.keys(record2).filter((entry) => STRUCTURAL_SCHEMA_KEYS.has(entry)).toSorted()) {
     if (key === "properties") {
@@ -7145,6 +11487,9 @@ function schemaContract(value, root = value, activeReferences = /* @__PURE__ */ 
   if (normalized.properties && typeof normalized.properties === "object" && !Array.isArray(normalized.properties) && Object.keys(normalized.properties).length === 0) {
     delete normalized.properties;
   }
+  if (normalized.items && typeof normalized.items === "object" && !Array.isArray(normalized.items) && Object.keys(normalized.items).length === 0) {
+    delete normalized.items;
+  }
   if (Array.isArray(record2.prefixItems) && !("type" in normalized)) {
     normalized.type = "array";
   }
@@ -7165,45 +11510,9 @@ function schemaContract(value, root = value, activeReferences = /* @__PURE__ */ 
   }
   return normalized;
 }
-function firstSchemaDifference(actual, expected, path = "$") {
-  if (Object.is(actual, expected)) return null;
-  if (Array.isArray(actual) && Array.isArray(expected)) {
-    if (actual.length !== expected.length) {
-      return { path: `${path}.length`, actual: actual.length, expected: expected.length };
-    }
-    for (let index = 0; index < actual.length; index += 1) {
-      const difference = firstSchemaDifference(actual[index], expected[index], `${path}[${index}]`);
-      if (difference) return difference;
-    }
-    return null;
-  }
-  if (actual && expected && typeof actual === "object" && typeof expected === "object" && !Array.isArray(actual) && !Array.isArray(expected)) {
-    const actualRecord = actual;
-    const expectedRecord = expected;
-    const keys = [
-      .../* @__PURE__ */ new Set([...Object.keys(actualRecord), ...Object.keys(expectedRecord)])
-    ].toSorted();
-    for (const key of keys) {
-      if (!(key in actualRecord) || !(key in expectedRecord)) {
-        return {
-          path: `${path}.${key}`,
-          actual: actualRecord[key] ?? "<missing>",
-          expected: expectedRecord[key] ?? "<missing>"
-        };
-      }
-      const difference = firstSchemaDifference(
-        actualRecord[key],
-        expectedRecord[key],
-        `${path}.${key}`
-      );
-      if (difference) return difference;
-    }
-    return null;
-  }
-  return { path, actual, expected };
-}
 function expectedSchema(tool) {
-  return toJsonSchemaDocument2(tool.input).schema;
+  const document = toJsonSchemaDocument2(tool.input);
+  return Object.keys(document.definitions).length > 0 ? { ...document.schema, $defs: document.definitions } : document.schema;
 }
 function validateToolInventory(value) {
   const result2 = asRecord(value, "n8n MCP tools/list result");
@@ -7217,52 +11526,27 @@ function validateToolInventory(value) {
     if (actual.has(name)) throw new Error("n8n MCP returned duplicate tools.");
     actual.set(name, tool);
   }
-  const reviewedNames = new Set(REVIEWED_TOOLS.map((tool) => tool.upstreamName));
-  const reviewedAvailable = new Set([...actual.keys()].filter((name) => reviewedNames.has(name)));
-  if (reviewedAvailable.size === 0) {
-    throw new IntegrationProviderPublicError(
-      "n8n MCP no longer offers any tools from the reviewed catalog. Update the TritonAI n8n plugin before use."
-    );
-  }
-  const schemaChanges = [];
-  const schemaChangeDetails = [];
-  const effectChanges = [];
+  const available = /* @__PURE__ */ new Set();
+  const paused = [];
   for (const reviewed of REVIEWED_TOOLS) {
     const upstream = actual.get(reviewed.upstreamName);
     if (!upstream) continue;
     const upstreamContract = schemaContract(upstream.inputSchema);
     const reviewedContract = schemaContract(expectedSchema(reviewed));
-    if (!NodeUtil.isDeepStrictEqual(upstreamContract, reviewedContract)) {
-      schemaChanges.push(reviewed.upstreamName);
-      const difference = firstSchemaDifference(upstreamContract, reviewedContract);
-      if (difference) {
-        schemaChangeDetails.push(
-          `${reviewed.upstreamName}${difference.path.slice(1)} actual=${JSON.stringify(difference.actual)} expected=${JSON.stringify(difference.expected)}`
-        );
-      }
-      continue;
-    }
     const annotations = upstream.annotations;
-    if (!annotations || typeof annotations !== "object" || Array.isArray(annotations)) {
-      effectChanges.push(reviewed.upstreamName);
+    const hints = annotations && typeof annotations === "object" && !Array.isArray(annotations) ? annotations : null;
+    if (!NodeUtil.isDeepStrictEqual(upstreamContract, reviewedContract) || !hints || hints.readOnlyHint !== reviewed.readOnly || hints.destructiveHint !== reviewed.destructive || hints.idempotentHint !== reviewed.idempotent || hints.openWorldHint !== reviewed.openWorld) {
+      paused.push(reviewed.upstreamName);
       continue;
     }
-    const hints = annotations;
-    if (hints.readOnlyHint !== reviewed.readOnly || hints.destructiveHint !== reviewed.destructive || hints.idempotentHint !== reviewed.idempotent || hints.openWorldHint !== reviewed.openWorld) {
-      effectChanges.push(reviewed.upstreamName);
-    }
+    available.add(reviewed.upstreamName);
   }
-  if (schemaChanges.length > 0) {
+  if (available.size === 0) {
     throw new IntegrationProviderPublicError(
-      `n8n MCP schema changed for: ${schemaChanges.join(", ")}. ${schemaChangeDetails.join("; ")}. Update the TritonAI n8n plugin before use.`
+      paused.length > 0 ? `n8n MCP changed every reviewed tool this account can use (${paused.join(", ")}). Update the TritonAI n8n plugin before use.` : "n8n MCP no longer offers any tools from the reviewed catalog. Update the TritonAI n8n plugin before use."
     );
   }
-  if (effectChanges.length > 0) {
-    throw new IntegrationProviderPublicError(
-      `n8n MCP effect metadata changed for: ${effectChanges.join(", ")}.`
-    );
-  }
-  return reviewedAvailable;
+  return { available, paused: paused.toSorted() };
 }
 var SessionInvalidError = class extends Error {
 };
@@ -7282,6 +11566,7 @@ var N8nProvider = class {
   #sessionId = null;
   #sessionVerified = false;
   #availableTools = /* @__PURE__ */ new Set();
+  #pausedTools = [];
   #generation = 0;
   #connectAttempt = 0;
   #credentialRevision = 0;
@@ -7379,7 +11664,10 @@ var N8nProvider = class {
     if (!Array.isArray(resource.bearer_methods_supported) || resource.bearer_methods_supported.length !== 1 || resource.bearer_methods_supported[0] !== "header") {
       throw new Error("n8n OAuth bearer method drifted from the reviewed contract.");
     }
-    exactStringSet(resource.scopes_supported, OAUTH_SCOPE_SET, "n8n OAuth resource scope metadata");
+    const resourceScopes = advertisedScopes(
+      resource.scopes_supported,
+      "n8n OAuth resource scope metadata"
+    );
     if (!Array.isArray(resource.authorization_servers) || resource.authorization_servers.length !== 1) {
       throw new Error("n8n OAuth authorization server metadata is invalid.");
     }
@@ -7398,16 +11686,24 @@ var N8nProvider = class {
     if (!response.ok || json.issuer !== issuer) {
       throw new Error("n8n OAuth authorization metadata is invalid.");
     }
-    exactStringSet(
+    const authorizationScopes = advertisedScopes(
       json.scopes_supported,
-      OAUTH_SCOPE_SET,
       "n8n OAuth authorization scope metadata"
     );
+    const scopes = OAUTH_SCOPES.filter(
+      (scope2) => resourceScopes.has(scope2) && authorizationScopes.has(scope2)
+    );
+    if (scopes.length === 0) {
+      throw new IntegrationProviderPublicError(
+        "n8n no longer offers any access this plugin supports. Update the TritonAI n8n plugin."
+      );
+    }
     if (!Array.isArray(json.response_types_supported) || !json.response_types_supported.includes("code") || !Array.isArray(json.grant_types_supported) || !json.grant_types_supported.includes("authorization_code") || !json.grant_types_supported.includes("refresh_token") || !Array.isArray(json.token_endpoint_auth_methods_supported) || !json.token_endpoint_auth_methods_supported.includes("none") || !Array.isArray(json.code_challenge_methods_supported) || !json.code_challenge_methods_supported.includes("S256") || json.authorization_response_iss_parameter_supported !== true) {
       throw new Error("n8n OAuth protocol metadata drifted from the reviewed contract.");
     }
     return {
       issuer,
+      scopes,
       authorizationEndpoint: sameOriginEndpoint(
         json.authorization_endpoint,
         "/mcp-oauth/authorize",
@@ -7679,6 +11975,7 @@ var N8nProvider = class {
       this.#sessionId = null;
       this.#sessionVerified = false;
       this.#availableTools = /* @__PURE__ */ new Set();
+      this.#pausedTools = [];
       throw new ConfirmedRemoteFailure("n8n authorization expired. Reconnect if refresh fails.");
     }
     if (response.status === 404 && this.#sessionId) {
@@ -7764,7 +12061,9 @@ var N8nProvider = class {
         cursor = boundedString(result2.nextCursor, 2048, "n8n MCP tools cursor");
       }
       if (cursor !== void 0) throw new Error("n8n MCP tool inventory pagination is too large.");
-      this.#availableTools = validateToolInventory({ tools: collected });
+      const inventory = validateToolInventory({ tools: collected });
+      this.#availableTools = inventory.available;
+      this.#pausedTools = inventory.paused;
       this.#sessionVerified = true;
     });
   }
@@ -7850,7 +12149,7 @@ var N8nProvider = class {
         state: "connected",
         accountLabel: this.#server.hostname,
         grantedCapabilities: capabilitiesFromScopes(credential.scopes),
-        message: "Connected with the n8n user's own permissions."
+        message: this.#pausedTools.length > 0 ? `Connected with the n8n user's own permissions. Paused until the plugin is updated because n8n changed them: ${this.#pausedTools.join(", ")}.` : "Connected with the n8n user's own permissions."
       };
     } catch {
       return {
@@ -7869,13 +12168,13 @@ var N8nProvider = class {
     if (capabilities.length === 0 || new Set(capabilities).size !== capabilities.length || capabilities.some((capability) => !CAPABILITY_SET.has(capability))) {
       throw new Error("Unsupported n8n capability.");
     }
-    const requestedScopes = scopesForCapabilities(capabilities);
     const generation = this.#generation;
     const revision = this.#credentialRevision;
     const attempt = ++this.#connectAttempt;
     const existing = await this.#readCredential(context2?.signal);
     if (existing) {
-      if (!requestedScopes.every((scope2) => existing.scopes.includes(scope2))) {
+      const granted = capabilitiesFromScopes(existing.scopes);
+      if (!capabilities.every((capability) => granted.includes(capability))) {
         throw new IntegrationProviderPublicError(
           "Disconnect and reconnect n8n to approve the additional access."
         );
@@ -7887,6 +12186,14 @@ var N8nProvider = class {
       };
     }
     const discovery = await this.#discover(context2?.signal);
+    const requestedScopes = scopesForCapabilities(capabilities).filter(
+      (scope2) => discovery.scopes.includes(scope2)
+    );
+    if (requestedScopes.length === 0) {
+      throw new IntegrationProviderPublicError(
+        "n8n does not currently offer the requested access for this instance."
+      );
+    }
     await this.#clearPendingFlows();
     const flowId = NodeCrypto.randomUUID();
     const state = randomBase64Url(32);
@@ -8029,13 +12336,14 @@ var N8nProvider = class {
             return {
               state: "failed",
               retryAfterSeconds: null,
-              message: "Choose All or Read only in n8n. Custom scope combinations are not supported."
+              message: "n8n granted no access this plugin supports. Start again and approve access."
             };
           }
           this.#accessToken = parsed.access;
           this.#sessionId = null;
           this.#sessionVerified = false;
           this.#availableTools = /* @__PURE__ */ new Set();
+          this.#pausedTools = [];
           try {
             await this.#initializeSession(parsed.access, commitSignal);
           } catch (error) {
@@ -8054,6 +12362,7 @@ var N8nProvider = class {
             this.#sessionId = null;
             this.#sessionVerified = false;
             this.#availableTools = /* @__PURE__ */ new Set();
+            this.#pausedTools = [];
             await this.#removeFlow(flowId);
             return {
               state: "failed",
@@ -8107,6 +12416,7 @@ var N8nProvider = class {
       let admitted = false;
       let responseSettled = false;
       let credentialIssued = false;
+      let credentialPersisted = false;
       try {
         const commitSignal = await this.#beginCommit(context2);
         admitted = true;
@@ -8131,6 +12441,12 @@ var N8nProvider = class {
         );
         responseSettled = true;
         if (!response.ok) {
+          if (response.status === 400 && json.error === "invalid_grant") {
+            await this.#secrets.remove(N8N_SECRET_SUFFIX);
+            this.#accessToken = null;
+            this.#credentialRevision += 1;
+            throw new IntegrationProviderPublicError("n8n sign-in expired. Connect n8n again.");
+          }
           throw new IntegrationProviderPublicError(
             "n8n access could not be refreshed. Disconnect and reconnect."
           );
@@ -8145,21 +12461,23 @@ var N8nProvider = class {
         );
         if (capabilitiesFromScopes(parsed.credential.scopes).length === 0) {
           throw new IntegrationProviderPublicError(
-            "n8n returned an unsupported custom scope grant. Disconnect and reconnect."
+            "n8n refreshed access without any supported scope. Disconnect and reconnect."
           );
         }
         if (generation !== this.#generation || revision !== this.#credentialRevision) {
           throw new Error("n8n connection changed while refreshing.");
         }
+        await this.#writeCredential(parsed.credential, commitSignal);
+        credentialPersisted = true;
+        this.#credentialRevision += 1;
         this.#accessToken = parsed.access;
         this.#sessionId = null;
         this.#sessionVerified = false;
         this.#availableTools = /* @__PURE__ */ new Set();
+        this.#pausedTools = [];
         await this.#initializeSession(parsed.access, commitSignal);
-        await this.#writeCredential(parsed.credential, commitSignal);
-        this.#credentialRevision += 1;
       } catch (error) {
-        if (admitted && (!responseSettled || credentialIssued)) {
+        if (admitted && !credentialPersisted && (!responseSettled || credentialIssued)) {
           this.#uncertainCredentialState = true;
           throw new ExternalCommitOutcomeUnknownError(
             "The n8n credential refresh may have completed. Disconnect before retrying."
@@ -8177,20 +12495,28 @@ var N8nProvider = class {
       this.#sessionId = null;
       this.#sessionVerified = false;
       this.#availableTools = /* @__PURE__ */ new Set();
+      this.#pausedTools = [];
       await this.#clearPendingFlows();
       let admitted = false;
       try {
-        const credential = await this.#readCredential(context2?.signal);
+        const credential = await this.#readCredential(context2?.signal).catch((error) => {
+          if (context2?.signal?.aborted) throw error;
+          return null;
+        });
         const commitSignal = await this.#beginCommit(context2);
         admitted = true;
         if (credential) {
-          const discovery = await this.#discover(commitSignal);
-          await this.#revokeToken(
-            discovery,
-            credential.refreshToken,
-            credential.clientId,
-            commitSignal
-          );
+          try {
+            const discovery = await this.#discover(commitSignal);
+            await this.#revokeToken(
+              discovery,
+              credential.refreshToken,
+              credential.clientId,
+              commitSignal
+            );
+          } catch (error) {
+            if (commitSignal.aborted) throw error;
+          }
         }
         await this.#secrets.remove(N8N_SECRET_SUFFIX);
         commitSignal.throwIfAborted();
@@ -8301,6 +12627,7 @@ var N8nProvider = class {
     this.#sessionId = null;
     this.#sessionVerified = false;
     this.#availableTools = /* @__PURE__ */ new Set();
+    this.#pausedTools = [];
   }
 };
 

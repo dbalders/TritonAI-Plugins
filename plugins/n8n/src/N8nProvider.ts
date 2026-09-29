@@ -19,6 +19,8 @@ import {
   type JsonObject,
   type JsonValue,
 } from "./host-contract.js";
+import { EmptyInput, decoderFromJsonSchema } from "./upstream-schema.js";
+import { UPSTREAM_TOOLS } from "./upstream-tools.js";
 
 export const N8N_PROVIDER_ID = "n8n";
 export const N8N_SECRET_SUFFIX = "oauth";
@@ -46,12 +48,18 @@ const MAX_SESSION_ID_CHARS = 1_024;
 const MAX_INPUT_BYTES = 2 * 1024 * 1024;
 const MAX_JSON_DEPTH = 32;
 const MAX_JSON_NODES = 100_000;
-const MAX_MCP_PAGES = 4;
-const MAX_MCP_TOOLS = 64;
+const MAX_MCP_PAGES = 8;
+const MAX_MCP_TOOLS = 256;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
+// Every MCP scope n8n 2.41.3 can grant. n8n grows this list as it adds MCP features, so discovery
+// treats the advertised list as a menu: reviewed scopes it offers are requested, reviewed scopes
+// it omits (for example, agent scopes while the agents module is off) are skipped, and scopes
+// this plugin has not reviewed yet are ignored until a plugin update exposes their tools.
 const READ_OAUTH_SCOPES = [
+  "agent:read",
+  "aiPreference:read",
   "credential:read",
   "dataTable:read",
   "execution:read",
@@ -60,6 +68,9 @@ const READ_OAUTH_SCOPES = [
   "workflow:read",
 ] as const;
 const WRITE_OAUTH_SCOPES = [
+  "agent:execute",
+  "agent:write",
+  "communityPackage:install",
   "dataTable:write",
   "project:write",
   "workflow:execute",
@@ -67,6 +78,9 @@ const WRITE_OAUTH_SCOPES = [
 ] as const;
 const OAUTH_SCOPES = [...READ_OAUTH_SCOPES, ...WRITE_OAUTH_SCOPES] as const;
 const OAUTH_SCOPE_SET = new Set<string>(OAUTH_SCOPES);
+const READ_OAUTH_SCOPE_SET = new Set<string>(READ_OAUTH_SCOPES);
+const WRITE_OAUTH_SCOPE_SET = new Set<string>(WRITE_OAUTH_SCOPES);
+const MAX_ADVERTISED_SCOPES = 256;
 
 const CAPABILITIES = ["read", "write"] as const;
 const CAPABILITY_SET = new Set<string>(CAPABILITIES);
@@ -81,7 +95,7 @@ const BoundedId = Schema.String.check(
   Schema.isPattern(/^[^\p{Cc}\s]+$/u),
 );
 const BoundedText = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512));
-const Code = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_000_000));
+const Code = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(300_000));
 const OptionalQuery = Schema.optionalKey(
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)),
 );
@@ -102,11 +116,6 @@ const OptionalLimit200 = Schema.optionalKey(
 const JsonObject = Schema.Record(
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
   Schema.Unknown,
-);
-// A Never-valued record emits an object-or-array JSON Schema after bundling.
-// Keep the reviewed wire schema property-free while rejecting non-empty input.
-const EmptyInput = Schema.Record(Schema.String, Schema.Unknown).pipe(
-  Schema.check(Schema.makeFilter((input) => Object.keys(input).length === 0)),
 );
 
 const SearchWorkflowsInput = Schema.Struct({
@@ -218,7 +227,7 @@ const SearchExecutionsInput = Schema.Struct({
     Schema.String.check(Schema.isMinLength(20), Schema.isMaxLength(64)),
   ),
   limit: OptionalLimit200,
-  lastId: Schema.optionalKey(BoundedId),
+  cursor: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4_096))),
 });
 const ListCredentialsInput = Schema.Struct({
   limit: OptionalLimit200,
@@ -536,7 +545,7 @@ function reviewedTool(
   };
 }
 
-const REVIEWED_TOOLS = [
+const HAND_REVIEWED_TOOLS = [
   reviewedTool(
     "search_workflows",
     "Search workflow previews visible to the connected n8n user.",
@@ -627,8 +636,8 @@ const REVIEWED_TOOLS = [
     "read",
   ),
   reviewedTool(
-    "list_n8n_connect_services",
-    "List n8n Connect managed-credential coverage without credential values.",
+    "list_n8n_gateway_services",
+    "List n8n Gateway managed-credential coverage without credential values.",
     EmptyInput,
     "read",
   ),
@@ -751,10 +760,144 @@ const REVIEWED_TOOLS = [
   ),
 ] as const satisfies ReadonlyArray<ReviewedTool>;
 
+const UPSTREAM_TOOL_BY_NAME = new Map(UPSTREAM_TOOLS.map((tool) => [tool.name, tool]));
+
+// Tools whose input schemas are taken verbatim from the pinned upstream catalog in
+// upstream-tools.ts rather than hand-written. Effects mirror n8n's own annotations, and the
+// capability follows the scope group that unlocks the tool.
+function upstreamTool(
+  upstreamName: string,
+  description: string,
+  capability: ReviewedTool["capability"],
+): ReviewedTool {
+  const upstream = UPSTREAM_TOOL_BY_NAME.get(upstreamName);
+  if (!upstream) throw new Error(`n8n upstream tool ${upstreamName} is not in the pinned catalog.`);
+  return reviewedTool(
+    upstreamName,
+    description,
+    decoderFromJsonSchema(upstream.inputSchema, upstreamName) as Schema.Decoder<unknown>,
+    capability,
+    {
+      readOnly: upstream.annotations.readOnlyHint,
+      destructive: upstream.annotations.destructiveHint,
+      idempotent: upstream.annotations.idempotentHint,
+      openWorld: upstream.annotations.openWorldHint,
+    },
+  );
+}
+
+const UPSTREAM_REVIEWED_TOOLS = [
+  upstreamTool(
+    "get_workflow_versions_diff",
+    "Compare two saved versions of one accessible workflow.",
+    "read",
+  ),
+  upstreamTool(
+    "move_workflows_to_folder",
+    "Move accessible workflows into a folder or to the project root.",
+    "write",
+  ),
+  upstreamTool("create_folder", "Create a folder in an accessible project.", "write"),
+  upstreamTool("update_folder", "Rename a folder or move it within its project.", "write"),
+  upstreamTool(
+    "get_data_table_rows",
+    "Read filtered, sorted, and paginated rows from an accessible data table.",
+    "read",
+  ),
+  upstreamTool(
+    "get_instance_context",
+    "Read an overview of accessible workflows, recent changes, and recent runs.",
+    "read",
+  ),
+  upstreamTool(
+    "get_instance_activity",
+    "Read the activity log of recent workflow and credential changes.",
+    "read",
+  ),
+  upstreamTool(
+    "expand_instance_activity",
+    "Open one activity log entry with the related history of its resource.",
+    "read",
+  ),
+  upstreamTool("get_node_usage", "Read which node types accessible workflows already use.", "read"),
+  upstreamTool(
+    "get_user_preferences",
+    "Read saved instance, personal, and project building preferences.",
+    "read",
+  ),
+  upstreamTool(
+    "install_community_node",
+    "Install a verified community node package onto the n8n instance.",
+    "write",
+  ),
+  upstreamTool("search_agents", "Search n8n Agents visible to the connected user.", "read"),
+  upstreamTool(
+    "get_agent",
+    "Read one Agent draft or published version, including its configHash.",
+    "read",
+  ),
+  upstreamTool("list_agent_versions", "List the publish history of one Agent.", "read"),
+  upstreamTool(
+    "discover_agent_assets",
+    "Discover models, integrations, workflows, sub-agents, or MCP servers for an Agent.",
+    "read",
+  ),
+  upstreamTool(
+    "validate_agent",
+    "Validate an Agent draft and its references without saving.",
+    "read",
+  ),
+  upstreamTool(
+    "get_agent_builder_reference",
+    "Read the n8n Agent configuration and mutation reference.",
+    "read",
+  ),
+  upstreamTool(
+    "verify_agent_mcp_server",
+    "Test an MCP server with an accessible credential and list its tools.",
+    "write",
+  ),
+  upstreamTool("create_agent", "Create an n8n Agent draft.", "write"),
+  upstreamTool(
+    "mutate_agent",
+    "Apply one configuration, skill, task, or custom-tool change to an Agent draft.",
+    "write",
+  ),
+  upstreamTool("revert_agent", "Restore an Agent draft from a published version.", "write"),
+  upstreamTool("delete_agent", "Permanently delete an Agent and its resources.", "write"),
+  upstreamTool(
+    "publish_agent",
+    "Publish an Agent draft, or republish one of its earlier versions.",
+    "write",
+  ),
+  upstreamTool(
+    "unpublish_agent",
+    "Unpublish an Agent and stop its live tasks and integrations.",
+    "write",
+  ),
+  upstreamTool(
+    "update_agent_integration",
+    "Connect or disconnect an Agent's Slack, Telegram, or Linear integration.",
+    "write",
+  ),
+  upstreamTool(
+    "call_agent",
+    "Chat with an Agent draft through Preview, using its real tools and credentials.",
+    "write",
+  ),
+];
+
+const REVIEWED_TOOLS: ReadonlyArray<ReviewedTool> = [
+  ...HAND_REVIEWED_TOOLS,
+  ...UPSTREAM_REVIEWED_TOOLS,
+];
+
 export const N8N_TOOLS: ReadonlyArray<IntegrationProviderTool> = REVIEWED_TOOLS;
 
 interface OAuthDiscovery {
   readonly issuer: string;
+  /** Reviewed scopes the instance currently offers, in request order. */
+  readonly scopes: ReadonlyArray<string>;
   readonly authorizationEndpoint: string;
   readonly tokenEndpoint: string;
   readonly registrationEndpoint: string;
@@ -829,16 +972,15 @@ function boundedInteger(value: unknown, minimum: number, maximum: number, label:
   return value as number;
 }
 
-function exactStringSet(value: unknown, expected: ReadonlySet<string>, label: string): string[] {
+function advertisedScopes(value: unknown, label: string): ReadonlySet<string> {
   if (
     !Array.isArray(value) ||
-    value.length !== expected.size ||
-    value.some((entry) => typeof entry !== "string" || !expected.has(entry)) ||
-    new Set(value).size !== value.length
+    value.length > MAX_ADVERTISED_SCOPES ||
+    value.some((entry) => typeof entry !== "string" || entry.length === 0 || entry.length > 128)
   ) {
-    throw new Error(`${label} drifted from the reviewed contract.`);
+    throw new Error(`${label} is invalid.`);
   }
-  return [...value].toSorted() as string[];
+  return new Set(value as string[]);
 }
 
 function validateServerUrl(value: string): URL {
@@ -909,18 +1051,14 @@ function parseScopes(
   return [...values].toSorted() as string[];
 }
 
+// n8n's consent screen lets the user narrow the grant to any subset of the requested scopes, and
+// n8n then lists only the tools that subset unlocks. Reflect whichever kinds of access remain
+// rather than insisting on a fixed bundle; the upstream tool list stays the enforcement point.
 function capabilitiesFromScopes(scopes: ReadonlyArray<string>): ReadonlyArray<string> {
-  const granted = new Set(scopes);
-  if (granted.size === OAUTH_SCOPES.length && OAUTH_SCOPES.every((scope) => granted.has(scope))) {
-    return ["read", "write"];
-  }
-  if (
-    granted.size === READ_OAUTH_SCOPES.length &&
-    READ_OAUTH_SCOPES.every((scope) => granted.has(scope))
-  ) {
-    return ["read"];
-  }
-  return [];
+  const capabilities: string[] = [];
+  if (scopes.some((scope) => READ_OAUTH_SCOPE_SET.has(scope))) capabilities.push("read");
+  if (scopes.some((scope) => WRITE_OAUTH_SCOPE_SET.has(scope))) capabilities.push("write");
+  return capabilities;
 }
 
 function scopesForCapabilities(capabilities: ReadonlyArray<string>): ReadonlyArray<string> {
@@ -964,7 +1102,7 @@ function parseCredential(encoded: string, serverUrl: string): Credential {
   }
   const scopes = parseScopes(value.scopes, "Stored n8n credential scope");
   if (capabilitiesFromScopes(scopes).length === 0) {
-    throw new Error("Stored n8n credential has an unsupported custom scope grant.");
+    throw new Error("Stored n8n credential has no reviewed scopes.");
   }
   return {
     version: 1,
@@ -1134,7 +1272,7 @@ function resolveLocalSchemaReference(root: unknown, reference: string): unknown 
   return current;
 }
 
-function schemaContract(
+export function schemaContract(
   value: unknown,
   root: unknown = value,
   activeReferences: ReadonlySet<string> = new Set(),
@@ -1157,6 +1295,27 @@ function schemaContract(
         new Set([...activeReferences, record.$ref]),
       );
     }
+  }
+  // zod emits stacked refinements as allOf members, which may carry the only `type`. Fold them
+  // into the parent so they compare equal to a single constrained schema.
+  if (Array.isArray(record.allOf)) {
+    const { allOf, ...rest } = record;
+    let merged: Record<string, unknown> = rest;
+    for (const member of allOf as unknown[]) {
+      if (member && typeof member === "object" && !Array.isArray(member)) {
+        merged = { ...(member as Record<string, unknown>), ...merged };
+      }
+    }
+    return schemaContract(merged, root, activeReferences);
+  }
+  // A type list is the same contract as a union of single-type members.
+  if (Array.isArray(record.type) && !("anyOf" in record)) {
+    const { type, ...rest } = record;
+    return schemaContract(
+      { ...rest, anyOf: (type as unknown[]).map((entry) => ({ type: entry })) },
+      root,
+      activeReferences,
+    );
   }
   const normalized: Record<string, unknown> = {};
   for (const key of Object.keys(record)
@@ -1187,6 +1346,15 @@ function schemaContract(
     Object.keys(normalized.properties).length === 0
   ) {
     delete normalized.properties;
+  }
+  // `items: {}` admits any element, exactly like omitting `items`.
+  if (
+    normalized.items &&
+    typeof normalized.items === "object" &&
+    !Array.isArray(normalized.items) &&
+    Object.keys(normalized.items).length === 0
+  ) {
+    delete normalized.items;
   }
   if (Array.isArray(record.prefixItems) && !("type" in normalized)) {
     normalized.type = "array";
@@ -1219,7 +1387,7 @@ function schemaContract(
   return normalized;
 }
 
-function firstSchemaDifference(
+export function firstSchemaDifference(
   actual: unknown,
   expected: unknown,
   path = "$",
@@ -1268,11 +1436,23 @@ function firstSchemaDifference(
   return { path, actual, expected };
 }
 
-function expectedSchema(tool: ReviewedTool): unknown {
-  return Schema.toJsonSchemaDocument(tool.input).schema;
+export function expectedSchema(tool: Pick<ReviewedTool, "input">): unknown {
+  const document = Schema.toJsonSchemaDocument(tool.input);
+  return Object.keys(document.definitions).length > 0
+    ? { ...document.schema, $defs: document.definitions }
+    : document.schema;
 }
 
-function validateToolInventory(value: unknown): ReadonlySet<string> {
+interface ToolInventory {
+  readonly available: ReadonlySet<string>;
+  readonly paused: ReadonlyArray<string>;
+}
+
+// n8n evolves its MCP catalog between releases. A reviewed tool whose input schema or effect
+// hints drifted is paused on its own, failing closed for that tool only, so one upstream change
+// does not take the whole connection down. Tools the plugin has not reviewed stay unavailable
+// until a plugin update exposes them.
+export function validateToolInventory(value: unknown): ToolInventory {
   const result = asRecord(value, "n8n MCP tools/list result");
   if (!Array.isArray(result.tools) || result.tools.length > MAX_MCP_TOOLS) {
     throw new Error("n8n MCP tool inventory is invalid.");
@@ -1284,60 +1464,39 @@ function validateToolInventory(value: unknown): ReadonlySet<string> {
     if (actual.has(name)) throw new Error("n8n MCP returned duplicate tools.");
     actual.set(name, tool);
   }
-  const reviewedNames = new Set(REVIEWED_TOOLS.map((tool) => tool.upstreamName));
-  const reviewedAvailable = new Set([...actual.keys()].filter((name) => reviewedNames.has(name)));
-  if (reviewedAvailable.size === 0) {
-    throw new IntegrationProviderPublicError(
-      "n8n MCP no longer offers any tools from the reviewed catalog. Update the TritonAI n8n plugin before use.",
-    );
-  }
-  const schemaChanges: string[] = [];
-  const schemaChangeDetails: string[] = [];
-  const effectChanges: string[] = [];
+  const available = new Set<string>();
+  const paused: string[] = [];
   for (const reviewed of REVIEWED_TOOLS) {
     const upstream = actual.get(reviewed.upstreamName);
     if (!upstream) continue;
     const upstreamContract = schemaContract(upstream.inputSchema);
     const reviewedContract = schemaContract(expectedSchema(reviewed));
-    if (!NodeUtil.isDeepStrictEqual(upstreamContract, reviewedContract)) {
-      schemaChanges.push(reviewed.upstreamName);
-      const difference = firstSchemaDifference(upstreamContract, reviewedContract);
-      if (difference) {
-        schemaChangeDetails.push(
-          `${reviewed.upstreamName}${difference.path.slice(1)} actual=${JSON.stringify(difference.actual)} expected=${JSON.stringify(difference.expected)}`,
-        );
-      }
-      continue;
-    }
     const annotations = upstream.annotations;
-    if (!annotations || typeof annotations !== "object" || Array.isArray(annotations)) {
-      effectChanges.push(reviewed.upstreamName);
-      continue;
-    }
-    const hints = annotations as Record<string, unknown>;
+    const hints =
+      annotations && typeof annotations === "object" && !Array.isArray(annotations)
+        ? (annotations as Record<string, unknown>)
+        : null;
     if (
+      !NodeUtil.isDeepStrictEqual(upstreamContract, reviewedContract) ||
+      !hints ||
       hints.readOnlyHint !== reviewed.readOnly ||
       hints.destructiveHint !== reviewed.destructive ||
       hints.idempotentHint !== reviewed.idempotent ||
       hints.openWorldHint !== reviewed.openWorld
     ) {
-      effectChanges.push(reviewed.upstreamName);
+      paused.push(reviewed.upstreamName);
+      continue;
     }
+    available.add(reviewed.upstreamName);
   }
-  if (schemaChanges.length > 0) {
+  if (available.size === 0) {
     throw new IntegrationProviderPublicError(
-      `n8n MCP schema changed for: ${schemaChanges.join(", ")}. ${schemaChangeDetails.join("; ")}. Update the TritonAI n8n plugin before use.`,
+      paused.length > 0
+        ? `n8n MCP changed every reviewed tool this account can use (${paused.join(", ")}). Update the TritonAI n8n plugin before use.`
+        : "n8n MCP no longer offers any tools from the reviewed catalog. Update the TritonAI n8n plugin before use.",
     );
   }
-  if (effectChanges.length > 0) {
-    throw new IntegrationProviderPublicError(
-      `n8n MCP effect metadata changed for: ${effectChanges.join(", ")}.`,
-    );
-  }
-  // n8n can add tools without changing the contract of the reviewed subset. Keep those tools
-  // unavailable until the plugin explicitly reviews and exposes them instead of failing the
-  // entire connection whenever the upstream catalog grows.
-  return reviewedAvailable;
+  return { available, paused: paused.toSorted() };
 }
 
 class SessionInvalidError extends Error {}
@@ -1357,6 +1516,7 @@ export class N8nProvider implements IntegrationProvider {
   #sessionId: string | null = null;
   #sessionVerified = false;
   #availableTools: ReadonlySet<string> = new Set();
+  #pausedTools: ReadonlyArray<string> = [];
   #generation = 0;
   #connectAttempt = 0;
   #credentialRevision = 0;
@@ -1483,7 +1643,10 @@ export class N8nProvider implements IntegrationProvider {
     ) {
       throw new Error("n8n OAuth bearer method drifted from the reviewed contract.");
     }
-    exactStringSet(resource.scopes_supported, OAUTH_SCOPE_SET, "n8n OAuth resource scope metadata");
+    const resourceScopes = advertisedScopes(
+      resource.scopes_supported,
+      "n8n OAuth resource scope metadata",
+    );
     if (
       !Array.isArray(resource.authorization_servers) ||
       resource.authorization_servers.length !== 1
@@ -1505,11 +1668,18 @@ export class N8nProvider implements IntegrationProvider {
     if (!response.ok || json.issuer !== issuer) {
       throw new Error("n8n OAuth authorization metadata is invalid.");
     }
-    exactStringSet(
+    const authorizationScopes = advertisedScopes(
       json.scopes_supported,
-      OAUTH_SCOPE_SET,
       "n8n OAuth authorization scope metadata",
     );
+    const scopes = OAUTH_SCOPES.filter(
+      (scope) => resourceScopes.has(scope) && authorizationScopes.has(scope),
+    );
+    if (scopes.length === 0) {
+      throw new IntegrationProviderPublicError(
+        "n8n no longer offers any access this plugin supports. Update the TritonAI n8n plugin.",
+      );
+    }
     if (
       !Array.isArray(json.response_types_supported) ||
       !json.response_types_supported.includes("code") ||
@@ -1526,6 +1696,7 @@ export class N8nProvider implements IntegrationProvider {
     }
     return {
       issuer,
+      scopes,
       authorizationEndpoint: sameOriginEndpoint(
         json.authorization_endpoint,
         "/mcp-oauth/authorize",
@@ -1867,6 +2038,7 @@ export class N8nProvider implements IntegrationProvider {
       this.#sessionId = null;
       this.#sessionVerified = false;
       this.#availableTools = new Set();
+      this.#pausedTools = [];
       throw new ConfirmedRemoteFailure("n8n authorization expired. Reconnect if refresh fails.");
     }
     if (response.status === 404 && this.#sessionId) {
@@ -1969,7 +2141,9 @@ export class N8nProvider implements IntegrationProvider {
         cursor = boundedString(result.nextCursor, 2_048, "n8n MCP tools cursor");
       }
       if (cursor !== undefined) throw new Error("n8n MCP tool inventory pagination is too large.");
-      this.#availableTools = validateToolInventory({ tools: collected });
+      const inventory = validateToolInventory({ tools: collected });
+      this.#availableTools = inventory.available;
+      this.#pausedTools = inventory.paused;
       this.#sessionVerified = true;
     });
   }
@@ -2077,7 +2251,10 @@ export class N8nProvider implements IntegrationProvider {
         state: "connected",
         accountLabel: this.#server.hostname,
         grantedCapabilities: capabilitiesFromScopes(credential.scopes),
-        message: "Connected with the n8n user's own permissions.",
+        message:
+          this.#pausedTools.length > 0
+            ? `Connected with the n8n user's own permissions. Paused until the plugin is updated because n8n changed them: ${this.#pausedTools.join(", ")}.`
+            : "Connected with the n8n user's own permissions.",
       };
     } catch {
       return {
@@ -2108,13 +2285,13 @@ export class N8nProvider implements IntegrationProvider {
     ) {
       throw new Error("Unsupported n8n capability.");
     }
-    const requestedScopes = scopesForCapabilities(capabilities);
     const generation = this.#generation;
     const revision = this.#credentialRevision;
     const attempt = ++this.#connectAttempt;
     const existing = await this.#readCredential(context?.signal);
     if (existing) {
-      if (!requestedScopes.every((scope) => existing.scopes.includes(scope))) {
+      const granted = capabilitiesFromScopes(existing.scopes);
+      if (!capabilities.every((capability) => granted.includes(capability))) {
         throw new IntegrationProviderPublicError(
           "Disconnect and reconnect n8n to approve the additional access.",
         );
@@ -2126,6 +2303,14 @@ export class N8nProvider implements IntegrationProvider {
       };
     }
     const discovery = await this.#discover(context?.signal);
+    const requestedScopes = scopesForCapabilities(capabilities).filter((scope) =>
+      discovery.scopes.includes(scope),
+    );
+    if (requestedScopes.length === 0) {
+      throw new IntegrationProviderPublicError(
+        "n8n does not currently offer the requested access for this instance.",
+      );
+    }
     await this.#clearPendingFlows();
     const flowId = NodeCrypto.randomUUID();
     const state = randomBase64Url(32);
@@ -2292,13 +2477,14 @@ export class N8nProvider implements IntegrationProvider {
               state: "failed",
               retryAfterSeconds: null,
               message:
-                "Choose All or Read only in n8n. Custom scope combinations are not supported.",
+                "n8n granted no access this plugin supports. Start again and approve access.",
             };
           }
           this.#accessToken = parsed.access;
           this.#sessionId = null;
           this.#sessionVerified = false;
           this.#availableTools = new Set();
+          this.#pausedTools = [];
           try {
             await this.#initializeSession(parsed.access, commitSignal);
           } catch (error) {
@@ -2317,6 +2503,7 @@ export class N8nProvider implements IntegrationProvider {
             this.#sessionId = null;
             this.#sessionVerified = false;
             this.#availableTools = new Set();
+            this.#pausedTools = [];
             await this.#removeFlow(flowId);
             return {
               state: "failed",
@@ -2429,7 +2616,7 @@ export class N8nProvider implements IntegrationProvider {
         );
         if (capabilitiesFromScopes(parsed.credential.scopes).length === 0) {
           throw new IntegrationProviderPublicError(
-            "n8n returned an unsupported custom scope grant. Disconnect and reconnect.",
+            "n8n refreshed access without any supported scope. Disconnect and reconnect.",
           );
         }
         if (generation !== this.#generation || revision !== this.#credentialRevision) {
@@ -2446,6 +2633,7 @@ export class N8nProvider implements IntegrationProvider {
         this.#sessionId = null;
         this.#sessionVerified = false;
         this.#availableTools = new Set();
+        this.#pausedTools = [];
         await this.#initializeSession(parsed.access, commitSignal);
       } catch (error) {
         // Once the rotated credential is durable the grant is known-good, so a later
@@ -2470,20 +2658,34 @@ export class N8nProvider implements IntegrationProvider {
       this.#sessionId = null;
       this.#sessionVerified = false;
       this.#availableTools = new Set();
+      this.#pausedTools = [];
       await this.#clearPendingFlows();
       let admitted = false;
       try {
-        const credential = await this.#readCredential(context?.signal);
+        // An unreadable credential cannot be revoked, but it must still be removable: status
+        // tells the user to disconnect to reset exactly this state.
+        const credential = await this.#readCredential(context?.signal).catch((error: unknown) => {
+          if (context?.signal?.aborted) throw error;
+          return null;
+        });
         const commitSignal = await this.#beginCommit(context);
         admitted = true;
         if (credential) {
-          const discovery = await this.#discover(commitSignal);
-          await this.#revokeToken(
-            discovery,
-            credential.refreshToken,
-            credential.clientId,
-            commitSignal,
-          );
+          // Revocation is best effort. The local credential is the only copy of the refresh
+          // token, so deleting it ends this plugin's access either way. Requiring a successful
+          // revoke would strand the user whenever n8n is unreachable or its OAuth metadata
+          // changes, with no way to reset the connection.
+          try {
+            const discovery = await this.#discover(commitSignal);
+            await this.#revokeToken(
+              discovery,
+              credential.refreshToken,
+              credential.clientId,
+              commitSignal,
+            );
+          } catch (error) {
+            if (commitSignal.aborted) throw error;
+          }
         }
         await this.#secrets.remove(N8N_SECRET_SUFFIX);
         commitSignal.throwIfAborted();
@@ -2612,5 +2814,6 @@ export class N8nProvider implements IntegrationProvider {
     this.#sessionId = null;
     this.#sessionVerified = false;
     this.#availableTools = new Set();
+    this.#pausedTools = [];
   }
 }

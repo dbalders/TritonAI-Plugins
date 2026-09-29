@@ -1,12 +1,21 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { N8N_SECRET_SUFFIX, N8N_TOOLS, N8nProvider } from "./N8nProvider.ts";
+import {
+  N8N_SECRET_SUFFIX,
+  N8N_TOOLS,
+  N8nProvider,
+  expectedSchema,
+  firstSchemaDifference,
+  schemaContract,
+  validateToolInventory,
+} from "./N8nProvider.ts";
 import type {
   IntegrationInvocationContext,
   IntegrationLifecycleContext,
   IntegrationSecretStore,
 } from "./host-contract.ts";
+import { UPSTREAM_N8N_VERSION, UPSTREAM_TOOLS } from "./upstream-tools.ts";
 
 const SERVER = "https://n8n.tritonai.ucsd.edu/mcp-server/http";
 const ORIGIN = "https://n8n.tritonai.ucsd.edu";
@@ -15,6 +24,8 @@ const MCP_PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion";
 const MCP_CLIENT_CAPABILITIES_META_KEY = "io.modelcontextprotocol/clientCapabilities";
 const MCP_CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo";
 const READ_SCOPES = [
+  "agent:read",
+  "aiPreference:read",
   "credential:read",
   "dataTable:read",
   "execution:read",
@@ -23,6 +34,9 @@ const READ_SCOPES = [
   "workflow:read",
 ] as const;
 const WRITE_SCOPES = [
+  "agent:execute",
+  "agent:write",
+  "communityPackage:install",
   "dataTable:write",
   "project:write",
   "workflow:execute",
@@ -152,6 +166,7 @@ function mcpEventResponse(
 function oauthMcpFetch(
   options: {
     readonly scopes?: ReadonlyArray<string>;
+    readonly advertisedScopes?: ReadonlyArray<string>;
     readonly mutateTools?: (tools: Record<string, unknown>[]) => void;
     readonly toolResult?: unknown;
     readonly eventStream?: boolean;
@@ -169,10 +184,10 @@ function oauthMcpFetch(
         : undefined;
     requests.push({ url, init, body });
     if (url.endsWith("/.well-known/oauth-protected-resource/mcp-server/http")) {
-      return json(protectedMetadata());
+      return json(protectedMetadata(options.advertisedScopes));
     }
     if (url.endsWith("/.well-known/oauth-authorization-server")) {
-      return json(authorizationMetadata());
+      return json(authorizationMetadata(options.advertisedScopes));
     }
     if (url.endsWith("/mcp-oauth/register")) {
       return json(
@@ -255,9 +270,9 @@ async function authorize(
 }
 
 describe("N8nProvider", () => {
-  it("publishes the reviewed 2.34.1 catalog with strict bounded schemas and truthful effects", async () => {
-    expect(N8N_TOOLS).toHaveLength(34);
-    expect(new Set(N8N_TOOLS.map(({ name }) => name)).size).toBe(34);
+  it("publishes the reviewed 2.41.3 catalog with strict bounded schemas and truthful effects", async () => {
+    expect(N8N_TOOLS).toHaveLength(60);
+    expect(new Set(N8N_TOOLS.map(({ name }) => name)).size).toBe(60);
     expect(N8N_TOOLS.map(({ name }) => name)).toContain("n8n.get_workflow_history");
     expect(N8N_TOOLS.map(({ name }) => name)).not.toContain("n8n.get_execution");
     for (const tool of N8N_TOOLS) {
@@ -270,7 +285,18 @@ describe("N8nProvider", () => {
       N8N_TOOLS.filter(({ openWorld }) => openWorld)
         .map(({ name }) => name)
         .toSorted(),
-    ).toEqual(["n8n.execute_workflow", "n8n.explore_node_resources"]);
+    ).toEqual([
+      "n8n.call_agent",
+      "n8n.delete_agent",
+      "n8n.discover_agent_assets",
+      "n8n.execute_workflow",
+      "n8n.explore_node_resources",
+      "n8n.install_community_node",
+      "n8n.publish_agent",
+      "n8n.unpublish_agent",
+      "n8n.update_agent_integration",
+      "n8n.verify_agent_mcp_server",
+    ]);
     expect(N8N_TOOLS.find(({ name }) => name === "n8n.publish_workflow")).toMatchObject({
       readOnly: false,
       destructive: false,
@@ -476,39 +502,59 @@ describe("N8nProvider", () => {
     await provider.close();
   });
 
-  it("rejects and revokes custom grants that do not match Read only or All", async () => {
+  it("reflects a custom consent grant instead of rejecting it", async () => {
     const secrets = memorySecrets();
-    const mock = oauthMcpFetch({ scopes: [...READ_SCOPES, WRITE_SCOPES[0]] });
+    const mock = oauthMcpFetch({ scopes: ["workflow:read", "workflow:execute"] });
     const provider = new N8nProvider(
       secrets.service,
       { serverUrl: SERVER },
       mock.fetchImplementation,
     );
-    const flow = await provider.connect(["read", "write"], lifecycle());
-    expect(flow.kind).toBe("authorization_url");
-    if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
-    const authorization = new URL(flow.authorizationUrl);
-    const callback = new URL(authorization.searchParams.get("redirect_uri")!);
-    callback.searchParams.set("state", authorization.searchParams.get("state")!);
-    callback.searchParams.set("iss", ORIGIN);
-    callback.searchParams.set("code", "authorization-code-fixture");
-    expect((await fetch(callback)).status).toBe(200);
-
-    await expect(provider.poll(flow.flowId, lifecycle())).resolves.toMatchObject({
-      state: "failed",
-      message: expect.stringMatching(/All or Read only/iu),
-    });
-    expect(mock.requests.filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))).toHaveLength(1);
+    await authorize(provider, mock.requests);
+    expect(mock.requests.filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))).toHaveLength(0);
     expect(
-      new URLSearchParams(
-        String(mock.requests.find(({ url }) => url.endsWith("/mcp-oauth/revoke"))!.init?.body),
-      ).get("client_id"),
-    ).toBe("dynamic-client-fixture");
-    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+      JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_SECRET_SUFFIX))).scopes,
+    ).toEqual(["workflow:execute", "workflow:read"]);
     await expect(provider.status()).resolves.toMatchObject({
-      state: "not_connected",
-      grantedCapabilities: [],
+      state: "connected",
+      grantedCapabilities: ["read", "write"],
     });
+    await provider.close();
+  });
+
+  it("requests only reviewed scopes the instance offers and ignores scopes it adds later", async () => {
+    const withoutAgents = SCOPES.filter((scope) => !scope.startsWith("agent:"));
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch({
+      scopes: withoutAgents,
+      advertisedScopes: [...withoutAgents, "aiPreference:write", "future:scope"],
+    });
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    const authorization = await authorize(provider, mock.requests);
+    expect(authorization.searchParams.get("scope")?.split(" ").toSorted()).toEqual(
+      [...withoutAgents].toSorted(),
+    );
+    await expect(provider.status()).resolves.toMatchObject({
+      state: "connected",
+      grantedCapabilities: ["read", "write"],
+    });
+    await provider.close();
+  });
+
+  it("refuses to start sign-in when the instance offers none of the reviewed scopes", async () => {
+    const mock = oauthMcpFetch({ advertisedScopes: ["future:scope"] });
+    const provider = new N8nProvider(
+      memorySecrets().service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    await expect(provider.connect(["read"], lifecycle())).rejects.toThrow(
+      /no longer offers any access/u,
+    );
     await provider.close();
   });
 
@@ -677,7 +723,7 @@ describe("N8nProvider", () => {
     await provider.close();
   });
 
-  it("fails closed on reviewed schema and effect-metadata drift without storing credentials", async () => {
+  it("pauses only the reviewed tool whose schema or effect metadata drifted", async () => {
     for (const mutateTools of [
       (tools: Record<string, unknown>[]) => {
         const first = tools[0]!;
@@ -688,27 +734,136 @@ describe("N8nProvider", () => {
       },
     ]) {
       const secrets = memorySecrets();
-      const mock = oauthMcpFetch({ scopes: READ_SCOPES, mutateTools });
+      const mock = oauthMcpFetch({ mutateTools });
       const provider = new N8nProvider(
         secrets.service,
         { serverUrl: SERVER },
         mock.fetchImplementation,
       );
-      const flow = await provider.connect(["read"], lifecycle());
-      if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
-      const authorization = new URL(flow.authorizationUrl);
-      const callback = new URL(authorization.searchParams.get("redirect_uri")!);
-      callback.searchParams.set("state", authorization.searchParams.get("state")!);
-      callback.searchParams.set("iss", ORIGIN);
-      callback.searchParams.set("code", "code");
-      await fetch(callback);
-      await expect(provider.poll(flow.flowId, lifecycle())).resolves.toMatchObject({
-        state: "failed",
-        message: expect.stringMatching(/changed|schema/u),
+      await authorize(provider, mock.requests);
+      await expect(provider.status()).resolves.toMatchObject({
+        state: "connected",
+        message: expect.stringMatching(/Paused .*: search_workflows\.$/u),
       });
-      expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+      await expect(
+        provider.invoke("n8n.search_workflows", { query: "x" }, invocation(false)),
+      ).rejects.toThrow(/not available/u);
+      await expect(
+        provider.invoke("n8n.search_projects", { limit: 1 }, invocation(false)),
+      ).resolves.toMatchObject({ content: [{ type: "text", text: "ok" }] });
       await provider.close();
     }
+  });
+
+  it("still fails verification when every reviewed tool drifted", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch({
+      mutateTools: (tools) => {
+        for (const tool of tools) delete tool.annotations;
+      },
+    });
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    const flow = await provider.connect(["read", "write"], lifecycle());
+    if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
+    const authorization = new URL(flow.authorizationUrl);
+    const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+    callback.searchParams.set("state", authorization.searchParams.get("state")!);
+    callback.searchParams.set("iss", ORIGIN);
+    callback.searchParams.set("code", "code");
+    await fetch(callback);
+    await expect(provider.poll(flow.flowId, lifecycle())).resolves.toMatchObject({
+      state: "failed",
+      message: expect.stringMatching(/changed every reviewed tool/u),
+    });
+    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+    await provider.close();
+  });
+
+  it(`matches every tool in the pinned n8n ${UPSTREAM_N8N_VERSION} catalog`, () => {
+    const reviewed = new Map(N8N_TOOLS.map((tool) => [tool.name.slice("n8n.".length), tool]));
+    expect([...reviewed.keys()].toSorted()).toEqual(UPSTREAM_TOOLS.map(({ name }) => name));
+    for (const upstream of UPSTREAM_TOOLS) {
+      const tool = reviewed.get(upstream.name)!;
+      expect(
+        firstSchemaDifference(
+          schemaContract(upstream.inputSchema),
+          schemaContract(expectedSchema(tool)),
+        ),
+        upstream.name,
+      ).toBeNull();
+      expect(
+        {
+          readOnlyHint: tool.readOnly,
+          destructiveHint: tool.destructive,
+          idempotentHint: tool.idempotent,
+          openWorldHint: tool.openWorld,
+        },
+        upstream.name,
+      ).toEqual(upstream.annotations);
+    }
+    const inventory = validateToolInventory({
+      tools: UPSTREAM_TOOLS.map(({ name, inputSchema, annotations }) => ({
+        name,
+        inputSchema,
+        annotations,
+      })),
+    });
+    expect(inventory.paused).toEqual([]);
+    expect(inventory.available.size).toBe(UPSTREAM_TOOLS.length);
+  });
+
+  it("decodes upstream-derived inputs strictly", async () => {
+    const createFolder = N8N_TOOLS.find(({ name }) => name === "n8n.create_folder")!;
+    await expect(
+      Schema.decodeUnknownPromise(createFolder.input)(
+        { projectId: "p", name: "Reports" },
+        { onExcessProperty: "error" },
+      ),
+    ).resolves.toEqual({ projectId: "p", name: "Reports" });
+    for (const input of [
+      { projectId: "p" },
+      { projectId: "p", name: "x".repeat(129) },
+      { projectId: "p", name: "Reports", extra: true },
+    ]) {
+      await expect(
+        Schema.decodeUnknownPromise(createFolder.input)(input, { onExcessProperty: "error" }),
+      ).rejects.toBeDefined();
+    }
+    const rows = N8N_TOOLS.find(({ name }) => name === "n8n.get_data_table_rows")!;
+    await expect(
+      Schema.decodeUnknownPromise(rows.input)(
+        {
+          dataTableId: "t",
+          projectId: "p",
+          filter: { filters: [{ columnName: "status", condition: "eq", value: null }] },
+        },
+        { onExcessProperty: "error" },
+      ),
+    ).resolves.toBeDefined();
+    await expect(
+      Schema.decodeUnknownPromise(rows.input)(
+        { dataTableId: "t", projectId: "p", filter: { filters: [] } },
+        { onExcessProperty: "error" },
+      ),
+    ).rejects.toBeDefined();
+    const callAgent = N8N_TOOLS.find(({ name }) => name === "n8n.call_agent")!;
+    expect(callAgent).toMatchObject({ readOnly: false, destructive: true, openWorld: true });
+    await expect(
+      Schema.decodeUnknownPromise(callAgent.input)(
+        { agentId: "a", request: { type: "message", message: "hi" } },
+        { onExcessProperty: "error" },
+      ),
+    ).resolves.toBeDefined();
+    await expect(
+      Schema.decodeUnknownPromise(callAgent.input)(
+        { agentId: "a", request: { type: "unknown" } },
+        { onExcessProperty: "error" },
+      ),
+    ).rejects.toBeDefined();
   });
 
   it("accepts a narrowed grant and blocks tools absent from the returned inventory", async () => {
@@ -838,25 +993,46 @@ describe("N8nProvider", () => {
     await restored.close();
   });
 
-  it("faults disconnect when revocation has an unknown external outcome", async () => {
-    const secrets = memorySecrets();
-    const mock = oauthMcpFetch();
-    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      if (String(input).endsWith("/mcp-oauth/revoke")) {
-        return json({ error: "fixture revocation failure" }, 503);
-      }
-      return mock.fetchImplementation(input, init);
-    }) as unknown as typeof fetch;
-    const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
-    await authorize(provider, mock.requests);
+  it("still clears the local credential when revocation or OAuth discovery fails", async () => {
+    for (const failing of [
+      "/mcp-oauth/revoke",
+      "/.well-known/oauth-protected-resource/mcp-server/http",
+    ]) {
+      const secrets = memorySecrets();
+      const mock = oauthMcpFetch();
+      let connected = false;
+      const fetchImplementation = vi.fn(
+        async (input: string | URL | Request, init?: RequestInit) => {
+          if (connected && String(input).endsWith(failing)) {
+            return json({ error: "fixture failure" }, 503);
+          }
+          return mock.fetchImplementation(input, init);
+        },
+      ) as unknown as typeof fetch;
+      const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
+      await authorize(provider, mock.requests);
+      connected = true;
 
-    await expect(provider.disconnect(lifecycle())).rejects.toMatchObject({
-      _tag: "ExternalCommitOutcomeUnknown",
-      code: "external_commit_outcome_unknown",
-      retryable: false,
-    });
-    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(true);
+      await expect(provider.disconnect(lifecycle())).resolves.toBeUndefined();
+      expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+      await expect(provider.status()).resolves.toMatchObject({ state: "not_connected" });
+      await provider.close();
+    }
+  });
+
+  it("removes an unreadable stored credential on disconnect", async () => {
+    const secrets = memorySecrets();
+    secrets.values.set(N8N_SECRET_SUFFIX, new TextEncoder().encode("not json"));
+    const mock = oauthMcpFetch();
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
     await expect(provider.status()).resolves.toMatchObject({ state: "error" });
+    await expect(provider.disconnect(lifecycle())).resolves.toBeUndefined();
+    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+    expect(mock.requests).toHaveLength(0);
     await provider.close();
   });
 
