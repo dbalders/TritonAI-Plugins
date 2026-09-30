@@ -82,8 +82,10 @@ Google's `gmail.compose` scope also authorizes sending at the token layer. This 
 exposes no send endpoint and never accepts an arbitrary Gmail method, URL, query body, or REST
 payload. The residual scope authority remains an administrator-review consideration.
 
-All four Drive write capabilities use Google's `drive` scope. The Harness enables each one only when
-the user has selected it, and the provider accepts only the fixed endpoints listed above. It never
+All four Drive write capabilities use Google's `drive` scope, so provider status reports all four as
+granted once that scope is approved. The Harness still advertises and invokes a tool only when the
+user has also selected its capability, and the provider accepts only the fixed endpoints listed
+above. It never
 accepts a Drive method, URL, field mask, or raw request body. The narrower `drive.file` scope was
 not used because it cannot edit files the user already has.
 

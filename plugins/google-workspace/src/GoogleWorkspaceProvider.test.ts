@@ -1517,7 +1517,15 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
           });
         }
         if (url.includes("/permissions")) return jsonResponse({ id: "perm-2" });
-        if (init?.method === "GET") return jsonResponse({ id: "file-1", parents: ["old-1"] });
+        if (url.includes("/files/root?")) {
+          return jsonResponse({ id: "root-id", mimeType: "application/vnd.google-apps.folder" });
+        }
+        if (url.includes("/files/new-1?")) {
+          return jsonResponse({ id: "new-1", mimeType: "application/vnd.google-apps.folder" });
+        }
+        if (init?.method === "GET") {
+          return jsonResponse({ id: "file-1", parents: ["root-id", "old-1"] });
+        }
         return jsonResponse({ id: "file-1", mimeType: "application/pdf" });
       },
     });
@@ -1599,10 +1607,11 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
         folderId: "new-1",
       });
       expect(apiCalls[4]?.init?.method).toBe("GET");
-      const move = new URL(apiCalls[5]!.url);
-      expect(apiCalls[5]?.init?.method).toBe("PATCH");
+      expect(new URL(apiCalls[5]!.url).pathname).toBe("/drive/v3/files/new-1");
+      const move = new URL(apiCalls[6]!.url);
+      expect(apiCalls[6]?.init?.method).toBe("PATCH");
       expect(move.searchParams.get("addParents")).toBe("new-1");
-      expect(move.searchParams.get("removeParents")).toBe("old-1");
+      expect(move.searchParams.get("removeParents")).toBe("root-id,old-1");
       expect(moveContext.beginCommit).toHaveBeenCalledOnce();
 
       await expect(
@@ -1612,7 +1621,7 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
           lifecycle([], true),
         ),
       ).resolves.toMatchObject({ status: "item-trashed" });
-      expect(body(6)).toEqual({ trashed: true });
+      expect(body(7)).toEqual({ trashed: true });
       await expect(
         fixture.provider.invoke(
           "googleworkspace.drive.item.restore",
@@ -1620,7 +1629,7 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
           lifecycle([], true),
         ),
       ).resolves.toMatchObject({ status: "item-restored" });
-      expect(body(7)).toEqual({ trashed: false });
+      expect(body(8)).toEqual({ trashed: false });
       await expect(
         fixture.provider.invoke(
           "googleworkspace.drive.item.delete",
@@ -1635,8 +1644,8 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
           lifecycle([], true),
         ),
       ).resolves.toEqual({ status: "item-deleted", itemId: "file-1" });
-      expect(apiCalls[8]?.init?.method).toBe("DELETE");
-      expect(new URL(apiCalls[8]!.url).pathname).toBe("/drive/v3/files/file-1");
+      expect(apiCalls[9]?.init?.method).toBe("DELETE");
+      expect(new URL(apiCalls[9]!.url).pathname).toBe("/drive/v3/files/file-1");
 
       const listed = (await fixture.provider.invoke(
         "googleworkspace.drive.permissions.list",
@@ -1688,10 +1697,10 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
         itemId: "file-1",
         permissionId: "perm-2",
       });
-      const share = new URL(apiCalls[10]!.url);
+      const share = new URL(apiCalls[11]!.url);
       expect(share.pathname).toBe("/drive/v3/files/file-1/permissions");
       expect(share.searchParams.get("sendNotificationEmail")).toBe("false");
-      expect(body(10)).toEqual({ type: "user", role: "commenter", emailAddress: "b@ucsd.edu" });
+      expect(body(11)).toEqual({ type: "user", role: "commenter", emailAddress: "b@ucsd.edu" });
       await expect(
         fixture.provider.invoke(
           "googleworkspace.drive.permission.create",
@@ -1699,7 +1708,7 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
           lifecycle([], true),
         ),
       ).resolves.toMatchObject({ status: "permission-created" });
-      expect(new URL(apiCalls[11]!.url).searchParams.has("sendNotificationEmail")).toBe(false);
+      expect(new URL(apiCalls[12]!.url).searchParams.has("sendNotificationEmail")).toBe(false);
       await expect(
         fixture.provider.invoke(
           "googleworkspace.drive.permission.update",
@@ -1707,8 +1716,8 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
           lifecycle([], true),
         ),
       ).resolves.toMatchObject({ status: "permission-updated" });
-      expect(apiCalls[12]?.init?.method).toBe("PATCH");
-      expect(body(12)).toEqual({ role: "reader" });
+      expect(apiCalls[13]?.init?.method).toBe("PATCH");
+      expect(body(13)).toEqual({ role: "reader" });
       await expect(
         fixture.provider.invoke(
           "googleworkspace.drive.permission.delete",
@@ -1720,8 +1729,28 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
         itemId: "file-1",
         permissionId: "perm-2",
       });
-      expect(apiCalls[13]?.init?.method).toBe("DELETE");
-      expect(new URL(apiCalls[13]!.url).pathname).toBe("/drive/v3/files/file-1/permissions/perm-2");
+      expect(apiCalls[14]?.init?.method).toBe("DELETE");
+      expect(new URL(apiCalls[14]!.url).pathname).toBe("/drive/v3/files/file-1/permissions/perm-2");
+
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.item.move",
+          { itemId: "file-1", folderId: "root" },
+          lifecycle([], true),
+        ),
+      ).resolves.toMatchObject({ status: "item-moved", folderId: "root-id" });
+      const rootMove = new URL(apiCalls[17]!.url);
+      expect(rootMove.searchParams.get("addParents")).toBe("root-id");
+      expect(rootMove.searchParams.get("removeParents")).toBe("old-1");
+      const fileMove = lifecycle([], true);
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.item.move",
+          { itemId: "file-1", folderId: "file-1" },
+          fileMove,
+        ),
+      ).rejects.toThrow(/must be a folder/u);
+      expect(fileMove.beginCommit).not.toHaveBeenCalled();
     } finally {
       await fixture.provider.close();
     }

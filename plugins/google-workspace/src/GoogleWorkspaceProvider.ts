@@ -3392,9 +3392,18 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
             : (() => {
                 throw new Error("Google Drive parent list is invalid.");
               })();
+      // Resolve aliases such as root so the destination compares against real parent IDs.
+      const folderUrl = new URL(`${DRIVE_API}/files/${encodeURIComponent(values.folderId)}`);
+      folderUrl.searchParams.set("supportsAllDrives", "true");
+      folderUrl.searchParams.set("fields", "id,mimeType");
+      const folder = await this.#apiJson(folderUrl, access.value, { signal: context?.signal });
+      const folderId = boundedString(folder.id, 1_024, "Google Drive folder");
+      if (folder.mimeType !== "application/vnd.google-apps.folder") {
+        throw new IntegrationProviderPublicError("Drive move destination must be a folder.");
+      }
       const url = new URL(`${DRIVE_API}/files/${encodeURIComponent(values.itemId)}`);
-      url.searchParams.set("addParents", values.folderId);
-      const removeParents = parents.filter((parent) => parent !== values.folderId);
+      url.searchParams.set("addParents", folderId);
+      const removeParents = parents.filter((parent) => parent !== folderId);
       if (removeParents.length > 0) url.searchParams.set("removeParents", removeParents.join(","));
       url.searchParams.set("supportsAllDrives", "true");
       url.searchParams.set("fields", "id,mimeType");
@@ -3405,7 +3414,7 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
         signal: commitSignal,
       });
       this.#assertInvocationCurrent(generation);
-      return { ...driveWriteReceipt("item-moved", result), folderId: values.folderId };
+      return { ...driveWriteReceipt("item-moved", result), folderId };
     }
 
     if (
