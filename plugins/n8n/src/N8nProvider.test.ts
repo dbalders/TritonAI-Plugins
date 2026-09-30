@@ -911,6 +911,60 @@ describe("N8nProvider", () => {
     ).rejects.toBeDefined();
   });
 
+  it("documents every update_workflow operation field and rejects guessed operation shapes", async () => {
+    const tool = (name: string) => N8N_TOOLS.find((candidate) => candidate.name === name)!;
+    const properties = (schema: unknown) =>
+      (schema as { properties: Record<string, { description?: string }> }).properties;
+    for (const name of ["n8n.update_workflow", "n8n.execute_workflow", "n8n.test_workflow"]) {
+      for (const [field, schema] of Object.entries(properties(expectedSchema(tool(name))))) {
+        expect(JSON.stringify(schema), `${name} ${field}`).toContain('"description"');
+      }
+    }
+    const updateWorkflow = tool("n8n.update_workflow");
+    const operation = (
+      expectedSchema(updateWorkflow) as { properties: { operations: { items: unknown } } }
+    ).properties.operations.items;
+    for (const [field, schema] of Object.entries(properties(operation))) {
+      expect(JSON.stringify(schema), `operations[].${field}`).toContain('"description"');
+    }
+    expect(updateWorkflow.description).toContain('"type": "updateNodeParameters"');
+    expect(updateWorkflow.description).not.toContain("Atomically");
+
+    // The shape an agent guessed in production: no updateNode type, no changes field.
+    const decode = Schema.decodeUnknownPromise(updateWorkflow.input);
+    await expect(
+      decode(
+        {
+          workflowId: "w",
+          operations: [
+            {
+              type: "updateNode",
+              nodeName: "Format Rows",
+              changes: { parameters: { jsCode: "return items;" } },
+            },
+          ],
+        },
+        { errors: "all", onExcessProperty: "error" },
+      ),
+    ).rejects.toBeDefined();
+    await expect(
+      decode(
+        {
+          workflowId: "w",
+          versionName: "Skip rows without an email",
+          operations: [
+            {
+              type: "updateNodeParameters",
+              nodeName: "Format Rows",
+              parameters: { jsCode: "return items;" },
+            },
+          ],
+        },
+        { errors: "all", onExcessProperty: "error" },
+      ),
+    ).resolves.toBeDefined();
+  });
+
   it("accepts a narrowed grant and blocks tools absent from the returned inventory", async () => {
     const secrets = memorySecrets();
     const mock = oauthMcpFetch({

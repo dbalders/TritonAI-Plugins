@@ -10528,31 +10528,66 @@ var WorkflowHistoryInput = Struct({
 });
 var WorkflowVersionInput = Struct({ workflowId: BoundedId, versionId: BoundedId });
 var ExecuteWorkflowInput = Struct({
-  workflowId: BoundedId,
-  executionMode: Literals(["manual", "production"]),
-  triggerNodeName: optionalKey2(BoundedText),
+  workflowId: BoundedId.annotate({ description: "ID of the workflow to execute." }),
+  executionMode: Literals(["manual", "production"]).annotate({
+    description: 'Use "manual" to test the current workflow, including against live external services. Use "production" only to intentionally run the published workflow live.'
+  }),
+  triggerNodeName: optionalKey2(
+    BoundedText.annotate({
+      description: "Trigger node to execute. Required with inputs. If omitted, the workflow must have exactly one trigger that needs no inputs (Schedule Trigger, or Manual Trigger in manual mode). get_workflow_details lists trigger names."
+    })
+  ),
   inputs: optionalKey2(
     Union2([
-      Struct({ chatInput: BoundedText }),
-      Struct({ formData: JsonObject }),
+      Struct({
+        chatInput: BoundedText.annotate({ description: "Input for chat-based workflows." })
+      }),
+      Struct({
+        formData: JsonObject.annotate({ description: "Input for form-based workflows." })
+      }),
       Struct({
         webhookData: Struct({
           method: optionalKey2(
-            Literals(["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+            Literals(["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]).annotate({
+              description: "HTTP method; defaults to GET."
+            })
           ),
-          query: optionalKey2(Record(BoundedText, String4)),
-          body: optionalKey2(JsonObject),
-          headers: optionalKey2(Record(BoundedText, String4))
-        })
+          query: optionalKey2(
+            Record(BoundedText, String4).annotate({
+              description: "Query string parameters."
+            })
+          ),
+          body: optionalKey2(
+            JsonObject.annotate({ description: "Request body; the main webhook payload." })
+          ),
+          headers: optionalKey2(
+            Record(BoundedText, String4).annotate({ description: "HTTP headers." })
+          )
+        }).annotate({ description: "Input for webhook-based workflows." })
       })
-    ])
+    ]).annotate({
+      description: "Trigger payload. Required for webhook, chat, and form triggers; omit for schedule and manual triggers. get_workflow_details shows each trigger's expected payload."
+    })
   )
 });
 var TestWorkflowInput = Struct({
-  workflowId: BoundedId,
-  pinData: Record(BoundedText, ArraySchema(JsonObject).check(isMaxLength(1e3))),
-  triggerNodeName: optionalKey2(BoundedText),
-  timeout: optionalKey2(Int.check(isBetween({ minimum: 1, maximum: 3600 })))
+  workflowId: BoundedId.annotate({ description: "ID of the workflow to test." }),
+  pinData: Record(
+    BoundedText,
+    ArraySchema(JsonObject).check(isMaxLength(1e3))
+  ).annotate({
+    description: `Pin data for the workflow's nodes; generate it with prepare_workflow_pin_data. Keys are node names and values are arrays of items. Wrap each item in "json", for example [{"json": {"id": "123"}}], never [{"id": "123"}].`
+  }),
+  triggerNodeName: optionalKey2(
+    BoundedText.annotate({
+      description: "Trigger node to start from; defaults to the first trigger node."
+    })
+  ),
+  timeout: optionalKey2(
+    Int.check(isBetween({ minimum: 1, maximum: 3600 })).annotate({
+      description: "Seconds before the test run is interrupted; defaults to 300."
+    })
+  )
 });
 var PublishWorkflowInput = Struct({
   workflowId: BoundedId,
@@ -10693,7 +10728,11 @@ var NodeConfiguration = Struct({
 var ValidateNodeConfigInput = Struct({
   nodes: ArraySchema(NodeConfiguration).check(isMinLength(1), isMaxLength(50))
 });
-var SkillsUsed = optionalKey2(ArraySchema(BoundedText).check(isMaxLength(100)));
+var SkillsUsed = optionalKey2(
+  ArraySchema(BoundedText).check(isMaxLength(100)).annotate({
+    description: 'Optional IDs of n8n skills used to prepare this call, for example "workflow-builder".'
+  })
+);
 var CreateWorkflowInput = Struct({
   code: Code,
   skillsUsed: SkillsUsed,
@@ -10719,29 +10758,37 @@ var NodeCredentials = Record(
 );
 var NewNode = Struct({
   id: optionalKey2(BoundedId),
-  name: BoundedText,
-  type: BoundedText,
+  name: BoundedText.annotate({ description: "Unique node name." }),
+  type: BoundedText.annotate({ description: 'Node type, for example "n8n-nodes-base.set".' }),
   typeVersion: Finite.check(isBetween({ minimum: 0, maximum: 1e4 })),
   parameters: optionalKey2(JsonObject),
-  position: optionalKey2(NodePosition),
+  position: optionalKey2(NodePosition.annotate({ description: "Canvas [x, y]." })),
   credentials: optionalKey2(NodeCredentials),
   disabled: optionalKey2(Boolean3),
   notes: optionalKey2(String4.check(isMaxLength(16384)))
 });
 var ConnectionFields = {
-  source: BoundedText,
-  target: BoundedText,
+  source: BoundedText.annotate({ description: "For connection ops; source node name." }),
+  target: BoundedText.annotate({ description: "For connection ops; target node name." }),
   sourceIndex: optionalKey2(
-    Int.check(isBetween({ minimum: 0, maximum: 1e3 }))
+    Int.check(isBetween({ minimum: 0, maximum: 1e3 })).annotate({
+      description: 'For connection ops; which output of the source node to connect from. Default 0, the first output. On an If node the false branch is 1. onError "continueErrorOutput" appends an error output after the regular ones (1 on a single-output node such as HTTP Request, 2 on an If node).'
+    })
   ),
   targetIndex: optionalKey2(
-    Int.check(isBetween({ minimum: 0, maximum: 1e3 }))
+    Int.check(isBetween({ minimum: 0, maximum: 1e3 })).annotate({
+      description: "For connection ops; which input of the target node to connect to. Default 0."
+    })
   ),
-  connectionType: optionalKey2(BoundedText)
+  connectionType: optionalKey2(
+    BoundedText.annotate({ description: 'For connection ops; default "main".' })
+  )
 };
 var UpdateSettings = Struct({
   onError: optionalKey2(
-    Literals(["stopWorkflow", "continueRegularOutput", "continueErrorOutput"])
+    Literals(["stopWorkflow", "continueRegularOutput", "continueErrorOutput"]).annotate({
+      description: 'Node error behavior. "continueErrorOutput" appends an error output after the regular outputs; wire it with addConnection using that sourceIndex.'
+    })
   ),
   retryOnFail: optionalKey2(Boolean3),
   maxTries: optionalKey2(Int.check(isBetween({ minimum: 2, maximum: 5 }))),
@@ -10750,8 +10797,16 @@ var UpdateSettings = Struct({
   ),
   alwaysOutputData: optionalKey2(Boolean3),
   executeOnce: optionalKey2(Boolean3),
-  errorWorkflow: optionalKey2(BoundedId),
-  timezone: optionalKey2(BoundedText),
+  errorWorkflow: optionalKey2(
+    BoundedId.annotate({
+      description: 'Workflow settings: ID of a separate workflow, containing an Error Trigger node, that runs when this workflow fails in production. Pass "DEFAULT" to clear it.'
+    })
+  ),
+  timezone: optionalKey2(
+    BoundedText.annotate({
+      description: 'Workflow settings: IANA timezone for Schedule Triggers and date operations, for example "America/Los_Angeles". Pass "DEFAULT" to inherit the instance timezone.'
+    })
+  ),
   executionOrder: optionalKey2(Literals(["v0", "v1"])),
   saveExecutionProgress: optionalKey2(
     Union2([Boolean3, Literal2("DEFAULT")])
@@ -10762,15 +10817,23 @@ var UpdateSettings = Struct({
   saveDataErrorExecution: optionalKey2(Literals(["DEFAULT", "all", "none"])),
   saveDataSuccessExecution: optionalKey2(Literals(["DEFAULT", "all", "none"])),
   executionTimeout: optionalKey2(
-    Int.check(isBetween({ minimum: -1, maximum: 31536e3 }))
+    Int.check(isBetween({ minimum: -1, maximum: 31536e3 })).annotate({
+      description: "Workflow settings: maximum run time in seconds, or -1 for no timeout."
+    })
   ),
   timeSavedPerExecution: optionalKey2(
     Int.check(isBetween({ minimum: 0, maximum: 1e6 }))
   ),
   callerPolicy: optionalKey2(
-    Literals(["any", "none", "workflowsFromAList", "workflowsFromSameOwner"])
+    Literals(["any", "none", "workflowsFromAList", "workflowsFromSameOwner"]).annotate({
+      description: 'Workflow settings: which workflows may call this one as a sub-workflow. Do not choose "any"; it is deprecated.'
+    })
   ),
-  callerIds: optionalKey2(String4.check(isMaxLength(16384)))
+  callerIds: optionalKey2(
+    String4.check(isMaxLength(16384)).annotate({
+      description: 'Comma-separated workflow IDs, used only with callerPolicy "workflowsFromAList".'
+    })
+  )
 });
 var UpdateOperation = Struct({
   type: Literals([
@@ -10793,32 +10856,72 @@ var UpdateOperation = Struct({
     "addNodeGroup",
     "removeNodeGroup",
     "updateNodeGroup"
-  ]),
-  nodeName: optionalKey2(BoundedText),
-  node: optionalKey2(NewNode),
-  parameters: optionalKey2(JsonObject),
-  replace: optionalKey2(Boolean3),
-  path: optionalKey2(
-    String4.check(isMinLength(2), isMaxLength(1024), isPattern2(/^\//u))
+  ]).annotate({ description: "Operation type. Each type uses only the fields documented for it." }),
+  nodeName: optionalKey2(
+    BoundedText.annotate({
+      description: "For node-targeted ops such as updateNodeParameters: the existing node's name."
+    })
   ),
-  value: optionalKey2(Unknown2),
-  oldName: optionalKey2(BoundedText),
-  newName: optionalKey2(BoundedText),
+  node: optionalKey2(NewNode.annotate({ description: "For addNode: the node to add." })),
+  parameters: optionalKey2(
+    JsonObject.annotate({
+      description: `For updateNodeParameters: parameters merged into the node's existing parameters, for example {"jsCode": "..."} for a Code node.`
+    })
+  ),
+  replace: optionalKey2(
+    Boolean3.annotate({
+      description: "For updateNodeParameters: true replaces all of the node's parameters instead of merging. Default false."
+    })
+  ),
+  path: optionalKey2(
+    String4.check(
+      isMinLength(2),
+      isMaxLength(1024),
+      isPattern2(/^\//u)
+    ).annotate({
+      description: "For setNodeParameter: JSON Pointer path."
+    })
+  ),
+  value: optionalKey2(Unknown2).annotateKey({
+    description: "For setNodeParameter: the new value at path."
+  }),
+  oldName: optionalKey2(
+    BoundedText.annotate({ description: "For renameNode: the current node name." })
+  ),
+  newName: optionalKey2(
+    BoundedText.annotate({ description: "For renameNode or updateNodeGroup: the new name." })
+  ),
   source: optionalKey2(ConnectionFields.source),
   target: optionalKey2(ConnectionFields.target),
   sourceIndex: ConnectionFields.sourceIndex,
   targetIndex: ConnectionFields.targetIndex,
   connectionType: ConnectionFields.connectionType,
-  credentialKey: optionalKey2(BoundedText),
-  credentialId: optionalKey2(BoundedId),
-  credentialName: optionalKey2(BoundedText),
-  position: optionalKey2(NodePosition),
-  disabled: optionalKey2(Boolean3),
-  settings: optionalKey2(UpdateSettings),
-  name: optionalKey2(String4.check(isMinLength(1), isMaxLength(128))),
-  description: optionalKey2(String4.check(isMaxLength(255))),
+  credentialKey: optionalKey2(
+    BoundedText.annotate({ description: "For setNodeCredential." })
+  ),
+  credentialId: optionalKey2(BoundedId.annotate({ description: "For setNodeCredential." })),
+  credentialName: optionalKey2(
+    BoundedText.annotate({ description: "For setNodeCredential." })
+  ),
+  position: optionalKey2(
+    NodePosition.annotate({ description: "For setNodePosition: canvas [x, y]." })
+  ),
+  disabled: optionalKey2(Boolean3.annotate({ description: "For setNodeDisabled." })),
+  settings: optionalKey2(
+    UpdateSettings.annotate({ description: "For setNodeSettings or setWorkflowSettings." })
+  ),
+  name: optionalKey2(
+    String4.check(isMinLength(1), isMaxLength(128)).annotate({
+      description: "For setWorkflowMetadata (workflow name) or addNodeGroup (group name)."
+    })
+  ),
+  description: optionalKey2(
+    String4.check(isMaxLength(255)).annotate({
+      description: "For setWorkflowMetadata, addNodeGroup, or updateNodeGroup."
+    })
+  ),
   names: optionalKey2(
-    ArraySchema(BoundedText).check(isMinLength(1), isMaxLength(100))
+    ArraySchema(BoundedText).check(isMinLength(1), isMaxLength(100)).annotate({ description: "For addTags or removeTags: tag names." })
   ),
   nodeGroups: optionalKey2(
     ArraySchema(
@@ -10828,22 +10931,36 @@ var UpdateOperation = Struct({
         nodeNames: ArraySchema(BoundedText).check(isMaxLength(250)),
         description: optionalKey2(String4.check(isMaxLength(1e3)))
       })
-    ).check(isMaxLength(100))
+    ).check(isMaxLength(100)).annotate({
+      description: "For setNodeGroups: replaces all node groups; pass [] to clear. Members are node names."
+    })
   ),
-  groupName: optionalKey2(BoundedText),
+  groupName: optionalKey2(
+    BoundedText.annotate({ description: "For removeNodeGroup or updateNodeGroup." })
+  ),
   nodeNames: optionalKey2(
-    ArraySchema(BoundedText).check(isMinLength(1), isMaxLength(250))
+    ArraySchema(BoundedText).check(isMinLength(1), isMaxLength(250)).annotate({ description: "For addNodeGroup or updateNodeGroup: member node names." })
   ),
-  id: optionalKey2(BoundedId)
+  id: optionalKey2(
+    BoundedId.annotate({ description: "For addNodeGroup: group ID, generated if omitted." })
+  )
 });
 var UpdateWorkflowInput = Struct({
-  workflowId: BoundedId,
+  workflowId: BoundedId.annotate({ description: "ID of the workflow to update." }),
   skillsUsed: SkillsUsed,
   versionName: optionalKey2(
-    String4.check(isMinLength(1), isMaxLength(80))
+    String4.check(isMinLength(1), isMaxLength(80)).annotate({
+      description: "Short summary of the change for the workflow's version history. Always set it."
+    })
   ),
-  versionDescription: optionalKey2(String4.check(isMaxLength(1e3))),
-  operations: ArraySchema(UpdateOperation).check(isMinLength(1), isMaxLength(100))
+  versionDescription: optionalKey2(
+    String4.check(isMaxLength(1e3)).annotate({
+      description: "Longer explanation of what changed and why, for the version history."
+    })
+  ),
+  operations: ArraySchema(UpdateOperation).check(isMinLength(1), isMaxLength(100)).annotate({
+    description: "Ordered operations (max 100). If one fails, nothing is saved, except invalid node-group operations (setNodeGroups, addNodeGroup, removeNodeGroup, updateNodeGroup), which are skipped and reported in skippedOperations while the rest saves."
+  })
 });
 var SearchDataTablesInput = Struct({
   query: OptionalQuery,
@@ -11054,7 +11171,7 @@ var HAND_REVIEWED_TOOLS = [
   ),
   reviewedTool(
     "update_workflow",
-    "Atomically apply a bounded ordered operation batch to a workflow.",
+    'Edit an existing workflow with an ordered list of operations. Each operation has a type and only the fields documented for that type. To change a Code node, send {"type": "updateNodeParameters", "nodeName": "<node name>", "parameters": {"jsCode": "<full new code>"}}. Read the workflow with get_workflow_details first to get exact node names. If an operation fails, nothing is saved, except invalid node-group operations, which are skipped and reported.',
     UpdateWorkflowInput,
     "write",
     { readOnly: false, destructive: true, idempotent: false }

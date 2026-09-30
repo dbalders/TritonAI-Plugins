@@ -25,6 +25,37 @@ execution, or Data Table state before changing it.
   Deleting a Data Table column permanently removes that column and its data.
 - `create_workflow_from_code` makes the new workflow available to MCP. Publishing is a separate
   action. Report the actual project and workflow identifiers returned by n8n.
+
+## Editing an existing workflow
+
+Use `update_workflow`, not a new workflow. Read `get_workflow_details` first and copy exact node
+names. Each operation has a `type` and only the fields documented for that type; there is no
+`updateNode` type and no `changes` field. To replace a Code node's JavaScript:
+
+```json
+{
+  "workflowId": "<workflow id>",
+  "versionName": "Skip rows without an email",
+  "operations": [
+    {
+      "type": "updateNodeParameters",
+      "nodeName": "Format Rows",
+      "parameters": { "jsCode": "<complete new code>" }
+    }
+  ]
+}
+```
+
+- `updateNodeParameters` merges `parameters` into the node's existing parameters. Set
+  `replace: true` only when every parameter the node needs is included.
+- Use `addNode`, `removeNode`, `renameNode`, `addConnection`, and `removeConnection` for structure
+  changes; connection operations use `source` and `target` node names.
+- Keep each call to one logical change so a failure is easy to read. If one operation fails,
+  nothing in that call is saved, except invalid node-group operations, which are skipped and
+  reported in `skippedOperations`.
+- If the call is rejected, read the error, fix the input, and retry. Do not report the tool as
+  unavailable because of an input error.
+- After saving, read `get_workflow_details` again to confirm the change before you report it.
 - Do not claim a workflow succeeded from an execution-start receipt. Use the returned execution ID
   and read its final status when the user needs completion proof.
 - At the start of open-ended work, read `get_instance_context` and `get_user_preferences` when they
