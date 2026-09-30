@@ -11,6 +11,7 @@ const sdkManifest = manifest as unknown as {
   readonly capabilities: readonly { readonly id: string; readonly access: string }[];
   readonly tools: readonly {
     readonly name: string;
+    readonly description: string;
     readonly effect: "read" | "write";
     readonly destructive: boolean;
     readonly idempotent: boolean;
@@ -50,8 +51,17 @@ describe("n8n SDK plugin factory", () => {
     expect(provider.id).toBe(sdkManifest.provider);
     expect(
       sdkManifest.tools.map(
-        ({ name, effect, destructive, idempotent, openWorld, inputSchema: input }) => ({
+        ({
           name,
+          description,
+          effect,
+          destructive,
+          idempotent,
+          openWorld,
+          inputSchema: input,
+        }) => ({
+          name,
+          description,
           effect,
           destructive,
           idempotent,
@@ -62,6 +72,7 @@ describe("n8n SDK plugin factory", () => {
     ).toEqual(
       N8N_TOOLS.map((tool) => ({
         name: tool.name,
+        description: tool.description,
         effect: tool.readOnly ? "read" : "write",
         destructive: tool.destructive,
         idempotent: tool.idempotent,

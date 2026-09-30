@@ -153,31 +153,70 @@ const WorkflowHistoryInput = Schema.Struct({
 });
 const WorkflowVersionInput = Schema.Struct({ workflowId: BoundedId, versionId: BoundedId });
 const ExecuteWorkflowInput = Schema.Struct({
-  workflowId: BoundedId,
-  executionMode: Schema.Literals(["manual", "production"]),
-  triggerNodeName: Schema.optionalKey(BoundedText),
+  workflowId: BoundedId.annotate({ description: "ID of the workflow to execute." }),
+  executionMode: Schema.Literals(["manual", "production"]).annotate({
+    description:
+      'Use "manual" to test the current workflow, including against live external services. Use "production" only to intentionally run the published workflow live.',
+  }),
+  triggerNodeName: Schema.optionalKey(
+    BoundedText.annotate({
+      description:
+        "Trigger node to execute. Required with inputs. If omitted, the workflow must have exactly one trigger that needs no inputs (Schedule Trigger, or Manual Trigger in manual mode). get_workflow_details lists trigger names.",
+    }),
+  ),
   inputs: Schema.optionalKey(
     Schema.Union([
-      Schema.Struct({ chatInput: BoundedText }),
-      Schema.Struct({ formData: JsonObject }),
+      Schema.Struct({
+        chatInput: BoundedText.annotate({ description: "Input for chat-based workflows." }),
+      }),
+      Schema.Struct({
+        formData: JsonObject.annotate({ description: "Input for form-based workflows." }),
+      }),
       Schema.Struct({
         webhookData: Schema.Struct({
           method: Schema.optionalKey(
-            Schema.Literals(["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]),
+            Schema.Literals(["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]).annotate({
+              description: "HTTP method; defaults to GET.",
+            }),
           ),
-          query: Schema.optionalKey(Schema.Record(BoundedText, Schema.String)),
-          body: Schema.optionalKey(JsonObject),
-          headers: Schema.optionalKey(Schema.Record(BoundedText, Schema.String)),
-        }),
+          query: Schema.optionalKey(
+            Schema.Record(BoundedText, Schema.String).annotate({
+              description: "Query string parameters.",
+            }),
+          ),
+          body: Schema.optionalKey(
+            JsonObject.annotate({ description: "Request body; the main webhook payload." }),
+          ),
+          headers: Schema.optionalKey(
+            Schema.Record(BoundedText, Schema.String).annotate({ description: "HTTP headers." }),
+          ),
+        }).annotate({ description: "Input for webhook-based workflows." }),
       }),
-    ]),
+    ]).annotate({
+      description:
+        "Trigger payload. Required for webhook, chat, and form triggers; omit for schedule and manual triggers. get_workflow_details shows each trigger's expected payload.",
+    }),
   ),
 });
 const TestWorkflowInput = Schema.Struct({
-  workflowId: BoundedId,
-  pinData: Schema.Record(BoundedText, Schema.Array(JsonObject).check(Schema.isMaxLength(1_000))),
-  triggerNodeName: Schema.optionalKey(BoundedText),
-  timeout: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3_600 }))),
+  workflowId: BoundedId.annotate({ description: "ID of the workflow to test." }),
+  pinData: Schema.Record(
+    BoundedText,
+    Schema.Array(JsonObject).check(Schema.isMaxLength(1_000)),
+  ).annotate({
+    description:
+      'Pin data for the workflow\'s nodes; generate it with prepare_workflow_pin_data. Keys are node names and values are arrays of items. Wrap each item in "json", for example [{"json": {"id": "123"}}], never [{"id": "123"}].',
+  }),
+  triggerNodeName: Schema.optionalKey(
+    BoundedText.annotate({
+      description: "Trigger node to start from; defaults to the first trigger node.",
+    }),
+  ),
+  timeout: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3_600 })).annotate({
+      description: "Seconds before the test run is interrupted; defaults to 300.",
+    }),
+  ),
 });
 const PublishWorkflowInput = Schema.Struct({
   workflowId: BoundedId,
@@ -318,7 +357,12 @@ const NodeConfiguration = Schema.Struct({
 const ValidateNodeConfigInput = Schema.Struct({
   nodes: Schema.Array(NodeConfiguration).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
 });
-const SkillsUsed = Schema.optionalKey(Schema.Array(BoundedText).check(Schema.isMaxLength(100)));
+const SkillsUsed = Schema.optionalKey(
+  Schema.Array(BoundedText).check(Schema.isMaxLength(100)).annotate({
+    description:
+      'Optional IDs of n8n skills used to prepare this call, for example "workflow-builder".',
+  }),
+);
 const CreateWorkflowInput = Schema.Struct({
   code: Code,
   skillsUsed: SkillsUsed,
@@ -340,62 +384,140 @@ const NodePosition = Schema.Array(PositionCoordinate).check(
 );
 const NodeCredentials = Schema.Record(
   BoundedText,
-  Schema.Struct({ id: Schema.optionalKey(BoundedId), name: BoundedText }),
-);
+  Schema.Struct({
+    id: Schema.optionalKey(BoundedId.annotate({ description: "Credential ID." })),
+    name: BoundedText.annotate({ description: "Credential name." }),
+  }),
+).annotate({
+  description:
+    'Credentials keyed by credential type, for example {"httpBasicAuth": {"id": "...", "name": "..."}}.',
+});
 const NewNode = Schema.Struct({
-  id: Schema.optionalKey(BoundedId),
-  name: BoundedText,
-  type: BoundedText,
-  typeVersion: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 10_000 })),
-  parameters: Schema.optionalKey(JsonObject),
-  position: Schema.optionalKey(NodePosition),
+  id: Schema.optionalKey(BoundedId.annotate({ description: "Optional node ID." })),
+  name: BoundedText.annotate({ description: "Unique node name." }),
+  type: BoundedText.annotate({ description: 'Node type, for example "n8n-nodes-base.set".' }),
+  typeVersion: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 10_000 })).annotate({
+    description: "Node type version; get_node_types lists the available versions.",
+  }),
+  parameters: Schema.optionalKey(JsonObject.annotate({ description: "Node parameters." })),
+  position: Schema.optionalKey(NodePosition.annotate({ description: "Canvas [x, y]." })),
   credentials: Schema.optionalKey(NodeCredentials),
-  disabled: Schema.optionalKey(Schema.Boolean),
-  notes: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(16_384))),
+  disabled: Schema.optionalKey(
+    Schema.Boolean.annotate({ description: "Add the node in a disabled state." }),
+  ),
+  notes: Schema.optionalKey(
+    Schema.String.check(Schema.isMaxLength(16_384)).annotate({
+      description: "Notes shown with the node on the canvas.",
+    }),
+  ),
 });
 const ConnectionFields = {
-  source: BoundedText,
-  target: BoundedText,
+  source: BoundedText.annotate({ description: "For connection ops; source node name." }),
+  target: BoundedText.annotate({ description: "For connection ops; target node name." }),
   sourceIndex: Schema.optionalKey(
-    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000 })),
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000 })).annotate({
+      description:
+        'For connection ops; which output of the source node to connect from. Default 0, the first output. On an If node the false branch is 1. onError "continueErrorOutput" appends an error output after the regular ones (1 on a single-output node such as HTTP Request, 2 on an If node).',
+    }),
   ),
   targetIndex: Schema.optionalKey(
-    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000 })),
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000 })).annotate({
+      description: "For connection ops; which input of the target node to connect to. Default 0.",
+    }),
   ),
-  connectionType: Schema.optionalKey(BoundedText),
+  connectionType: Schema.optionalKey(
+    BoundedText.annotate({ description: 'For connection ops; default "main".' }),
+  ),
 } as const;
 const UpdateSettings = Schema.Struct({
   onError: Schema.optionalKey(
-    Schema.Literals(["stopWorkflow", "continueRegularOutput", "continueErrorOutput"]),
+    Schema.Literals(["stopWorkflow", "continueRegularOutput", "continueErrorOutput"]).annotate({
+      description:
+        'Node error behavior. "continueErrorOutput" appends an error output after the regular outputs; wire it with addConnection using that sourceIndex.',
+    }),
   ),
-  retryOnFail: Schema.optionalKey(Schema.Boolean),
-  maxTries: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 2, maximum: 5 }))),
+  retryOnFail: Schema.optionalKey(
+    Schema.Boolean.annotate({ description: "Node settings: retry the node when it fails." }),
+  ),
+  maxTries: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 2, maximum: 5 })).annotate({
+      description: "Node settings: attempts when retryOnFail is on.",
+    }),
+  ),
   waitBetweenTries: Schema.optionalKey(
-    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 5_000 })),
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 5_000 })).annotate({
+      description: "Node settings: milliseconds to wait between retries.",
+    }),
   ),
-  alwaysOutputData: Schema.optionalKey(Schema.Boolean),
-  executeOnce: Schema.optionalKey(Schema.Boolean),
-  errorWorkflow: Schema.optionalKey(BoundedId),
-  timezone: Schema.optionalKey(BoundedText),
-  executionOrder: Schema.optionalKey(Schema.Literals(["v0", "v1"])),
+  alwaysOutputData: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description: "Node settings: output an empty item when the node returns no data.",
+    }),
+  ),
+  executeOnce: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description: "Node settings: run the node once, using only the first input item.",
+    }),
+  ),
+  errorWorkflow: Schema.optionalKey(
+    BoundedId.annotate({
+      description:
+        'Workflow settings: ID of a separate workflow, containing an Error Trigger node, that runs when this workflow fails in production. Pass "DEFAULT" to clear it.',
+    }),
+  ),
+  timezone: Schema.optionalKey(
+    BoundedText.annotate({
+      description:
+        'Workflow settings: IANA timezone for Schedule Triggers and date operations, for example "America/Los_Angeles". Pass "DEFAULT" to inherit the instance timezone.',
+    }),
+  ),
+  executionOrder: Schema.optionalKey(
+    Schema.Literals(["v0", "v1"]).annotate({
+      description: 'Workflow settings: node execution order. "v1" is the default; "v0" is legacy.',
+    }),
+  ),
   saveExecutionProgress: Schema.optionalKey(
-    Schema.Union([Schema.Boolean, Schema.Literal("DEFAULT")]),
+    Schema.Union([Schema.Boolean, Schema.Literal("DEFAULT")]).annotate({
+      description: "Workflow settings: save execution data after each node finishes.",
+    }),
   ),
   saveManualExecutions: Schema.optionalKey(
-    Schema.Union([Schema.Boolean, Schema.Literal("DEFAULT")]),
+    Schema.Union([Schema.Boolean, Schema.Literal("DEFAULT")]).annotate({
+      description: "Workflow settings: whether manual (test) executions are saved.",
+    }),
   ),
-  saveDataErrorExecution: Schema.optionalKey(Schema.Literals(["DEFAULT", "all", "none"])),
-  saveDataSuccessExecution: Schema.optionalKey(Schema.Literals(["DEFAULT", "all", "none"])),
+  saveDataErrorExecution: Schema.optionalKey(
+    Schema.Literals(["DEFAULT", "all", "none"]).annotate({
+      description: "Workflow settings: whether to store execution data for failed runs.",
+    }),
+  ),
+  saveDataSuccessExecution: Schema.optionalKey(
+    Schema.Literals(["DEFAULT", "all", "none"]).annotate({
+      description: "Workflow settings: whether to store execution data for successful runs.",
+    }),
+  ),
   executionTimeout: Schema.optionalKey(
-    Schema.Int.check(Schema.isBetween({ minimum: -1, maximum: 31_536_000 })),
+    Schema.Int.check(Schema.isBetween({ minimum: -1, maximum: 31_536_000 })).annotate({
+      description: "Workflow settings: maximum run time in seconds, or -1 for no timeout.",
+    }),
   ),
   timeSavedPerExecution: Schema.optionalKey(
-    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000 })),
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000 })).annotate({
+      description: "Workflow settings: estimated minutes saved per execution, for insights.",
+    }),
   ),
   callerPolicy: Schema.optionalKey(
-    Schema.Literals(["any", "none", "workflowsFromAList", "workflowsFromSameOwner"]),
+    Schema.Literals(["any", "none", "workflowsFromAList", "workflowsFromSameOwner"]).annotate({
+      description:
+        'Workflow settings: which workflows may call this one as a sub-workflow. Do not choose "any"; it is deprecated.',
+    }),
   ),
-  callerIds: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(16_384))),
+  callerIds: Schema.optionalKey(
+    Schema.String.check(Schema.isMaxLength(16_384)).annotate({
+      description:
+        'Comma-separated workflow IDs, used only with callerPolicy "workflowsFromAList".',
+    }),
+  ),
 });
 const UpdateOperation = Schema.Struct({
   type: Schema.Literals([
@@ -418,57 +540,129 @@ const UpdateOperation = Schema.Struct({
     "addNodeGroup",
     "removeNodeGroup",
     "updateNodeGroup",
-  ]),
-  nodeName: Schema.optionalKey(BoundedText),
-  node: Schema.optionalKey(NewNode),
-  parameters: Schema.optionalKey(JsonObject),
-  replace: Schema.optionalKey(Schema.Boolean),
-  path: Schema.optionalKey(
-    Schema.String.check(Schema.isMinLength(2), Schema.isMaxLength(1_024), Schema.isPattern(/^\//u)),
+  ]).annotate({ description: "Operation type. Each type uses only the fields documented for it." }),
+  nodeName: Schema.optionalKey(
+    BoundedText.annotate({
+      description: "For node-targeted ops such as updateNodeParameters: the existing node's name.",
+    }),
   ),
-  value: Schema.optionalKey(Schema.Unknown),
-  oldName: Schema.optionalKey(BoundedText),
-  newName: Schema.optionalKey(BoundedText),
+  node: Schema.optionalKey(NewNode.annotate({ description: "For addNode: the node to add." })),
+  parameters: Schema.optionalKey(
+    JsonObject.annotate({
+      description:
+        'For updateNodeParameters: parameters merged into the node\'s existing parameters, for example {"jsCode": "..."} for a Code node.',
+    }),
+  ),
+  replace: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description:
+        "For updateNodeParameters: true replaces all of the node's parameters instead of merging. Default false.",
+    }),
+  ),
+  path: Schema.optionalKey(
+    Schema.String.check(
+      Schema.isMinLength(2),
+      Schema.isMaxLength(1_024),
+      Schema.isPattern(/^\//u),
+    ).annotate({
+      description: "For setNodeParameter: JSON Pointer path.",
+    }),
+  ),
+  value: Schema.optionalKey(Schema.Unknown).annotateKey({
+    description: "For setNodeParameter: the new value at path.",
+  }),
+  oldName: Schema.optionalKey(
+    BoundedText.annotate({ description: "For renameNode: the current node name." }),
+  ),
+  newName: Schema.optionalKey(
+    BoundedText.annotate({ description: "For renameNode or updateNodeGroup: the new name." }),
+  ),
   source: Schema.optionalKey(ConnectionFields.source),
   target: Schema.optionalKey(ConnectionFields.target),
   sourceIndex: ConnectionFields.sourceIndex,
   targetIndex: ConnectionFields.targetIndex,
   connectionType: ConnectionFields.connectionType,
-  credentialKey: Schema.optionalKey(BoundedText),
-  credentialId: Schema.optionalKey(BoundedId),
-  credentialName: Schema.optionalKey(BoundedText),
-  position: Schema.optionalKey(NodePosition),
-  disabled: Schema.optionalKey(Schema.Boolean),
-  settings: Schema.optionalKey(UpdateSettings),
-  name: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
-  description: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(255))),
+  credentialKey: Schema.optionalKey(
+    BoundedText.annotate({ description: "For setNodeCredential." }),
+  ),
+  credentialId: Schema.optionalKey(BoundedId.annotate({ description: "For setNodeCredential." })),
+  credentialName: Schema.optionalKey(
+    BoundedText.annotate({ description: "For setNodeCredential." }),
+  ),
+  position: Schema.optionalKey(
+    NodePosition.annotate({ description: "For setNodePosition: canvas [x, y]." }),
+  ),
+  disabled: Schema.optionalKey(Schema.Boolean.annotate({ description: "For setNodeDisabled." })),
+  settings: Schema.optionalKey(
+    UpdateSettings.annotate({ description: "For setNodeSettings or setWorkflowSettings." }),
+  ),
+  name: Schema.optionalKey(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)).annotate({
+      description: "For setWorkflowMetadata (workflow name) or addNodeGroup (group name).",
+    }),
+  ),
+  description: Schema.optionalKey(
+    Schema.String.check(Schema.isMaxLength(255)).annotate({
+      description: "For setWorkflowMetadata, addNodeGroup, or updateNodeGroup.",
+    }),
+  ),
   names: Schema.optionalKey(
-    Schema.Array(BoundedText).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+    Schema.Array(BoundedText)
+      .check(Schema.isMinLength(1), Schema.isMaxLength(100))
+      .annotate({ description: "For addTags or removeTags: tag names." }),
   ),
   nodeGroups: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({
-        id: Schema.optionalKey(BoundedId),
-        name: BoundedText,
-        nodeNames: Schema.Array(BoundedText).check(Schema.isMaxLength(250)),
-        description: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(1_000))),
+        id: Schema.optionalKey(BoundedId.annotate({ description: "Group ID." })),
+        name: BoundedText.annotate({ description: "Group name." }),
+        nodeNames: Schema.Array(BoundedText)
+          .check(Schema.isMaxLength(250))
+          .annotate({ description: "Member node names." }),
+        description: Schema.optionalKey(
+          Schema.String.check(Schema.isMaxLength(1_000)).annotate({
+            description: "Group description.",
+          }),
+        ),
       }),
-    ).check(Schema.isMaxLength(100)),
+    )
+      .check(Schema.isMaxLength(100))
+      .annotate({
+        description:
+          "For setNodeGroups: replaces all node groups; pass [] to clear. Members are node names.",
+      }),
   ),
-  groupName: Schema.optionalKey(BoundedText),
+  groupName: Schema.optionalKey(
+    BoundedText.annotate({ description: "For removeNodeGroup or updateNodeGroup." }),
+  ),
   nodeNames: Schema.optionalKey(
-    Schema.Array(BoundedText).check(Schema.isMinLength(1), Schema.isMaxLength(250)),
+    Schema.Array(BoundedText)
+      .check(Schema.isMinLength(1), Schema.isMaxLength(250))
+      .annotate({ description: "For addNodeGroup or updateNodeGroup: member node names." }),
   ),
-  id: Schema.optionalKey(BoundedId),
+  id: Schema.optionalKey(
+    BoundedId.annotate({ description: "For addNodeGroup: group ID, generated if omitted." }),
+  ),
 });
 const UpdateWorkflowInput = Schema.Struct({
-  workflowId: BoundedId,
+  workflowId: BoundedId.annotate({ description: "ID of the workflow to update." }),
   skillsUsed: SkillsUsed,
   versionName: Schema.optionalKey(
-    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80)).annotate({
+      description: "Short summary of the change for the workflow's version history. Always set it.",
+    }),
   ),
-  versionDescription: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(1_000))),
-  operations: Schema.Array(UpdateOperation).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+  versionDescription: Schema.optionalKey(
+    Schema.String.check(Schema.isMaxLength(1_000)).annotate({
+      description: "Longer explanation of what changed and why, for the version history.",
+    }),
+  ),
+  operations: Schema.Array(UpdateOperation)
+    .check(Schema.isMinLength(1), Schema.isMaxLength(100))
+    .annotate({
+      description:
+        "Ordered operations (max 100). If one fails, nothing is saved, except invalid node-group operations (setNodeGroups, addNodeGroup, removeNodeGroup, updateNodeGroup), which are skipped and reported in skippedOperations while the rest saves.",
+    }),
 });
 const SearchDataTablesInput = Schema.Struct({
   query: OptionalQuery,
@@ -701,7 +895,7 @@ const HAND_REVIEWED_TOOLS = [
   ),
   reviewedTool(
     "update_workflow",
-    "Atomically apply a bounded ordered operation batch to a workflow.",
+    'Edit an existing workflow with an ordered list of operations. Each operation has a type and only the fields documented for that type. To change a Code node, send {"type": "updateNodeParameters", "nodeName": "<node name>", "parameters": {"jsCode": "<full new code>"}}. Read the workflow with get_workflow_details first to get exact node names. If an operation fails, nothing is saved, except invalid node-group operations, which are skipped and reported.',
     UpdateWorkflowInput,
     "write",
     { readOnly: false, destructive: true, idempotent: false },

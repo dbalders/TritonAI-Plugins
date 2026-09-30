@@ -911,6 +911,90 @@ describe("N8nProvider", () => {
     ).rejects.toBeDefined();
   });
 
+  it("documents every update_workflow operation field and rejects guessed operation shapes", async () => {
+    type JsonSchemaNode = Record<string, unknown>;
+    const tool = (name: string) => N8N_TOOLS.find((candidate) => candidate.name === name)!;
+    // Effect places a checked field's description inside its allOf refinements.
+    const described = (schema: JsonSchemaNode) =>
+      "description" in schema ||
+      ((schema.allOf ?? []) as ReadonlyArray<JsonSchemaNode>).some(
+        (member) => "description" in member,
+      );
+    const undescribed = (root: JsonSchemaNode) => {
+      const missing: Array<string> = [];
+      const visit = (value: JsonSchemaNode, path: string) => {
+        const schema =
+          typeof value.$ref === "string"
+            ? {
+                ...(root.$defs as Record<string, JsonSchemaNode>)[value.$ref.split("/").pop()!],
+                ...value,
+              }
+            : value;
+        for (const [key, child] of Object.entries(
+          (schema.properties ?? {}) as Record<string, JsonSchemaNode>,
+        )) {
+          const childPath = path ? `${path}.${key}` : key;
+          if (!described(child)) missing.push(childPath);
+          visit(child, childPath);
+        }
+        if (schema.items && typeof schema.items === "object") {
+          visit(schema.items as JsonSchemaNode, `${path}[]`);
+        }
+        if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
+          visit(schema.additionalProperties as JsonSchemaNode, `${path}{}`);
+        }
+        for (const member of [
+          ...((schema.anyOf ?? []) as ReadonlyArray<JsonSchemaNode>),
+          ...((schema.allOf ?? []) as ReadonlyArray<JsonSchemaNode>),
+        ]) {
+          visit(member, path);
+        }
+      };
+      visit(root, "");
+      return missing;
+    };
+    for (const name of ["n8n.update_workflow", "n8n.execute_workflow", "n8n.test_workflow"]) {
+      expect(undescribed(expectedSchema(tool(name)) as JsonSchemaNode), name).toEqual([]);
+    }
+    const updateWorkflow = tool("n8n.update_workflow");
+    expect(updateWorkflow.description).toContain('"type": "updateNodeParameters"');
+    expect(updateWorkflow.description).not.toContain("Atomically");
+
+    // The shape an agent guessed in production: no updateNode type, no changes field.
+    const decode = Schema.decodeUnknownPromise(updateWorkflow.input);
+    await expect(
+      decode(
+        {
+          workflowId: "w",
+          operations: [
+            {
+              type: "updateNode",
+              nodeName: "Format Rows",
+              changes: { parameters: { jsCode: "return items;" } },
+            },
+          ],
+        },
+        { errors: "all", onExcessProperty: "error" },
+      ),
+    ).rejects.toBeDefined();
+    await expect(
+      decode(
+        {
+          workflowId: "w",
+          versionName: "Skip rows without an email",
+          operations: [
+            {
+              type: "updateNodeParameters",
+              nodeName: "Format Rows",
+              parameters: { jsCode: "return items;" },
+            },
+          ],
+        },
+        { errors: "all", onExcessProperty: "error" },
+      ),
+    ).resolves.toBeDefined();
+  });
+
   it("accepts a narrowed grant and blocks tools absent from the returned inventory", async () => {
     const secrets = memorySecrets();
     const mock = oauthMcpFetch({

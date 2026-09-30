@@ -35,3 +35,37 @@ execution, or Data Table state before changing it.
   or changing its chat integrations.
 - `install_community_node` installs code onto the shared n8n instance. Only offer it for a verified
   package that `search_nodes` reported as missing, and confirm with the user first.
+
+## Editing an existing workflow
+
+Use `update_workflow`, not a new workflow. Read `get_workflow_details` first and copy exact node
+names. Each operation has a `type` and only the fields documented for that type; there is no
+`updateNode` type and no `changes` field. To replace a Code node's JavaScript:
+
+```json
+{
+  "workflowId": "<workflowId>",
+  "versionName": "Skip rows without an email",
+  "operations": [
+    {
+      "type": "updateNodeParameters",
+      "nodeName": "Format Rows",
+      "parameters": { "jsCode": "<complete new code>" }
+    }
+  ]
+}
+```
+
+- `updateNodeParameters` merges `parameters` into the node's existing parameters. Set
+  `replace: true` only when every parameter the node needs is included.
+- Use `addNode`, `removeNode`, `renameNode`, `addConnection`, and `removeConnection` for structure
+  changes; connection operations use `source` and `target` node names.
+- Keep each call to one logical change so a failure is easy to read. If one operation fails,
+  nothing in that call is saved, except invalid node-group operations, which are skipped and
+  reported in `skippedOperations`. n8n also removes an existing group that an edit leaves invalid
+  and reports it in `removedGroups`. Check both before you report the edit as complete.
+- If the call is rejected as invalid input, nothing was sent to n8n: read the error, fix the
+  input, and retry. Do not report the tool as unavailable because of an input error.
+- If the result says the operation may have completed, do not resend it. Read
+  `get_workflow_details` first, because repeating structural operations can duplicate changes.
+- After saving, read `get_workflow_details` again to confirm the change before you report it.
