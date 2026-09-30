@@ -243,7 +243,24 @@ describe("MicrosoftGraphProvider contract", () => {
         "microsoft365.chat.message.send",
         { readOnly: false, destructive: false, idempotent: false },
       ],
+      ["microsoft365.files.list", { readOnly: true, destructive: false, idempotent: true }],
+      ["microsoft365.files.search", { readOnly: true, destructive: false, idempotent: true }],
+      ["microsoft365.files.get", { readOnly: true, destructive: false, idempotent: true }],
+      ["microsoft365.files.content.get", { readOnly: true, destructive: false, idempotent: true }],
+      [
+        "microsoft365.files.folder.create",
+        { readOnly: false, destructive: false, idempotent: false },
+      ],
+      ["microsoft365.files.create", { readOnly: false, destructive: false, idempotent: false }],
+      [
+        "microsoft365.files.content.update",
+        { readOnly: false, destructive: true, idempotent: false },
+      ],
+      ["microsoft365.files.rename", { readOnly: false, destructive: true, idempotent: false }],
     ]);
+    expect(MICROSOFT_GRAPH_TOOLS.map(({ name }) => name).toSorted()).toEqual(
+      [...expected.keys()].toSorted(),
+    );
     for (const tool of MICROSOFT_GRAPH_TOOLS) {
       expect(tool).toMatchObject({ ...expected.get(tool.name), openWorld: true });
       expect(Schema.toJsonSchemaDocument(tool.input).schema).toMatchObject({ type: "object" });
@@ -277,6 +294,8 @@ describe("MicrosoftGraphProvider contract", () => {
         "calendar.write",
         "chat.read",
         "chat.write",
+        "files.read",
+        "files.write",
       ],
       lifecycle(),
     );
@@ -288,11 +307,15 @@ describe("MicrosoftGraphProvider contract", () => {
       "Calendars.ReadWrite",
       "Chat.Read",
       "Chat.ReadWrite",
+      "Files.Read",
+      "Files.ReadWrite",
     ]) {
       expect(body).toContain(scope);
     }
     expect(body).not.toContain("Mail.Send");
     expect(body).not.toContain("ChatMessage.Send");
+    expect(body).not.toContain("Files.ReadWrite.All");
+    expect(body).not.toContain("Sites.");
     expect(body).not.toContain(".default");
   });
 
@@ -2604,6 +2627,16 @@ describe("MicrosoftGraphProvider tools", () => {
     await expect(
       graph.invoke("microsoft365.chat.message.send", { chatId: "chat-1", body: "x" }),
     ).rejects.toThrow(/not granted/u);
+    await expect(graph.invoke("microsoft365.files.list", {})).rejects.toThrow(/not granted/u);
+    await expect(
+      graph.invoke("microsoft365.files.content.get", { itemId: "item-1" }),
+    ).rejects.toThrow(/not granted/u);
+    await expect(
+      graph.invoke("microsoft365.files.create", { name: "a.txt", content: "x" }, invocation()),
+    ).rejects.toThrow(/not granted/u);
+    await expect(
+      graph.invoke("microsoft365.files.rename", { itemId: "item-1", name: "b" }, invocation()),
+    ).rejects.toThrow(/not granted/u);
     expect(graphCalls).toBe(0);
   });
 
@@ -3118,5 +3151,395 @@ describe("MicrosoftGraphProvider tools", () => {
     });
     releaseGraph();
     await expect(invocation).rejects.toThrow(/revoked/u);
+  });
+});
+
+describe("MicrosoftGraphProvider OneDrive tools", () => {
+  const webUrl = "https://contoso-my.sharepoint.com/personal/person/Documents/notes.txt";
+  const downloadUrl =
+    "https://contoso-my.sharepoint.com/personal/person/_layouts/15/download.aspx?UniqueId=fixture";
+  const driveFile = {
+    id: "item/id?fixture",
+    name: "notes.txt",
+    size: 5,
+    file: { mimeType: "text/plain", hashes: { quickXorHash: "fixture" } },
+    parentReference: { id: "parent-1", driveId: "drive-1", path: "/drive/root:" },
+    webUrl,
+    createdDateTime: "2026-07-01T00:00:00Z",
+    lastModifiedDateTime: "2026-07-02T00:00:00Z",
+    createdBy: { user: { displayName: "Person" } },
+    fixtureProperty: { preserved: true },
+  };
+  const projectedFile = {
+    id: "item/id?fixture",
+    name: "notes.txt",
+    kind: "file",
+    size: 5,
+    parentId: "parent-1",
+    webUrl,
+    mimeType: "text/plain",
+    childCount: null,
+    createdDateTime: "2026-07-01T00:00:00Z",
+    lastModifiedDateTime: "2026-07-02T00:00:00Z",
+  };
+  const fileReceipt = {
+    id: "item/id?fixture",
+    name: "notes.txt",
+    kind: "file",
+    size: 5,
+    parentId: "parent-1",
+    webUrl,
+  };
+
+  function driveFetch(
+    scopes: string,
+    route: (url: string, init?: RequestInit) => Response | Promise<Response>,
+  ) {
+    const calls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody(`offline_access ${scopes}`));
+      calls.push({ url, init });
+      return route(url, init);
+    }) as typeof fetch;
+    return { calls, fetchImplementation };
+  }
+
+  it("lists, searches, and reads OneDrive metadata through fixed projections", async () => {
+    const secrets = memorySecrets();
+    const folder = {
+      id: "folder-1",
+      name: "Reports",
+      folder: { childCount: 3 },
+      parentReference: { id: "root-id" },
+      webUrl: "https://contoso-my.sharepoint.com/personal/person/Documents/Reports",
+      createdDateTime: null,
+      lastModifiedDateTime: "2026-07-03T00:00:00Z",
+    };
+    const { calls, fetchImplementation } = driveFetch("Files.Read", (url) =>
+      url.includes("/children?") || url.includes("/search(")
+        ? jsonResponse({
+            value: [driveFile, folder],
+            "@odata.nextLink": "https://graph.microsoft.com/v1.0/ignored-page",
+          })
+        : jsonResponse(driveFile),
+    );
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["files.read"]);
+
+    const listing = {
+      items: [
+        projectedFile,
+        {
+          id: "folder-1",
+          name: "Reports",
+          kind: "folder",
+          size: null,
+          parentId: "root-id",
+          webUrl: "https://contoso-my.sharepoint.com/personal/person/Documents/Reports",
+          mimeType: null,
+          childCount: 3,
+          createdDateTime: null,
+          lastModifiedDateTime: "2026-07-03T00:00:00Z",
+        },
+      ],
+      hasMore: true,
+    };
+    await expect(graph.invoke("microsoft365.files.list", {})).resolves.toEqual(listing);
+    await expect(
+      graph.invoke("microsoft365.files.list", { folderId: "folder/1", limit: 10 }),
+    ).resolves.toEqual(listing);
+    await expect(
+      graph.invoke("microsoft365.files.search", { query: " budget's plan ", limit: 5 }),
+    ).resolves.toEqual(listing);
+    await expect(
+      graph.invoke("microsoft365.files.get", { itemId: "item/id?fixture" }),
+    ).resolves.toEqual(projectedFile);
+
+    const urls = calls.map(({ url }) => new URL(url));
+    expect(urls[0]?.pathname).toBe("/v1.0/me/drive/root/children");
+    expect(urls[0]?.searchParams.get("$top")).toBe("50");
+    expect(urls[1]?.pathname).toBe("/v1.0/me/drive/items/folder%2F1/children");
+    expect(urls[1]?.searchParams.get("$top")).toBe("10");
+    expect(calls[2]?.url).toContain("/v1.0/me/drive/root/search(q='budget''s%20plan')?");
+    expect(urls[2]?.searchParams.get("$top")).toBe("5");
+    expect(urls[3]?.pathname).toBe("/v1.0/me/drive/items/item%2Fid%3Ffixture");
+    for (const url of urls) {
+      expect(url.searchParams.get("$select")).toBe(
+        "id,name,size,file,folder,parentReference,webUrl,createdDateTime,lastModifiedDateTime",
+      );
+    }
+    for (const { init } of calls) expect(init?.method).toBe("GET");
+  });
+
+  it("downloads bounded file content without the Graph token or returning the download URL", async () => {
+    const secrets = memorySecrets();
+    const binary = Uint8Array.from([0, 159, 146, 150]);
+    const { calls, fetchImplementation } = driveFetch("Files.Read", (url) => {
+      if (url.startsWith(downloadUrl)) {
+        return new Response(url.endsWith("binary") ? binary : "hello", {
+          headers: { "content-type": "application/octet-stream" },
+        });
+      }
+      return url.includes("binary")
+        ? jsonResponse({
+            ...driveFile,
+            id: "binary",
+            size: 4,
+            "@microsoft.graph.downloadUrl": `${downloadUrl}&binary`,
+          })
+        : jsonResponse({ ...driveFile, "@microsoft.graph.downloadUrl": downloadUrl });
+    });
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["files.read"]);
+
+    const text = await graph.invoke("microsoft365.files.content.get", {
+      itemId: "item/id?fixture",
+    });
+    expect(text).toEqual({ ...projectedFile, contentEncoding: "text", content: "hello" });
+    const encoded = await graph.invoke("microsoft365.files.content.get", { itemId: "binary" });
+    expect(encoded).toMatchObject({
+      id: "binary",
+      size: 4,
+      contentEncoding: "base64",
+      content: Buffer.from(binary).toString("base64"),
+    });
+    expect(JSON.stringify([text, encoded])).not.toContain("download.aspx");
+
+    expect(new URL(calls[0]!.url).pathname).toBe("/v1.0/me/drive/items/item%2Fid%3Ffixture");
+    expect(new URL(calls[0]!.url).search).toBe("");
+    expect(calls[1]?.url).toBe(downloadUrl);
+    expect(calls[1]?.init?.redirect).toBe("error");
+    expect(new Headers(calls[1]?.init?.headers).has("authorization")).toBe(false);
+    expect(new Headers(calls[0]?.init?.headers).get("authorization")).toMatch(/^Bearer /u);
+  });
+
+  it("refuses folders, oversize files, and non-SharePoint download hosts before downloading", async () => {
+    const secrets = memorySecrets();
+    const items: Record<string, unknown> = {
+      folder: { id: "folder", name: "Reports", folder: { childCount: 0 } },
+      large: {
+        ...driveFile,
+        id: "large",
+        size: 256 * 1024 + 1,
+        "@microsoft.graph.downloadUrl": downloadUrl,
+      },
+      "foreign-host": {
+        ...driveFile,
+        id: "foreign-host",
+        "@microsoft.graph.downloadUrl": "https://attacker.example/download",
+      },
+      "http-host": {
+        ...driveFile,
+        id: "http-host",
+        "@microsoft.graph.downloadUrl": downloadUrl.replace("https:", "http:"),
+      },
+      "missing-url": { ...driveFile, id: "missing-url" },
+    };
+    const { calls, fetchImplementation } = driveFetch("Files.Read", (url) =>
+      jsonResponse(items[decodeURIComponent(new URL(url).pathname.split("/").at(-1)!)]),
+    );
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["files.read"]);
+
+    await expect(
+      graph.invoke("microsoft365.files.content.get", { itemId: "folder" }),
+    ).rejects.toThrow(/not a file/u);
+    await expect(
+      graph.invoke("microsoft365.files.content.get", { itemId: "large" }),
+    ).rejects.toThrow(/256 KB/u);
+    for (const itemId of ["foreign-host", "http-host", "missing-url"]) {
+      await expect(graph.invoke("microsoft365.files.content.get", { itemId })).rejects.toThrow(
+        /Microsoft/u,
+      );
+    }
+    expect(calls.every(({ url }) => url.startsWith("https://graph.microsoft.com/"))).toBe(true);
+  });
+
+  it("rejects projected item URLs outside SharePoint hosts", async () => {
+    const secrets = memorySecrets();
+    const { fetchImplementation } = driveFetch("Files.Read", () =>
+      jsonResponse({ ...driveFile, webUrl: "https://example.com/notes.txt" }),
+    );
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["files.read"]);
+    await expect(graph.invoke("microsoft365.files.get", { itemId: "item-1" })).rejects.toThrow(
+      /invalid response/u,
+    );
+  });
+
+  it("creates folders and new files, replaces content, and renames through fixed endpoints", async () => {
+    const secrets = memorySecrets();
+    const events: string[] = [];
+    const { calls, fetchImplementation } = driveFetch("Files.ReadWrite", (_url, init) => {
+      events.push("graph");
+      return jsonResponse(driveFile, init?.method === "PATCH" ? 200 : 201);
+    });
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["files.write"]);
+
+    await expect(
+      graph.invoke("microsoft365.files.folder.create", { name: "Reports" }, invocation(events)),
+    ).resolves.toEqual(fileReceipt);
+    await expect(
+      graph.invoke(
+        "microsoft365.files.folder.create",
+        { name: "Q3", parentFolderId: "folder/1" },
+        invocation(events),
+      ),
+    ).resolves.toEqual(fileReceipt);
+    await expect(
+      graph.invoke(
+        "microsoft365.files.create",
+        { name: "notes #1.md", content: "# Notes", contentType: "text/markdown" },
+        invocation(events),
+      ),
+    ).resolves.toEqual(fileReceipt);
+    await expect(
+      graph.invoke(
+        "microsoft365.files.create",
+        {
+          name: "image.png",
+          parentFolderId: "folder/1",
+          content: "AAECAw==",
+          contentEncoding: "base64",
+          contentType: "image/png",
+          conflictBehavior: "rename",
+        },
+        invocation(events),
+      ),
+    ).resolves.toEqual(fileReceipt);
+    await expect(
+      graph.invoke(
+        "microsoft365.files.content.update",
+        { itemId: "item/id?fixture", content: "hello" },
+        invocation(events),
+      ),
+    ).resolves.toEqual(fileReceipt);
+    await expect(
+      graph.invoke(
+        "microsoft365.files.rename",
+        { itemId: "item/id?fixture", name: "renamed.txt" },
+        invocation(events),
+      ),
+    ).resolves.toEqual(fileReceipt);
+
+    expect(events).toEqual(Array.from({ length: 6 }, () => ["beginCommit", "graph"]).flat());
+    const request = (index: number) => ({
+      url: calls[index]?.url,
+      method: calls[index]?.init?.method,
+      contentType: new Headers(calls[index]?.init?.headers).get("content-type"),
+    });
+    expect(request(0)).toEqual({
+      url: "https://graph.microsoft.com/v1.0/me/drive/root/children",
+      method: "POST",
+      contentType: "application/json",
+    });
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      name: "Reports",
+      folder: {},
+      "@microsoft.graph.conflictBehavior": "fail",
+    });
+    expect(request(1).url).toBe(
+      "https://graph.microsoft.com/v1.0/me/drive/items/folder%2F1/children",
+    );
+    expect(request(2)).toEqual({
+      url: "https://graph.microsoft.com/v1.0/me/drive/root:/notes%20%231.md:/content?@microsoft.graph.conflictBehavior=fail",
+      method: "PUT",
+      contentType: "text/markdown; charset=utf-8",
+    });
+    expect(new TextDecoder().decode(calls[2]?.init?.body as Uint8Array)).toBe("# Notes");
+    expect(request(3)).toEqual({
+      url: "https://graph.microsoft.com/v1.0/me/drive/items/folder%2F1:/image.png:/content?@microsoft.graph.conflictBehavior=rename",
+      method: "PUT",
+      contentType: "image/png",
+    });
+    expect(Array.from(calls[3]!.init!.body as Uint8Array)).toEqual([0, 1, 2, 3]);
+    expect(request(4)).toEqual({
+      url: "https://graph.microsoft.com/v1.0/me/drive/items/item%2Fid%3Ffixture/content",
+      method: "PUT",
+      contentType: "text/plain; charset=utf-8",
+    });
+    expect(request(5)).toEqual({
+      url: "https://graph.microsoft.com/v1.0/me/drive/items/item%2Fid%3Ffixture",
+      method: "PATCH",
+      contentType: "application/json",
+    });
+    expect(JSON.parse(String(calls[5]?.init?.body))).toEqual({ name: "renamed.txt" });
+  });
+
+  it("keeps OneDrive read and write capabilities independent", async () => {
+    const secrets = memorySecrets();
+    const { calls, fetchImplementation } = driveFetch("Files.ReadWrite", () =>
+      jsonResponse(driveFile),
+    );
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["files.write"]);
+    await expect(graph.invoke("microsoft365.files.list", {})).rejects.toThrow(/not granted/u);
+    await expect(graph.invoke("microsoft365.files.get", { itemId: "item-1" })).rejects.toThrow(
+      /not granted/u,
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects unsafe OneDrive input and unapproved writes before Graph", async () => {
+    const secrets = memorySecrets();
+    const { calls, fetchImplementation } = driveFetch("Files.Read Files.ReadWrite", () =>
+      jsonResponse(driveFile),
+    );
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["files.read", "files.write"]);
+
+    for (const name of [
+      "",
+      "..",
+      "a/b",
+      "a\\b",
+      "a:b",
+      'a"b',
+      "a*b",
+      "a?b",
+      "a<b",
+      "a|b",
+      " leading",
+      "trailing ",
+      "trailing.",
+      "line\nbreak",
+      "x".repeat(256),
+    ]) {
+      await expect(
+        graph.invoke("microsoft365.files.create", { name, content: "x" }, invocation()),
+      ).rejects.toBeDefined();
+      await expect(
+        graph.invoke("microsoft365.files.rename", { itemId: "item-1", name }, invocation()),
+      ).rejects.toBeDefined();
+    }
+    for (const input of [
+      { name: "a.bin", content: "not base64!", contentEncoding: "base64" },
+      { name: "a.bin", content: "AAE", contentEncoding: "base64" },
+      { name: "a.txt", content: "x", contentType: "text/plain; charset=utf-8" },
+      { name: "a.txt", content: "x", conflictBehavior: "replace" },
+      { name: "a.txt", content: "x".repeat(4 * 1024 * 1024 + 1) },
+      { name: "a.txt", content: "é".repeat(2 * 1024 * 1024 + 1) },
+      { name: "a.txt", content: "x", extra: true },
+    ]) {
+      await expect(
+        graph.invoke("microsoft365.files.create", input, invocation()),
+      ).rejects.toBeDefined();
+    }
+    await expect(graph.invoke("microsoft365.files.search", { query: "  " })).rejects.toBeDefined();
+    await expect(graph.invoke("microsoft365.files.list", { limit: 101 })).rejects.toBeDefined();
+    await expect(
+      graph.invoke("microsoft365.files.create", { name: "a.txt", content: "x" }),
+    ).rejects.toThrow(/commit admission/u);
+    await expect(
+      graph.invoke(
+        "microsoft365.files.content.update",
+        { itemId: "item-1", content: "x" },
+        { ...invocation(), writeApproved: false },
+      ),
+    ).rejects.toThrow(/commit admission/u);
+    expect(calls).toHaveLength(0);
   });
 });

@@ -215,6 +215,98 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly destructive: false;
     readonly idempotent: false;
     readonly openWorld: true;
+}, {
+    readonly name: "microsoft365.files.list";
+    readonly description: "List bounded item metadata in the OneDrive root or one exact OneDrive folder through a fixed projection.";
+    readonly input: Schema.Struct<{
+        readonly folderId: Schema.optionalKey<Schema.String>;
+        readonly limit: Schema.optionalKey<Schema.Int>;
+    }>;
+    readonly readOnly: true;
+    readonly destructive: false;
+    readonly idempotent: true;
+    readonly openWorld: true;
+}, {
+    readonly name: "microsoft365.files.search";
+    readonly description: "Search the signed-in user's OneDrive and return bounded item metadata.";
+    readonly input: Schema.Struct<{
+        readonly query: Schema.String;
+        readonly limit: Schema.optionalKey<Schema.Int>;
+    }>;
+    readonly readOnly: true;
+    readonly destructive: false;
+    readonly idempotent: true;
+    readonly openWorld: true;
+}, {
+    readonly name: "microsoft365.files.get";
+    readonly description: "Read metadata for one exact OneDrive item through a fixed projection.";
+    readonly input: Schema.Struct<{
+        readonly itemId: Schema.String;
+    }>;
+    readonly readOnly: true;
+    readonly destructive: false;
+    readonly idempotent: true;
+    readonly openWorld: true;
+}, {
+    readonly name: "microsoft365.files.content.get";
+    readonly description: "Read the content of one exact OneDrive file of at most 256 KB as UTF-8 text or base64.";
+    readonly input: Schema.Struct<{
+        readonly itemId: Schema.String;
+    }>;
+    readonly readOnly: true;
+    readonly destructive: false;
+    readonly idempotent: true;
+    readonly openWorld: true;
+}, {
+    readonly name: "microsoft365.files.folder.create";
+    readonly description: "Create one OneDrive folder in the root or an exact parent folder.";
+    readonly input: Schema.Struct<{
+        readonly name: Schema.String;
+        readonly parentFolderId: Schema.optionalKey<Schema.String>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: false;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "microsoft365.files.create";
+    readonly description: "Upload one new OneDrive file of at most 4 MB without replacing an existing file.";
+    readonly input: Schema.Struct<{
+        readonly conflictBehavior: Schema.optionalKey<Schema.Literals<readonly ["fail", "rename"]>>;
+        readonly content: Schema.String;
+        readonly contentEncoding: Schema.optionalKey<Schema.Literals<readonly ["text", "base64"]>>;
+        readonly contentType: Schema.optionalKey<Schema.String>;
+        readonly name: Schema.String;
+        readonly parentFolderId: Schema.optionalKey<Schema.String>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: false;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "microsoft365.files.content.update";
+    readonly description: "Replace the content of one exact OneDrive file, at most 4 MB, as a new version.";
+    readonly input: Schema.Struct<{
+        readonly content: Schema.String;
+        readonly contentEncoding: Schema.optionalKey<Schema.Literals<readonly ["text", "base64"]>>;
+        readonly contentType: Schema.optionalKey<Schema.String>;
+        readonly itemId: Schema.String;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: true;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "microsoft365.files.rename";
+    readonly description: "Rename one exact OneDrive item without moving it.";
+    readonly input: Schema.Struct<{
+        readonly itemId: Schema.String;
+        readonly name: Schema.String;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: true;
+    readonly idempotent: false;
+    readonly openWorld: true;
 }];
 type Fetch = typeof globalThis.fetch;
 export declare class MicrosoftGraphProvider implements IntegrationProvider {
@@ -426,6 +518,98 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         }>;
         readonly readOnly: false;
         readonly destructive: false;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.files.list";
+        readonly description: "List bounded item metadata in the OneDrive root or one exact OneDrive folder through a fixed projection.";
+        readonly input: Schema.Struct<{
+            readonly folderId: Schema.optionalKey<Schema.String>;
+            readonly limit: Schema.optionalKey<Schema.Int>;
+        }>;
+        readonly readOnly: true;
+        readonly destructive: false;
+        readonly idempotent: true;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.files.search";
+        readonly description: "Search the signed-in user's OneDrive and return bounded item metadata.";
+        readonly input: Schema.Struct<{
+            readonly query: Schema.String;
+            readonly limit: Schema.optionalKey<Schema.Int>;
+        }>;
+        readonly readOnly: true;
+        readonly destructive: false;
+        readonly idempotent: true;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.files.get";
+        readonly description: "Read metadata for one exact OneDrive item through a fixed projection.";
+        readonly input: Schema.Struct<{
+            readonly itemId: Schema.String;
+        }>;
+        readonly readOnly: true;
+        readonly destructive: false;
+        readonly idempotent: true;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.files.content.get";
+        readonly description: "Read the content of one exact OneDrive file of at most 256 KB as UTF-8 text or base64.";
+        readonly input: Schema.Struct<{
+            readonly itemId: Schema.String;
+        }>;
+        readonly readOnly: true;
+        readonly destructive: false;
+        readonly idempotent: true;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.files.folder.create";
+        readonly description: "Create one OneDrive folder in the root or an exact parent folder.";
+        readonly input: Schema.Struct<{
+            readonly name: Schema.String;
+            readonly parentFolderId: Schema.optionalKey<Schema.String>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: false;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.files.create";
+        readonly description: "Upload one new OneDrive file of at most 4 MB without replacing an existing file.";
+        readonly input: Schema.Struct<{
+            readonly conflictBehavior: Schema.optionalKey<Schema.Literals<readonly ["fail", "rename"]>>;
+            readonly content: Schema.String;
+            readonly contentEncoding: Schema.optionalKey<Schema.Literals<readonly ["text", "base64"]>>;
+            readonly contentType: Schema.optionalKey<Schema.String>;
+            readonly name: Schema.String;
+            readonly parentFolderId: Schema.optionalKey<Schema.String>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: false;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.files.content.update";
+        readonly description: "Replace the content of one exact OneDrive file, at most 4 MB, as a new version.";
+        readonly input: Schema.Struct<{
+            readonly content: Schema.String;
+            readonly contentEncoding: Schema.optionalKey<Schema.Literals<readonly ["text", "base64"]>>;
+            readonly contentType: Schema.optionalKey<Schema.String>;
+            readonly itemId: Schema.String;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: true;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.files.rename";
+        readonly description: "Rename one exact OneDrive item without moving it.";
+        readonly input: Schema.Struct<{
+            readonly itemId: Schema.String;
+            readonly name: Schema.String;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: true;
         readonly idempotent: false;
         readonly openWorld: true;
     }];

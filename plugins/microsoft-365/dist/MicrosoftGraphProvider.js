@@ -16,6 +16,9 @@ const VERIFICATION_HOSTS = new Set([
 ]);
 const OUTLOOK_WEB_HOSTS = new Set(["outlook.office.com", "outlook.office365.com"]);
 const TEAMS_WEB_HOSTS = new Set(["teams.cloud.microsoft", "teams.microsoft.com"]);
+// OneDrive for Business web and pre-authenticated download URLs live on the tenant's own
+// SharePoint host, such as contoso-my.sharepoint.com, so only the fixed suffix is allowlisted.
+const SHAREPOINT_HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.sharepoint\.com$/u;
 const OFFLINE_SCOPE = "offline_access";
 const OIDC_RESPONSE_SCOPES = new Set(["openid", "profile", "email"]);
 const DELETION_MOVE_DESTINATIONS = new Set(["deleteditems", "recoverableitemsdeletions"]);
@@ -32,6 +35,8 @@ const CAPABILITY_SCOPES = {
     // The tenant already approved Chat.ReadWrite for this public client. The provider's fixed tool
     // surface remains send-only for this capability and never exposes chat create/edit/delete.
     "chat.write": "Chat.ReadWrite",
+    "files.read": "Files.Read",
+    "files.write": "Files.ReadWrite",
 };
 const CAPABILITY_NAMES = new Set(Object.keys(CAPABILITY_SCOPES));
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
@@ -51,6 +56,10 @@ const MAX_DRAFT_ATTACHMENT_BASE64_CHARS = 3_999_996;
 const MAX_DRAFT_REQUEST_BYTES = 4 * 1024 * 1024;
 const MAX_CHAT_BODY_CHARS = 20_000;
 const MAX_CHAT_REQUEST_BYTES = 28 * 1024;
+// Base64 of this many bytes stays below the serialized host result ceiling.
+const MAX_FILE_CONTENT_BYTES = 256 * 1024;
+const MAX_FILE_UPLOAD_BYTES = 4 * 1024 * 1024;
+const MAX_FILE_UPLOAD_BASE64_CHARS = Math.ceil(MAX_FILE_UPLOAD_BYTES / 3) * 4;
 const ACCESS_TOKEN_SKEW_MS = 60_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -221,6 +230,61 @@ const ChatMessageSendInput = Schema.Struct({
     }),
     body: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_CHAT_BODY_CHARS)).annotate({ description: "Plain-text chat message whose encoded request is at most 28 KB." }),
 });
+const DriveItemId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512));
+// OneDrive rejects these characters and leading or trailing spaces and trailing periods. Rejecting
+// them locally also keeps names from acting as path segments in path-addressed uploads.
+const DriveItemName = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255), Schema.isPattern(/^(?! )[^"*:<>?/\\|\p{Cc}]+(?<![ .])$/u)).annotate({
+    description: 'OneDrive item name without path separators, control characters, or "*:<>?| characters.',
+});
+const DriveParentFolderId = Schema.optionalKey(DriveItemId.annotate({
+    description: "Optional exact parent OneDrive folder identifier; defaults to the OneDrive root.",
+}));
+const FileContentFields = {
+    content: Schema.String.check(Schema.isMaxLength(MAX_FILE_UPLOAD_BASE64_CHARS)).annotate({
+        description: "File content as UTF-8 text or standard base64 (decoded maximum 4 MB).",
+    }),
+    contentEncoding: Schema.optionalKey(Schema.Literals(["text", "base64"]).annotate({
+        description: "Encoding of content; defaults to text.",
+    })),
+    contentType: Schema.optionalKey(Schema.String.check(Schema.isMinLength(3), Schema.isMaxLength(255), Schema.isPattern(/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/u)).annotate({ description: "Optional MIME type of the content, without parameters." })),
+};
+const FilesListInput = Schema.Struct({
+    folderId: Schema.optionalKey(DriveItemId.annotate({
+        description: "Optional exact OneDrive folder identifier; defaults to the OneDrive root.",
+    })),
+    limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })).annotate({
+        description: "Maximum number of items (1-100).",
+    })),
+});
+const FilesSearchInput = Schema.Struct({
+    query: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200), Schema.isPattern(/\S/u)).annotate({ description: "OneDrive search text (maximum 200 characters)." }),
+    limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })).annotate({
+        description: "Maximum number of items (1-50).",
+    })),
+});
+const FilesGetInput = Schema.Struct({
+    itemId: DriveItemId.annotate({ description: "Exact OneDrive item identifier." }),
+});
+const FilesFolderCreateInput = Schema.Struct({
+    name: DriveItemName,
+    parentFolderId: DriveParentFolderId,
+});
+const FilesCreateInput = Schema.Struct({
+    name: DriveItemName,
+    parentFolderId: DriveParentFolderId,
+    ...FileContentFields,
+    conflictBehavior: Schema.optionalKey(Schema.Literals(["fail", "rename"]).annotate({
+        description: "Fail (default) or pick a unique name when the folder already has an item with this name. Existing files are never replaced.",
+    })),
+});
+const FilesContentUpdateInput = Schema.Struct({
+    itemId: DriveItemId.annotate({ description: "Exact OneDrive file identifier." }),
+    ...FileContentFields,
+});
+const FilesRenameInput = Schema.Struct({
+    itemId: DriveItemId.annotate({ description: "Exact OneDrive item identifier." }),
+    name: DriveItemName,
+});
 const decodeMailSearchInput = Schema.decodeUnknownPromise(MailSearchInput);
 const decodeMailGetInput = Schema.decodeUnknownPromise(MailGetInput);
 const decodeMailFolderListInput = Schema.decodeUnknownPromise(MailFolderListInput);
@@ -238,6 +302,13 @@ const decodeCalendarEventUpdateInput = Schema.decodeUnknownPromise(CalendarEvent
 const decodeChatListInput = Schema.decodeUnknownPromise(ChatListInput);
 const decodeChatMessagesInput = Schema.decodeUnknownPromise(ChatMessagesInput);
 const decodeChatMessageSendInput = Schema.decodeUnknownPromise(ChatMessageSendInput);
+const decodeFilesListInput = Schema.decodeUnknownPromise(FilesListInput);
+const decodeFilesSearchInput = Schema.decodeUnknownPromise(FilesSearchInput);
+const decodeFilesGetInput = Schema.decodeUnknownPromise(FilesGetInput);
+const decodeFilesFolderCreateInput = Schema.decodeUnknownPromise(FilesFolderCreateInput);
+const decodeFilesCreateInput = Schema.decodeUnknownPromise(FilesCreateInput);
+const decodeFilesContentUpdateInput = Schema.decodeUnknownPromise(FilesContentUpdateInput);
+const decodeFilesRenameInput = Schema.decodeUnknownPromise(FilesRenameInput);
 export const MICROSOFT_GRAPH_TOOLS = [
     {
         name: "microsoft365.mail.search",
@@ -392,6 +463,78 @@ export const MICROSOFT_GRAPH_TOOLS = [
         idempotent: false,
         openWorld: true,
     },
+    {
+        name: "microsoft365.files.list",
+        description: "List bounded item metadata in the OneDrive root or one exact OneDrive folder through a fixed projection.",
+        input: FilesListInput,
+        readOnly: true,
+        destructive: false,
+        idempotent: true,
+        openWorld: true,
+    },
+    {
+        name: "microsoft365.files.search",
+        description: "Search the signed-in user's OneDrive and return bounded item metadata.",
+        input: FilesSearchInput,
+        readOnly: true,
+        destructive: false,
+        idempotent: true,
+        openWorld: true,
+    },
+    {
+        name: "microsoft365.files.get",
+        description: "Read metadata for one exact OneDrive item through a fixed projection.",
+        input: FilesGetInput,
+        readOnly: true,
+        destructive: false,
+        idempotent: true,
+        openWorld: true,
+    },
+    {
+        name: "microsoft365.files.content.get",
+        description: "Read the content of one exact OneDrive file of at most 256 KB as UTF-8 text or base64.",
+        input: FilesGetInput,
+        readOnly: true,
+        destructive: false,
+        idempotent: true,
+        openWorld: true,
+    },
+    {
+        name: "microsoft365.files.folder.create",
+        description: "Create one OneDrive folder in the root or an exact parent folder.",
+        input: FilesFolderCreateInput,
+        readOnly: false,
+        destructive: false,
+        idempotent: false,
+        openWorld: true,
+    },
+    {
+        name: "microsoft365.files.create",
+        description: "Upload one new OneDrive file of at most 4 MB without replacing an existing file.",
+        input: FilesCreateInput,
+        readOnly: false,
+        destructive: false,
+        idempotent: false,
+        openWorld: true,
+    },
+    {
+        name: "microsoft365.files.content.update",
+        description: "Replace the content of one exact OneDrive file, at most 4 MB, as a new version.",
+        input: FilesContentUpdateInput,
+        readOnly: false,
+        destructive: true,
+        idempotent: false,
+        openWorld: true,
+    },
+    {
+        name: "microsoft365.files.rename",
+        description: "Rename one exact OneDrive item without moving it.",
+        input: FilesRenameInput,
+        readOnly: false,
+        destructive: true,
+        idempotent: false,
+        openWorld: true,
+    },
 ];
 function validateEntraIdentifier(value, label) {
     const normalized = value.trim();
@@ -441,7 +584,9 @@ function boundedOptionalHttpsUrl(value, maximumBytes, allowedHosts) {
         url.username !== "" ||
         url.password !== "" ||
         url.port !== "" ||
-        !allowedHosts.has(url.hostname)) {
+        !(allowedHosts instanceof RegExp
+            ? allowedHosts.test(url.hostname)
+            : allowedHosts.has(url.hostname))) {
         throw new Error("Microsoft returned an invalid response.");
     }
     return boundedString(url.toString(), maximumBytes);
@@ -600,6 +745,17 @@ async function readJson(response, maximumBytes) {
     if (contentType && !contentType.includes("application/json")) {
         throw new Error("Microsoft returned an invalid content type.");
     }
+    const bytes = await readBytes(response, maximumBytes);
+    try {
+        return asRecord(JSON.parse(decoder.decode(bytes)));
+    }
+    catch (error) {
+        if (error instanceof Error && error.message.startsWith("Microsoft returned"))
+            throw error;
+        throw new Error("Microsoft returned invalid JSON.");
+    }
+}
+async function readBytes(response, maximumBytes) {
     const declaredLength = Number(response.headers.get("content-length"));
     if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
         throw new Error("Microsoft response exceeded the allowed size.");
@@ -631,14 +787,7 @@ async function readJson(response, maximumBytes) {
         bytes.set(chunk, offset);
         offset += chunk.byteLength;
     }
-    try {
-        return asRecord(JSON.parse(decoder.decode(bytes)));
-    }
-    catch (error) {
-        if (error instanceof Error && error.message.startsWith("Microsoft returned"))
-            throw error;
-        throw new Error("Microsoft returned invalid JSON.");
-    }
+    return bytes;
 }
 function collectionResult(value, maximumItems) {
     if (!Array.isArray(value.value) || value.value.length > maximumItems) {
@@ -966,6 +1115,95 @@ function mailMoveReceipt(value) {
         parentFolderId: boundedString(value.parentFolderId, 512),
     };
 }
+const DRIVE_ITEM_FIELDS = "id,name,size,file,folder,parentReference,webUrl,createdDateTime,lastModifiedDateTime";
+function driveItemPath(itemId) {
+    return itemId === undefined ? "/me/drive/root" : `/me/drive/items/${encodeURIComponent(itemId)}`;
+}
+function optionalRecord(value) {
+    return value === null || value === undefined ? null : asRecord(value);
+}
+function optionalCount(value) {
+    return value === null || value === undefined
+        ? null
+        : boundedInteger(value, 0, Number.MAX_SAFE_INTEGER);
+}
+function driveItemKind(value) {
+    if (optionalRecord(value.folder) !== null)
+        return "folder";
+    if (optionalRecord(value.file) !== null)
+        return "file";
+    return "other";
+}
+function driveItemReceipt(value) {
+    const parent = optionalRecord(value.parentReference);
+    return {
+        id: boundedString(value.id, 512),
+        name: boundedString(value.name, 1_024),
+        kind: driveItemKind(value),
+        size: optionalCount(value.size),
+        parentId: parent === null ? null : boundedOptionalString(parent.id, 512),
+        webUrl: boundedOptionalHttpsUrl(value.webUrl, 2_048, SHAREPOINT_HOST),
+    };
+}
+function driveItemFields(value) {
+    const file = optionalRecord(value.file);
+    const folder = optionalRecord(value.folder);
+    return {
+        ...driveItemReceipt(value),
+        mimeType: file === null ? null : boundedOptionalString(file.mimeType, 255),
+        childCount: folder === null ? null : optionalCount(folder.childCount),
+        createdDateTime: boundedOptionalString(value.createdDateTime, 64),
+        lastModifiedDateTime: boundedOptionalString(value.lastModifiedDateTime, 64),
+    };
+}
+function driveItemsResult(value, limit) {
+    const collection = collectionResult(value, limit);
+    return boundedResult({
+        items: collection.items.map((item) => driveItemFields(asRecord(item))),
+        hasMore: collection.hasMore,
+    });
+}
+function driveItemContentResult(item, bytes) {
+    const metadata = driveItemFields(item);
+    let text = null;
+    try {
+        text = decoder.decode(bytes);
+    }
+    catch {
+        text = null;
+    }
+    if (text !== null && !text.includes("\u0000")) {
+        const result = { ...metadata, contentEncoding: "text", content: text };
+        if (utf8Length(JSON.stringify(result)) <= MAX_RESULT_BYTES)
+            return result;
+    }
+    return boundedResult({
+        ...metadata,
+        contentEncoding: "base64",
+        content: Buffer.from(bytes).toString("base64"),
+    });
+}
+function fileUpload(values) {
+    const text = (values.contentEncoding ?? "text") === "text";
+    let bytes;
+    if (text) {
+        bytes = encoder.encode(values.content);
+    }
+    else {
+        if (!BASE64_PATTERN.test(values.content)) {
+            throw new IntegrationProviderPublicError("File content is not valid base64.");
+        }
+        bytes = Uint8Array.from(Buffer.from(values.content, "base64"));
+    }
+    if (bytes.byteLength > MAX_FILE_UPLOAD_BYTES) {
+        throw new IntegrationProviderPublicError("File content exceeds the 4 MB upload limit.");
+    }
+    const contentType = values.contentType ?? (text ? "text/plain" : "application/octet-stream");
+    return {
+        contentType: text && contentType.startsWith("text/") ? `${contentType}; charset=utf-8` : contentType,
+        bytes,
+    };
+}
 function recipients(addresses) {
     return addresses.map((address) => ({ emailAddress: { address } }));
 }
@@ -1028,7 +1266,13 @@ export class MicrosoftGraphProvider {
         this.#fetch = fetchImplementation;
         this.#requestTimeoutMs = requestTimeoutMs;
     }
-    async #request(input, init, maximumBytes, inspectResponse) {
+    #request(input, init, maximumBytes, inspectResponse) {
+        return this.#send(input, init, async (response) => {
+            inspectResponse?.(response);
+            return { response, json: await readJson(response, maximumBytes) };
+        });
+    }
+    async #send(input, init, consume) {
         if (this.#closed)
             throw new Error("Microsoft 365 is closed.");
         const controller = new AbortController();
@@ -1044,8 +1288,7 @@ export class MicrosoftGraphProvider {
                 redirect: "error",
                 signal,
             });
-            inspectResponse?.(response);
-            return { response, json: await readJson(response, maximumBytes) };
+            return await consume(response);
         }
         catch (error) {
             if (init.signal?.aborted)
@@ -1449,6 +1692,8 @@ export class MicrosoftGraphProvider {
         const headers = { authorization: `Bearer ${accessToken}` };
         if (options.body !== undefined)
             headers["content-type"] = "application/json";
+        if (options.upload !== undefined)
+            headers["content-type"] = options.upload.contentType;
         if (options.preferPlainTextBody === true) {
             headers.prefer = 'outlook.body-content-type="text"';
         }
@@ -1456,6 +1701,7 @@ export class MicrosoftGraphProvider {
             method: options.method ?? "GET",
             headers,
             ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+            ...(options.upload === undefined ? {} : { body: options.upload.bytes }),
             signal: options.signal ?? null,
         }, options.maximumResponseBytes ?? GRAPH_RESPONSE_BYTES, (received) => {
             if (received.status === 401 && this.#accessToken?.value === accessToken) {
@@ -1484,6 +1730,19 @@ export class MicrosoftGraphProvider {
             throw new Error(`Microsoft Graph request failed with HTTP ${response.status}.`);
         }
         return json;
+    }
+    #download(downloadUrl, signal) {
+        // The pre-authenticated URL carries its own short-lived authorization; the Graph access token
+        // is never sent to it.
+        return this.#send(downloadUrl, { method: "GET", signal: signal ?? null }, async (response) => {
+            if (!response.ok) {
+                await response.body?.cancel().catch(() => undefined);
+                throw new IntegrationProviderPublicError("Microsoft 365 could not download the OneDrive file.");
+            }
+            return response.body === null
+                ? new Uint8Array()
+                : readBytes(response, MAX_FILE_CONTENT_BYTES);
+        });
     }
     async #beginInvocationCommit(context) {
         if (context?.writeApproved !== true || typeof context.beginCommit !== "function") {
@@ -1860,6 +2119,132 @@ export class MicrosoftGraphProvider {
             });
             this.#assertInvocationCurrent(generation);
             return chatMessageResult(result);
+        }
+        if (toolName === "microsoft365.files.list") {
+            this.#requireCapability(access, "files.read");
+            const values = await decodeFilesListInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const limit = values.limit ?? 50;
+            const params = new URLSearchParams({ $top: String(limit), $select: DRIVE_ITEM_FIELDS });
+            const result = await this.#graph(`${driveItemPath(values.folderId)}/children?${params.toString()}`, access.value, { signal: context?.signal });
+            this.#assertInvocationCurrent(generation);
+            return driveItemsResult(result, limit);
+        }
+        if (toolName === "microsoft365.files.search") {
+            this.#requireCapability(access, "files.read");
+            const values = await decodeFilesSearchInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const limit = values.limit ?? 25;
+            const query = encodeURIComponent(values.query.trim().replaceAll("'", "''"));
+            const params = new URLSearchParams({ $top: String(limit), $select: DRIVE_ITEM_FIELDS });
+            const result = await this.#graph(`/me/drive/root/search(q='${query}')?${params.toString()}`, access.value, { signal: context?.signal });
+            this.#assertInvocationCurrent(generation);
+            return driveItemsResult(result, limit);
+        }
+        if (toolName === "microsoft365.files.get") {
+            this.#requireCapability(access, "files.read");
+            const values = await decodeFilesGetInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const params = new URLSearchParams({ $select: DRIVE_ITEM_FIELDS });
+            const result = await this.#graph(`${driveItemPath(values.itemId)}?${params.toString()}`, access.value, { signal: context?.signal });
+            this.#assertInvocationCurrent(generation);
+            return boundedResult(driveItemFields(result));
+        }
+        if (toolName === "microsoft365.files.content.get") {
+            this.#requireCapability(access, "files.read");
+            const values = await decodeFilesGetInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            // The default item projection carries the short-lived download URL; $select is not used
+            // because Graph only guarantees that annotation on the unfiltered item.
+            const item = await this.#graph(driveItemPath(values.itemId), access.value, {
+                signal: context?.signal,
+            });
+            this.#assertInvocationCurrent(generation);
+            if (driveItemKind(item) !== "file") {
+                throw new IntegrationProviderPublicError("The OneDrive item is not a file.");
+            }
+            const size = optionalCount(item.size);
+            if (size === null || size > MAX_FILE_CONTENT_BYTES) {
+                throw new IntegrationProviderPublicError("The OneDrive file is larger than the 256 KB content read limit.");
+            }
+            const downloadUrl = boundedOptionalHttpsUrl(item["@microsoft.graph.downloadUrl"], 8_192, SHAREPOINT_HOST);
+            if (downloadUrl === null) {
+                throw new Error("Microsoft Graph did not return a OneDrive download location.");
+            }
+            const bytes = size === 0 ? new Uint8Array() : await this.#download(downloadUrl, context?.signal);
+            this.#assertInvocationCurrent(generation);
+            return driveItemContentResult(item, bytes);
+        }
+        if (toolName === "microsoft365.files.folder.create") {
+            this.#requireCapability(access, "files.write");
+            const values = await decodeFilesFolderCreateInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const commitSignal = await this.#beginInvocationCommit(context);
+            this.#assertInvocationCurrent(generation);
+            const result = await this.#graph(`${driveItemPath(values.parentFolderId)}/children`, access.value, {
+                method: "POST",
+                body: { name: values.name, folder: {}, "@microsoft.graph.conflictBehavior": "fail" },
+                signal: commitSignal,
+            });
+            this.#assertInvocationCurrent(generation);
+            return driveItemReceipt(result);
+        }
+        if (toolName === "microsoft365.files.create") {
+            this.#requireCapability(access, "files.write");
+            const values = await decodeFilesCreateInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const upload = fileUpload(values);
+            const conflictBehavior = values.conflictBehavior ?? "fail";
+            const commitSignal = await this.#beginInvocationCommit(context);
+            this.#assertInvocationCurrent(generation);
+            const result = await this.#graph(`${driveItemPath(values.parentFolderId)}:/${encodeURIComponent(values.name)}:/content?@microsoft.graph.conflictBehavior=${conflictBehavior}`, access.value, { method: "PUT", upload, signal: commitSignal });
+            this.#assertInvocationCurrent(generation);
+            return driveItemReceipt(result);
+        }
+        if (toolName === "microsoft365.files.content.update") {
+            this.#requireCapability(access, "files.write");
+            const values = await decodeFilesContentUpdateInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const upload = fileUpload(values);
+            const commitSignal = await this.#beginInvocationCommit(context);
+            this.#assertInvocationCurrent(generation);
+            const result = await this.#graph(`${driveItemPath(values.itemId)}/content`, access.value, {
+                method: "PUT",
+                upload,
+                signal: commitSignal,
+            });
+            this.#assertInvocationCurrent(generation);
+            return driveItemReceipt(result);
+        }
+        if (toolName === "microsoft365.files.rename") {
+            this.#requireCapability(access, "files.write");
+            const values = await decodeFilesRenameInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const commitSignal = await this.#beginInvocationCommit(context);
+            this.#assertInvocationCurrent(generation);
+            const result = await this.#graph(driveItemPath(values.itemId), access.value, {
+                method: "PATCH",
+                body: { name: values.name },
+                signal: commitSignal,
+            });
+            this.#assertInvocationCurrent(generation);
+            return driveItemReceipt(result);
         }
         throw new Error("Unsupported Microsoft 365 tool.");
     }
