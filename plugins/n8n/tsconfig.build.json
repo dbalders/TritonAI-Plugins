@@ -10,5 +10,11 @@
     "rootDir": "src",
     "sourceMap": false
   },
-  "include": ["src/N8nProvider.ts", "src/host-contract.ts", "src/index.ts"]
+  "include": [
+    "src/N8nProvider.ts",
+    "src/host-contract.ts",
+    "src/index.ts",
+    "src/upstream-schema.ts",
+    "src/upstream-tools.ts"
+  ]
 }

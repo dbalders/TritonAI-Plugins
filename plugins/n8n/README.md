@@ -27,17 +27,46 @@ scheme, host, and path. Without this entry, n8n rejects authorization with
 
 ## Access model
 
-Read access covers the complete reviewed inspection and design surface. Write adds workflow
-execution, creation, updates, publishing, archiving, and Data Table changes. n8n's OAuth consent is
-the single service-access choice, and the plugin accepts only its complete Read-only or All grant
-bundles. n8n remains the resource-level RBAC boundary. The SDK host still requires explicit approval
-and one commit admission before execute, create, update, publish, archive, Data Table write, or other
-mutating calls.
+The provider requests every reviewed scope the instance advertises, and the user's n8n consent
+choice is authoritative. n8n lets the user approve all of them, Read only, or any narrower subset;
+Harness reports Read when any read scope was granted and Write when any write scope was, and n8n's
+own tool list decides which individual tools that grant unlocks. n8n remains the resource-level RBAC
+boundary. The SDK host still requires explicit approval and one commit admission before every
+mutating call, including workflow execution, Agent chat, publishing, and community-node installs.
 
-The package pins the 34 tools exposed by the reviewed UC San Diego n8n 2.34.1 deployment. Every
-connection initializes Streamable HTTP and verifies every returned upstream name and input-schema
-shape before proxying a call. A user's scopes or disabled instance feature can produce a reviewed
-subset. Unknown, renamed, or structurally changed tools fail closed until reviewed.
+Read covers workflows, executions, projects, folders, tags, credential metadata, node references,
+Data Tables, Agents, instance activity, and saved building preferences. Write adds workflow
+execution, creation, updates, publishing, and archiving; folder and Data Table changes; building,
+publishing, and chatting with Agents; and installing verified community nodes.
+
+## Upstream catalog
+
+The package reviews all 60 tools exposed by n8n 2.41.3. `src/upstream-tools.ts` pins that release's
+tool catalog. The 33 long-standing tools keep hand-written, tighter-bounded schemas; newer tools are
+decoded directly from the pinned upstream schemas. Tests hold every reviewed tool to the pinned
+catalog.
+
+Every connection initializes Streamable HTTP and compares each returned upstream name, input-schema
+shape, and effect hint against the reviewed catalog before proxying a call. The comparison degrades
+per tool so the connection survives an n8n upgrade:
+
+- Scopes n8n adds later are ignored, and reviewed scopes it stops advertising are skipped.
+- Tools n8n adds later stay unavailable until a plugin update reviews them.
+- A reviewed tool whose schema or effect hints changed is paused on its own and listed in the
+  connection status. The rest keep working.
+
+To review a new n8n release, run it with MCP enabled, recapture the catalog, and let the tests point
+at the differences:
+
+```sh
+N8N_MCP_URL=http://localhost:5678/mcp-server/http N8N_MCP_TOKEN=<instance MCP API key> \
+  N8N_VERSION=<version> node scripts/capture-upstream-tools.mjs
+pnpm --filter @tritonai/plugin-n8n test
+```
+
+An instance-level MCP API key lists every registered tool. Some tools register only when their
+feature is on (the agents module, the folders license, instance activity, verified community
+packages, and AI preferences), so enable those on the capture instance.
 
 ## Validation
 

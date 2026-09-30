@@ -1,12 +1,25 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { N8N_SECRET_SUFFIX, N8N_TOOLS, N8nProvider } from "./N8nProvider.ts";
+import {
+  N8N_REVOCATION_SECRET_SUFFIX,
+  N8N_SECRET_SUFFIX,
+  N8N_TOOLS,
+  N8nProvider,
+  type ReviewedTool,
+  expectedSchema,
+  firstSchemaDifference,
+  schemaContract,
+  validateToolInventory,
+} from "./N8nProvider.ts";
+
+const REVIEWED_TOOLS = N8N_TOOLS as ReadonlyArray<ReviewedTool>;
 import type {
   IntegrationInvocationContext,
   IntegrationLifecycleContext,
   IntegrationSecretStore,
 } from "./host-contract.ts";
+import { UPSTREAM_N8N_VERSION, UPSTREAM_TOOLS } from "./upstream-tools.ts";
 
 const SERVER = "https://n8n.tritonai.ucsd.edu/mcp-server/http";
 const ORIGIN = "https://n8n.tritonai.ucsd.edu";
@@ -15,6 +28,8 @@ const MCP_PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion";
 const MCP_CLIENT_CAPABILITIES_META_KEY = "io.modelcontextprotocol/clientCapabilities";
 const MCP_CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo";
 const READ_SCOPES = [
+  "agent:read",
+  "aiPreference:read",
   "credential:read",
   "dataTable:read",
   "execution:read",
@@ -23,6 +38,9 @@ const READ_SCOPES = [
   "workflow:read",
 ] as const;
 const WRITE_SCOPES = [
+  "agent:execute",
+  "agent:write",
+  "communityPackage:install",
   "dataTable:write",
   "project:write",
   "workflow:execute",
@@ -100,12 +118,12 @@ function authorizationMetadata(scopes: ReadonlyArray<string> = SCOPES) {
 }
 
 function toolInventory(options: { mutate?: (tools: Record<string, unknown>[]) => void } = {}) {
-  const tools = N8N_TOOLS.map((tool) => ({
+  const tools = REVIEWED_TOOLS.map((tool) => ({
     name: tool.name.slice("n8n.".length),
     description: tool.description,
     inputSchema: Schema.toJsonSchemaDocument(tool.input).schema,
     annotations: {
-      readOnlyHint: tool.readOnly,
+      readOnlyHint: tool.upstreamReadOnly,
       destructiveHint: tool.destructive,
       idempotentHint: tool.idempotent,
       openWorldHint: tool.openWorld,
@@ -152,6 +170,7 @@ function mcpEventResponse(
 function oauthMcpFetch(
   options: {
     readonly scopes?: ReadonlyArray<string>;
+    readonly advertisedScopes?: ReadonlyArray<string>;
     readonly mutateTools?: (tools: Record<string, unknown>[]) => void;
     readonly toolResult?: unknown;
     readonly eventStream?: boolean;
@@ -169,10 +188,10 @@ function oauthMcpFetch(
         : undefined;
     requests.push({ url, init, body });
     if (url.endsWith("/.well-known/oauth-protected-resource/mcp-server/http")) {
-      return json(protectedMetadata());
+      return json(protectedMetadata(options.advertisedScopes));
     }
     if (url.endsWith("/.well-known/oauth-authorization-server")) {
-      return json(authorizationMetadata());
+      return json(authorizationMetadata(options.advertisedScopes));
     }
     if (url.endsWith("/mcp-oauth/register")) {
       return json(
@@ -255,9 +274,9 @@ async function authorize(
 }
 
 describe("N8nProvider", () => {
-  it("publishes the reviewed 2.34.1 catalog with strict bounded schemas and truthful effects", async () => {
-    expect(N8N_TOOLS).toHaveLength(34);
-    expect(new Set(N8N_TOOLS.map(({ name }) => name)).size).toBe(34);
+  it("publishes the reviewed 2.41.3 catalog with strict bounded schemas and truthful effects", async () => {
+    expect(N8N_TOOLS).toHaveLength(60);
+    expect(new Set(N8N_TOOLS.map(({ name }) => name)).size).toBe(60);
     expect(N8N_TOOLS.map(({ name }) => name)).toContain("n8n.get_workflow_history");
     expect(N8N_TOOLS.map(({ name }) => name)).not.toContain("n8n.get_execution");
     for (const tool of N8N_TOOLS) {
@@ -270,7 +289,18 @@ describe("N8nProvider", () => {
       N8N_TOOLS.filter(({ openWorld }) => openWorld)
         .map(({ name }) => name)
         .toSorted(),
-    ).toEqual(["n8n.execute_workflow", "n8n.explore_node_resources"]);
+    ).toEqual([
+      "n8n.call_agent",
+      "n8n.delete_agent",
+      "n8n.discover_agent_assets",
+      "n8n.execute_workflow",
+      "n8n.explore_node_resources",
+      "n8n.install_community_node",
+      "n8n.publish_agent",
+      "n8n.unpublish_agent",
+      "n8n.update_agent_integration",
+      "n8n.verify_agent_mcp_server",
+    ]);
     expect(N8N_TOOLS.find(({ name }) => name === "n8n.publish_workflow")).toMatchObject({
       readOnly: false,
       destructive: false,
@@ -476,39 +506,59 @@ describe("N8nProvider", () => {
     await provider.close();
   });
 
-  it("rejects and revokes custom grants that do not match Read only or All", async () => {
+  it("reflects a custom consent grant instead of rejecting it", async () => {
     const secrets = memorySecrets();
-    const mock = oauthMcpFetch({ scopes: [...READ_SCOPES, WRITE_SCOPES[0]] });
+    const mock = oauthMcpFetch({ scopes: ["workflow:read", "workflow:execute"] });
     const provider = new N8nProvider(
       secrets.service,
       { serverUrl: SERVER },
       mock.fetchImplementation,
     );
-    const flow = await provider.connect(["read", "write"], lifecycle());
-    expect(flow.kind).toBe("authorization_url");
-    if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
-    const authorization = new URL(flow.authorizationUrl);
-    const callback = new URL(authorization.searchParams.get("redirect_uri")!);
-    callback.searchParams.set("state", authorization.searchParams.get("state")!);
-    callback.searchParams.set("iss", ORIGIN);
-    callback.searchParams.set("code", "authorization-code-fixture");
-    expect((await fetch(callback)).status).toBe(200);
-
-    await expect(provider.poll(flow.flowId, lifecycle())).resolves.toMatchObject({
-      state: "failed",
-      message: expect.stringMatching(/All or Read only/iu),
-    });
-    expect(mock.requests.filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))).toHaveLength(1);
+    await authorize(provider, mock.requests);
+    expect(mock.requests.filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))).toHaveLength(0);
     expect(
-      new URLSearchParams(
-        String(mock.requests.find(({ url }) => url.endsWith("/mcp-oauth/revoke"))!.init?.body),
-      ).get("client_id"),
-    ).toBe("dynamic-client-fixture");
-    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+      JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_SECRET_SUFFIX))).scopes,
+    ).toEqual(["workflow:execute", "workflow:read"]);
     await expect(provider.status()).resolves.toMatchObject({
-      state: "not_connected",
-      grantedCapabilities: [],
+      state: "connected",
+      grantedCapabilities: ["read", "write"],
     });
+    await provider.close();
+  });
+
+  it("requests only reviewed scopes the instance offers and ignores scopes it adds later", async () => {
+    const withoutAgents = SCOPES.filter((scope) => !scope.startsWith("agent:"));
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch({
+      scopes: withoutAgents,
+      advertisedScopes: [...withoutAgents, "aiPreference:write", "future:scope"],
+    });
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    const authorization = await authorize(provider, mock.requests);
+    expect(authorization.searchParams.get("scope")?.split(" ").toSorted()).toEqual(
+      [...withoutAgents].toSorted(),
+    );
+    await expect(provider.status()).resolves.toMatchObject({
+      state: "connected",
+      grantedCapabilities: ["read", "write"],
+    });
+    await provider.close();
+  });
+
+  it("refuses to start sign-in when the instance offers none of the reviewed scopes", async () => {
+    const mock = oauthMcpFetch({ advertisedScopes: ["future:scope"] });
+    const provider = new N8nProvider(
+      memorySecrets().service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    await expect(provider.connect(["read"], lifecycle())).rejects.toThrow(
+      /no longer offers any access/u,
+    );
     await provider.close();
   });
 
@@ -677,7 +727,7 @@ describe("N8nProvider", () => {
     await provider.close();
   });
 
-  it("fails closed on reviewed schema and effect-metadata drift without storing credentials", async () => {
+  it("pauses only the reviewed tool whose schema or effect metadata drifted", async () => {
     for (const mutateTools of [
       (tools: Record<string, unknown>[]) => {
         const first = tools[0]!;
@@ -688,27 +738,177 @@ describe("N8nProvider", () => {
       },
     ]) {
       const secrets = memorySecrets();
-      const mock = oauthMcpFetch({ scopes: READ_SCOPES, mutateTools });
+      const mock = oauthMcpFetch({ mutateTools });
       const provider = new N8nProvider(
         secrets.service,
         { serverUrl: SERVER },
         mock.fetchImplementation,
       );
-      const flow = await provider.connect(["read"], lifecycle());
-      if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
-      const authorization = new URL(flow.authorizationUrl);
-      const callback = new URL(authorization.searchParams.get("redirect_uri")!);
-      callback.searchParams.set("state", authorization.searchParams.get("state")!);
-      callback.searchParams.set("iss", ORIGIN);
-      callback.searchParams.set("code", "code");
-      await fetch(callback);
-      await expect(provider.poll(flow.flowId, lifecycle())).resolves.toMatchObject({
-        state: "failed",
-        message: expect.stringMatching(/changed|schema/u),
+      await authorize(provider, mock.requests);
+      await expect(provider.status()).resolves.toMatchObject({
+        state: "connected",
+        message: expect.stringMatching(/Paused .*: search_workflows\.$/u),
       });
-      expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+      await expect(
+        provider.invoke("n8n.search_workflows", { query: "x" }, invocation(false)),
+      ).rejects.toThrow(/not available/u);
+      await expect(
+        provider.invoke("n8n.search_projects", { limit: 1 }, invocation(false)),
+      ).resolves.toMatchObject({ content: [{ type: "text", text: "ok" }] });
       await provider.close();
     }
+  });
+
+  it("still fails verification when every reviewed tool drifted", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch({
+      mutateTools: (tools) => {
+        for (const tool of tools) delete tool.annotations;
+      },
+    });
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    const flow = await provider.connect(["read", "write"], lifecycle());
+    if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
+    const authorization = new URL(flow.authorizationUrl);
+    const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+    callback.searchParams.set("state", authorization.searchParams.get("state")!);
+    callback.searchParams.set("iss", ORIGIN);
+    callback.searchParams.set("code", "code");
+    await fetch(callback);
+    await expect(provider.poll(flow.flowId, lifecycle())).resolves.toMatchObject({
+      state: "failed",
+      message: expect.stringMatching(/changed every reviewed tool/u),
+    });
+    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+    await provider.close();
+  });
+
+  it(`matches every tool in the pinned n8n ${UPSTREAM_N8N_VERSION} catalog`, () => {
+    const reviewed = new Map(REVIEWED_TOOLS.map((tool) => [tool.name.slice("n8n.".length), tool]));
+    expect([...reviewed.keys()].toSorted()).toEqual(UPSTREAM_TOOLS.map(({ name }) => name));
+    for (const upstream of UPSTREAM_TOOLS) {
+      const tool = reviewed.get(upstream.name)!;
+      expect(
+        firstSchemaDifference(
+          schemaContract(upstream.inputSchema),
+          schemaContract(expectedSchema(tool)),
+        ),
+        upstream.name,
+      ).toBeNull();
+      expect(
+        {
+          readOnlyHint: tool.upstreamReadOnly,
+          destructiveHint: tool.destructive,
+          idempotentHint: tool.idempotent,
+          openWorldHint: tool.openWorld,
+        },
+        upstream.name,
+      ).toEqual(upstream.annotations);
+    }
+    const inventory = validateToolInventory({
+      tools: UPSTREAM_TOOLS.map(({ name, inputSchema, annotations }) => ({
+        name,
+        inputSchema,
+        annotations,
+      })),
+    });
+    expect(inventory.paused).toEqual([]);
+    expect(inventory.available.size).toBe(UPSTREAM_TOOLS.length);
+    // Every tool n8n does not mark read-only goes through Harness approval, and one it does mark
+    // read-only is overridden because it sends a stored credential to a caller-chosen URL.
+    for (const tool of REVIEWED_TOOLS) {
+      if (!tool.upstreamReadOnly) expect(tool.readOnly, tool.name).toBe(false);
+    }
+    expect(
+      REVIEWED_TOOLS.filter((tool) => tool.upstreamReadOnly && !tool.readOnly).map(
+        ({ name }) => name,
+      ),
+    ).toEqual(["n8n.verify_agent_mcp_server"]);
+  });
+
+  it("treats constraints added through allOf as schema drift", () => {
+    const pinned = {
+      type: "object",
+      properties: { agentId: { type: "string" }, versionId: { type: "string" } },
+      required: ["agentId"],
+    };
+    for (const drifted of [
+      { ...pinned, allOf: [{ required: ["versionId"] }] },
+      { ...pinned, allOf: [{ properties: { extra: { type: "number" } }, required: ["extra"] }] },
+      { ...pinned, allOf: [{ properties: { agentId: { type: "number" } } }] },
+      { type: "string", allOf: [{ type: "number" }] },
+    ]) {
+      expect(schemaContract(drifted), JSON.stringify(drifted)).not.toEqual(
+        schemaContract(drifted.type === "string" ? { type: "string" } : pinned),
+      );
+    }
+    // Stacked refinements still fold into the single constrained schema they describe.
+    expect(
+      schemaContract({
+        description: "Folder name",
+        allOf: [{ type: "string" }, { type: "string", maxLength: 128 }],
+      }),
+    ).toEqual(schemaContract({ type: "string", maxLength: 128 }));
+    expect(
+      schemaContract({
+        ...pinned,
+        allOf: [{ required: ["versionId"] }],
+      }),
+    ).toEqual(schemaContract({ ...pinned, required: ["agentId", "versionId"] }));
+  });
+
+  it("decodes upstream-derived inputs strictly", async () => {
+    const createFolder = N8N_TOOLS.find(({ name }) => name === "n8n.create_folder")!;
+    await expect(
+      Schema.decodeUnknownPromise(createFolder.input)(
+        { projectId: "p", name: "Reports" },
+        { onExcessProperty: "error" },
+      ),
+    ).resolves.toEqual({ projectId: "p", name: "Reports" });
+    for (const input of [
+      { projectId: "p" },
+      { projectId: "p", name: "x".repeat(129) },
+      { projectId: "p", name: "Reports", extra: true },
+    ]) {
+      await expect(
+        Schema.decodeUnknownPromise(createFolder.input)(input, { onExcessProperty: "error" }),
+      ).rejects.toBeDefined();
+    }
+    const rows = N8N_TOOLS.find(({ name }) => name === "n8n.get_data_table_rows")!;
+    await expect(
+      Schema.decodeUnknownPromise(rows.input)(
+        {
+          dataTableId: "t",
+          projectId: "p",
+          filter: { filters: [{ columnName: "status", condition: "eq", value: null }] },
+        },
+        { onExcessProperty: "error" },
+      ),
+    ).resolves.toBeDefined();
+    await expect(
+      Schema.decodeUnknownPromise(rows.input)(
+        { dataTableId: "t", projectId: "p", filter: { filters: [] } },
+        { onExcessProperty: "error" },
+      ),
+    ).rejects.toBeDefined();
+    const callAgent = N8N_TOOLS.find(({ name }) => name === "n8n.call_agent")!;
+    expect(callAgent).toMatchObject({ readOnly: false, destructive: true, openWorld: true });
+    await expect(
+      Schema.decodeUnknownPromise(callAgent.input)(
+        { agentId: "a", request: { type: "message", message: "hi" } },
+        { onExcessProperty: "error" },
+      ),
+    ).resolves.toBeDefined();
+    await expect(
+      Schema.decodeUnknownPromise(callAgent.input)(
+        { agentId: "a", request: { type: "unknown" } },
+        { onExcessProperty: "error" },
+      ),
+    ).rejects.toBeDefined();
   });
 
   it("accepts a narrowed grant and blocks tools absent from the returned inventory", async () => {
@@ -870,25 +1070,408 @@ describe("N8nProvider", () => {
     await restored.close();
   });
 
-  it("faults disconnect when revocation has an unknown external outcome", async () => {
+  it("still clears the local credential when revocation or OAuth discovery fails", async () => {
+    for (const failing of [
+      "/mcp-oauth/revoke",
+      "/.well-known/oauth-protected-resource/mcp-server/http",
+    ]) {
+      const secrets = memorySecrets();
+      const mock = oauthMcpFetch();
+      let connected = false;
+      const fetchImplementation = vi.fn(
+        async (input: string | URL | Request, init?: RequestInit) => {
+          if (connected && String(input).endsWith(failing)) {
+            return json({ error: "fixture failure" }, 503);
+          }
+          return mock.fetchImplementation(input, init);
+        },
+      ) as unknown as typeof fetch;
+      const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
+      await authorize(provider, mock.requests);
+      connected = true;
+
+      await expect(provider.disconnect(lifecycle())).resolves.toBeUndefined();
+      expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+      expect(
+        JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_REVOCATION_SECRET_SUFFIX))),
+      ).toMatchObject({
+        grants: [{ clientId: "dynamic-client-fixture", refreshToken: "refresh-fixture" }],
+      });
+      await expect(provider.status()).resolves.toMatchObject({
+        state: "not_connected",
+        message: expect.stringMatching(/not confirmed revoking/u),
+      });
+
+      connected = false;
+      const revokesBefore = mock.requests.filter(({ url }) => url.endsWith("/mcp-oauth/revoke"));
+      await expect(provider.connect(["read"], lifecycle())).resolves.toMatchObject({
+        kind: "authorization_url",
+      });
+      const revokes = mock.requests
+        .filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))
+        .slice(revokesBefore.length);
+      expect(revokes).toHaveLength(1);
+      expect(new URLSearchParams(String(revokes[0]!.init?.body)).get("token")).toBe(
+        "refresh-fixture",
+      );
+      expect(secrets.values.has(N8N_REVOCATION_SECRET_SUFFIX)).toBe(false);
+      await expect(provider.status()).resolves.toMatchObject({ message: null });
+      await provider.close();
+    }
+  });
+
+  it.each(["read", "remove"])(
+    "settles local disconnect when optional revocation queue %s fails",
+    async (operation) => {
+      const secrets = memorySecrets();
+      const mock = oauthMcpFetch();
+      let cleanupFails = false;
+      const failCleanup = (name: string, current: string) => {
+        if (
+          cleanupFails &&
+          current === operation &&
+          name === N8N_REVOCATION_SECRET_SUFFIX &&
+          !secrets.values.has(N8N_SECRET_SUFFIX)
+        ) {
+          cleanupFails = false;
+          throw new Error("fixture cleanup storage unavailable");
+        }
+      };
+      const store: IntegrationSecretStore = {
+        ...secrets.service,
+        get: async (name) => {
+          failCleanup(name, "read");
+          return secrets.service.get(name);
+        },
+        remove: async (name) => {
+          failCleanup(name, "remove");
+          return secrets.service.remove(name);
+        },
+      };
+      const provider = new N8nProvider(store, { serverUrl: SERVER }, mock.fetchImplementation);
+      await authorize(provider, mock.requests);
+      cleanupFails = true;
+      await expect(provider.disconnect(lifecycle())).resolves.toBeUndefined();
+      expect(cleanupFails).toBe(false);
+      expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+      expect(
+        JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_REVOCATION_SECRET_SUFFIX)))
+          .grants,
+      ).toEqual([{ clientId: "dynamic-client-fixture", refreshToken: "refresh-fixture" }]);
+      await expect(provider.status()).resolves.toMatchObject({ state: "not_connected" });
+      await expect(provider.connect(["read"], lifecycle())).resolves.toMatchObject({
+        kind: "authorization_url",
+      });
+      expect(secrets.values.has(N8N_REVOCATION_SECRET_SUFFIX)).toBe(false);
+      await provider.close();
+    },
+  );
+
+  it("clears local access and retains every queued grant when revocation stalls", async () => {
     const secrets = memorySecrets();
     const mock = oauthMcpFetch();
+    let stalled = false;
+    const accessDuringRevocation: boolean[] = [];
     const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      if (String(input).endsWith("/mcp-oauth/revoke")) {
-        return json({ error: "fixture revocation failure" }, 503);
+      if (stalled && String(input).endsWith("/mcp-oauth/revoke")) {
+        // Local disconnect must be durable before any optional network cleanup starts.
+        accessDuringRevocation.push(secrets.values.has(N8N_SECRET_SUFFIX));
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (signal?.aborted) reject(signal.reason);
+          else signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      fetchImplementation,
+      100,
+    );
+    await authorize(provider, mock.requests);
+    const oldGrants = ["older-1", "older-2"].map((refreshToken) => ({
+      clientId: "dynamic-client-fixture",
+      refreshToken,
+    }));
+    await secrets.service.set(
+      N8N_REVOCATION_SECRET_SUFFIX,
+      JSON.stringify({ version: 2, serverUrl: SERVER, grants: oldGrants }),
+    );
+    stalled = true;
+    await expect(provider.disconnect(lifecycle())).resolves.toBeUndefined();
+    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+    const pending = JSON.parse(
+      new TextDecoder().decode(secrets.values.get(N8N_REVOCATION_SECRET_SUFFIX)),
+    );
+    expect(pending.grants).toEqual([
+      ...oldGrants,
+      { clientId: "dynamic-client-fixture", refreshToken: "refresh-fixture" },
+    ]);
+    expect(accessDuringRevocation).toEqual([false]);
+    await expect(provider.status()).resolves.toMatchObject({ state: "not_connected" });
+    stalled = false;
+    await expect(provider.connect(["read"], lifecycle())).resolves.toMatchObject({
+      kind: "authorization_url",
+    });
+    expect(secrets.values.has(N8N_REVOCATION_SECRET_SUFFIX)).toBe(false);
+    await provider.close();
+  });
+
+  it("keeps every unrevoked grant across repeated failed disconnects", async () => {
+    const secrets = memorySecrets();
+    secrets.values.set(
+      N8N_REVOCATION_SECRET_SUFFIX,
+      new TextEncoder().encode(
+        JSON.stringify({
+          version: 2,
+          serverUrl: SERVER,
+          grants: [{ clientId: "dynamic-client-fixture", refreshToken: "older-refresh" }],
+        }),
+      ),
+    );
+    const mock = oauthMcpFetch();
+    let revokeFails = true;
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (revokeFails && String(input).endsWith("/mcp-oauth/revoke")) {
+        return json({ error: "fixture failure" }, 503);
       }
       return mock.fetchImplementation(input, init);
     }) as unknown as typeof fetch;
     const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
     await authorize(provider, mock.requests);
+    await expect(provider.disconnect(lifecycle())).resolves.toBeUndefined();
+    const pending = () =>
+      JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_REVOCATION_SECRET_SUFFIX)))
+        .grants as Array<{ refreshToken: string }>;
+    expect(pending().map(({ refreshToken }) => refreshToken)).toEqual([
+      "older-refresh",
+      "refresh-fixture",
+    ]);
 
-    await expect(provider.disconnect(lifecycle())).rejects.toMatchObject({
-      _tag: "ExternalCommitOutcomeUnknown",
-      code: "external_commit_outcome_unknown",
-      retryable: false,
+    revokeFails = false;
+    await provider.connect(["read"], lifecycle());
+    const revoked = mock.requests
+      .filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))
+      .map(({ init }) => new URLSearchParams(String(init?.body)).get("token"));
+    expect(revoked).toEqual(["older-refresh", "refresh-fixture"]);
+    expect(secrets.values.has(N8N_REVOCATION_SECRET_SUFFIX)).toBe(false);
+    await provider.close();
+  });
+
+  it("refuses new sign-ins instead of dropping grants when the revocation queue is full", async () => {
+    const secrets = memorySecrets();
+    const grants = Array.from({ length: 16 }, (_, index) => ({
+      clientId: "dynamic-client-fixture",
+      refreshToken: `pending-${index}`,
+    }));
+    secrets.values.set(
+      N8N_REVOCATION_SECRET_SUFFIX,
+      new TextEncoder().encode(JSON.stringify({ version: 2, serverUrl: SERVER, grants })),
+    );
+    const mock = oauthMcpFetch();
+    let revokeFails = true;
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (revokeFails && String(input).endsWith("/mcp-oauth/revoke")) {
+        return json({ error: "fixture failure" }, 503);
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
+
+    await expect(provider.connect(["read"], lifecycle())).rejects.toThrow(
+      /not confirmed revoking earlier sign-ins/u,
+    );
+    expect(mock.requests.some(({ url }) => url.endsWith("/mcp-oauth/register"))).toBe(false);
+    expect(
+      JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_REVOCATION_SECRET_SUFFIX))).grants,
+    ).toEqual(grants);
+    await expect(provider.status()).resolves.toMatchObject({ state: "not_connected" });
+
+    revokeFails = false;
+    await expect(provider.connect(["read"], lifecycle())).resolves.toMatchObject({
+      kind: "authorization_url",
     });
+    expect(
+      mock.requests
+        .filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))
+        .map(({ init }) => new URLSearchParams(String(init?.body)).get("token")),
+    ).toEqual(grants.map(({ refreshToken }) => refreshToken));
+    expect(secrets.values.has(N8N_REVOCATION_SECRET_SUFFIX)).toBe(false);
+    await provider.close();
+  });
+
+  it("retries grants from a pending-revocation record in another envelope instead of dropping them", async () => {
+    const secrets = memorySecrets();
+    secrets.values.set(
+      N8N_REVOCATION_SECRET_SUFFIX,
+      new TextEncoder().encode(
+        JSON.stringify({
+          version: 1,
+          serverUrl: SERVER,
+          clientId: "dynamic-client-fixture",
+          refreshToken: "legacy-refresh",
+        }),
+      ),
+    );
+    const mock = oauthMcpFetch();
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    await provider.connect(["read"], lifecycle());
+    expect(
+      mock.requests
+        .filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))
+        .map(({ init }) => new URLSearchParams(String(init?.body)).get("token")),
+    ).toEqual(["legacy-refresh"]);
+    expect(secrets.values.has(N8N_REVOCATION_SECRET_SUFFIX)).toBe(false);
+    await provider.close();
+  });
+
+  it("queues a grant once when a disconnect is retried after local removal failed", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch();
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/mcp-oauth/revoke")) {
+        return json({ error: "fixture failure" }, 503);
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
+    await authorize(provider, mock.requests);
+    const remove = secrets.service.remove;
+    let removalFails = true;
+    secrets.service.remove = async (name) => {
+      if (removalFails && name === N8N_SECRET_SUFFIX) throw new Error("fixture removal failed");
+      return remove(name);
+    };
+    await expect(provider.disconnect(lifecycle())).rejects.toBeDefined();
+    removalFails = false;
+    await expect(provider.disconnect(lifecycle())).resolves.toBeUndefined();
+    expect(
+      JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_REVOCATION_SECRET_SUFFIX))).grants,
+    ).toEqual([{ clientId: "dynamic-client-fixture", refreshToken: "refresh-fixture" }]);
+    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+    await provider.close();
+  });
+
+  it("does not discard the credential when secret storage fails during disconnect", async () => {
+    const secrets = memorySecrets();
+    const mock = oauthMcpFetch();
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    await authorize(provider, mock.requests);
+    const get = secrets.service.get;
+    secrets.service.get = async () => {
+      throw new Error("fixture keychain unavailable");
+    };
+    await expect(provider.disconnect(lifecycle())).rejects.toThrow(/keychain unavailable/u);
+    secrets.service.get = get;
     expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(true);
+    expect(mock.requests.filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))).toHaveLength(0);
+    await provider.close();
+  });
+
+  it("refuses a Write sign-in when the instance offers no write scope", async () => {
+    const mock = oauthMcpFetch({ advertisedScopes: READ_SCOPES });
+    const provider = new N8nProvider(
+      memorySecrets().service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    await expect(provider.connect(["read", "write"], lifecycle())).rejects.toThrow(
+      /does not currently offer write access/u,
+    );
+    await expect(provider.connect(["read"], lifecycle())).resolves.toMatchObject({
+      kind: "authorization_url",
+    });
+    await provider.close();
+  });
+
+  it("requires write approval for credential-backed MCP server verification", async () => {
+    const mock = oauthMcpFetch();
+    const provider = new N8nProvider(
+      memorySecrets().service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
+    await authorize(provider, mock.requests);
+    const input = { projectId: "p", name: "probe", url: "https://example.com/mcp" };
+    await expect(
+      provider.invoke("n8n.verify_agent_mcp_server", input, invocation(false)),
+    ).rejects.toThrow(/explicit Harness approval/u);
+    const events: string[] = [];
+    await expect(
+      provider.invoke("n8n.verify_agent_mcp_server", input, invocation(true, events)),
+    ).resolves.toMatchObject({ content: [{ type: "text", text: "ok" }] });
+    expect(events).toEqual(["beginCommit"]);
+    await provider.close();
+  });
+
+  it("does not retry a call into a tool the recovered session paused", async () => {
+    let listCalls = 0;
+    let expireNextCall = false;
+    const mock = oauthMcpFetch({
+      mutateTools: (tools) => {
+        listCalls += 1;
+        if (listCalls > 1) {
+          const search = tools.find(({ name }) => name === "search_projects")!;
+          search.inputSchema = { type: "object", properties: { injected: { type: "string" } } };
+        }
+      },
+    });
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (expireNextCall && String(input) === SERVER && body.includes('"tools/call"')) {
+        expireNextCall = false;
+        return new Response("", { status: 404 });
+      }
+      const response = await mock.fetchImplementation(input, init);
+      if (String(input) !== SERVER) return response;
+      const headers = new Headers(response.headers);
+      headers.set("mcp-session-id", "session-fixture");
+      return new Response(await response.text(), { status: response.status, headers });
+    }) as unknown as typeof fetch;
+    const provider = new N8nProvider(
+      memorySecrets().service,
+      { serverUrl: SERVER },
+      fetchImplementation,
+    );
+    await authorize(provider, mock.requests);
+    expireNextCall = true;
+    await expect(
+      provider.invoke("n8n.search_projects", { limit: 1 }, invocation(false)),
+    ).rejects.toThrow(/not available/u);
+    expect(listCalls).toBe(2);
+    expect(
+      mock.requests.filter(
+        ({ body }) =>
+          body?.method === "tools/call" &&
+          (body.params as { name?: string } | undefined)?.name === "search_projects",
+      ),
+    ).toHaveLength(0);
+    await provider.close();
+  });
+
+  it("removes an unreadable stored credential on disconnect", async () => {
+    const secrets = memorySecrets();
+    secrets.values.set(N8N_SECRET_SUFFIX, new TextEncoder().encode("not json"));
+    const mock = oauthMcpFetch();
+    const provider = new N8nProvider(
+      secrets.service,
+      { serverUrl: SERVER },
+      mock.fetchImplementation,
+    );
     await expect(provider.status()).resolves.toMatchObject({ state: "error" });
+    await expect(provider.disconnect(lifecycle())).resolves.toBeUndefined();
+    expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+    expect(mock.requests.filter(({ url }) => url.endsWith("/mcp-oauth/revoke"))).toHaveLength(0);
     await provider.close();
   });
 

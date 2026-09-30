@@ -1,6 +1,6 @@
 ---
 name: n8n-workflows
-description: Find, inspect, build, test, execute, publish, archive, or manage n8n workflows and Data Tables through TritonAI Harness using the connected user's n8n access.
+description: Find, inspect, build, test, execute, publish, archive, or manage n8n workflows, folders, Data Tables, and Agents through TritonAI Harness using the connected user's n8n access.
 ---
 
 # n8n workflows
@@ -27,3 +27,11 @@ execution, or Data Table state before changing it.
   action. Report the actual project and workflow identifiers returned by n8n.
 - Do not claim a workflow succeeded from an execution-start receipt. Use the returned execution ID
   and read its final status when the user needs completion proof.
+- At the start of open-ended work, read `get_instance_context` and `get_user_preferences` when they
+  are available, and follow the saved preferences when choosing nodes, credentials, and names.
+- For Agents, read the builder reference and `get_agent` first, and pass the latest `configHash` to
+  `mutate_agent`. `call_agent` runs the draft with its real tools and credentials, so treat it like
+  a production execution. Confirm before publishing, unpublishing, reverting, or deleting an Agent,
+  or changing its chat integrations.
+- `install_community_node` installs code onto the shared n8n instance. Only offer it for a verified
+  package that `search_nodes` reported as missing, and confirm with the user first.
