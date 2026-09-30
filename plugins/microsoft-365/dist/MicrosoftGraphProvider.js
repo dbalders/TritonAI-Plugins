@@ -2179,7 +2179,7 @@ export class MicrosoftGraphProvider {
             if (downloadUrl === null) {
                 throw new Error("Microsoft Graph did not return a OneDrive download location.");
             }
-            const bytes = size === 0 ? new Uint8Array() : await this.#download(downloadUrl, context?.signal);
+            const bytes = await this.#download(downloadUrl, context?.signal);
             this.#assertInvocationCurrent(generation);
             return driveItemContentResult(item, bytes);
         }

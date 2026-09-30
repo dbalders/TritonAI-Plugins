@@ -3315,6 +3315,22 @@ describe("MicrosoftGraphProvider OneDrive tools", () => {
     expect(new Headers(calls[0]?.init?.headers).get("authorization")).toMatch(/^Bearer /u);
   });
 
+  it("downloads files reported as empty instead of trusting the stale size", async () => {
+    const secrets = memorySecrets();
+    const { calls, fetchImplementation } = driveFetch("Files.Read", (url) =>
+      url.startsWith(downloadUrl)
+        ? new Response("written after metadata read")
+        : jsonResponse({ ...driveFile, size: 0, "@microsoft.graph.downloadUrl": downloadUrl }),
+    );
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["files.read"]);
+
+    await expect(
+      graph.invoke("microsoft365.files.content.get", { itemId: "item/id?fixture" }),
+    ).resolves.toMatchObject({ contentEncoding: "text", content: "written after metadata read" });
+    expect(calls.map(({ url }) => url)).toContain(downloadUrl);
+  });
+
   it("refuses folders, oversize files, and non-SharePoint download hosts before downloading", async () => {
     const secrets = memorySecrets();
     const items: Record<string, unknown> = {
