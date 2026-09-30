@@ -13,12 +13,24 @@ administrator policy.
 ## Access model
 
 - `identity.read`, `drive.read`, `mail.read`, and `calendar.read` are selected by default.
-- `mail.draft.create` and `calendar.write` require explicit opt-in.
+- `drive.write`, `drive.organize`, `drive.delete`, `drive.share`, `mail.draft.create`, and
+  `calendar.write` require explicit opt-in.
 - Draft creation produces an unsent plain-text draft only. There is no send tool.
 - Calendar writes omit attendees, invitation responses, conference creation, ACLs, sharing,
   ownership changes, and delete operations.
 - Calendar writes return only a bounded ID receipt; event details remain behind `calendar.read`.
-- Drive, Docs, Sheets, and Slides are read-only.
+- `drive.write` can create folders and files (optionally converted to native Docs, Sheets, or
+  Slides), replace file content as a new revision, rename items, append or replace Docs text, edit
+  Slides text and slides, and write literal Sheets values.
+- `drive.organize` can move items between folders, trash items, and restore them from the trash.
+- `drive.delete` can permanently delete items, bypassing the trash.
+- `drive.share` can list, add, change, and remove sharing for users, groups, domains, or anyone with
+  the link. Share notification emails are off unless requested. Ownership transfer and
+  owner/organizer roles are not supported. UC San Diego's Workspace sharing policy still applies.
+- Sheets writes use `valueInputOption=RAW`, so strings are stored as text and never evaluated as
+  formulas such as `IMPORTXML` or `IMAGE`.
+- Drive, Docs, Sheets, and Slides writes return only a bounded ID receipt; content remains behind
+  `drive.read`.
 
 The provider requests only scopes corresponding to selected Harness capabilities. Google can keep
 previously granted scopes on a refresh token, so the provider separately checks the selected
@@ -52,6 +64,7 @@ APIs. Its consent configuration must include:
 
 - `openid`, `email`, and `profile`
 - `https://www.googleapis.com/auth/drive.readonly`
+- `https://www.googleapis.com/auth/drive`
 - `https://www.googleapis.com/auth/documents.readonly`
 - `https://www.googleapis.com/auth/spreadsheets.readonly`
 - `https://www.googleapis.com/auth/presentations.readonly`
@@ -61,7 +74,7 @@ APIs. Its consent configuration must include:
 - `https://www.googleapis.com/auth/calendar.events.readonly`
 - `https://www.googleapis.com/auth/calendar.events`
 
-`drive.readonly`, `gmail.readonly`, and `gmail.compose` are restricted scopes. An Internal app does
+`drive.readonly`, `drive`, `gmail.readonly`, and `gmail.compose` are restricted scopes. An Internal app does
 not make them automatically available to every UC San Diego user; Google Workspace administrators
 can still require the OAuth client to be trusted or allowlisted.
 
@@ -69,11 +82,17 @@ Google's `gmail.compose` scope also authorizes sending at the token layer. This 
 exposes no send endpoint and never accepts an arbitrary Gmail method, URL, query body, or REST
 payload. The residual scope authority remains an administrator-review consideration.
 
+All four Drive write capabilities use Google's `drive` scope. The Harness enables each one only when
+the user has selected it, and the provider accepts only the fixed endpoints listed above. It never
+accepts a Drive method, URL, field mask, or raw request body. The narrower `drive.file` scope was
+not used because it cannot edit files the user already has.
+
 ## Tool limits
 
 All remote hosts, paths, and methods are fixed in provider code. Inputs use exact Effect schemas.
 Lists are bounded to 50 items, date ranges to 31 days, JSON responses to one or four MiB depending
-on the resource, and attachment/content reads to five MiB. Pagination cursors are short-lived,
+on the resource, attachment/content reads and uploads to five MiB, and Docs/Sheets write requests to two
+MiB (Sheets writes are also limited to 1,000 rows, 200 columns, and 10,000 cells). Pagination cursors are short-lived,
 HMAC-authenticated, and bound to the issuing tool, path, and Google subject. Raw Google page tokens
 and continuation URLs are never returned.
 

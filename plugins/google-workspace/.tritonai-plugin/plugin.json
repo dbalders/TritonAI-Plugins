@@ -5,7 +5,7 @@
   "id": "google-workspace",
   "name": "Google Workspace",
   "description": "Use UC San Diego Google Drive, Gmail, and Calendar through fixed, bounded tools.",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "provider": "google-workspace",
   "capabilities": [
     {
@@ -19,6 +19,30 @@
       "displayName": "Read Drive files",
       "description": "Search and read accessible Drive metadata and bounded file content. Cannot create, edit, move, share, or delete files.",
       "access": "default"
+    },
+    {
+      "id": "drive.write",
+      "displayName": "Create and edit Drive files",
+      "description": "Create folders and files, replace file content, rename items, edit Docs and Slides text and slides, and write literal Sheets values. Moving, trashing, deleting, and sharing are separate permissions.",
+      "access": "opt-in"
+    },
+    {
+      "id": "drive.organize",
+      "displayName": "Move and trash Drive items",
+      "description": "Move items between folders, move items to the trash, and restore them from the trash. Cannot permanently delete or share.",
+      "access": "opt-in"
+    },
+    {
+      "id": "drive.delete",
+      "displayName": "Permanently delete Drive items",
+      "description": "Permanently delete items, bypassing the trash. Deleted items cannot be restored.",
+      "access": "opt-in"
+    },
+    {
+      "id": "drive.share",
+      "displayName": "Share Drive items",
+      "description": "List, add, change, and remove sharing for users, groups, domains, or anyone with the link. Cannot transfer ownership.",
+      "access": "opt-in"
     },
     {
       "id": "mail.read",
@@ -94,6 +118,146 @@
       "description": "Read one exact Google Slides presentation through the fixed Slides endpoint.",
       "capabilities": ["drive.read"],
       "effect": "read"
+    },
+    {
+      "name": "googleworkspace.drive.folder.create",
+      "displayName": "Create Drive folder",
+      "description": "Create one Drive folder in My Drive or an exact parent folder.",
+      "capabilities": ["drive.write"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.drive.file.create",
+      "displayName": "Create Drive file",
+      "description": "Create one bounded Drive file, optionally as a native Google Doc, Sheet, or Slides file.",
+      "capabilities": ["drive.write"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.drive.file.update",
+      "displayName": "Replace Drive file content",
+      "description": "Replace the content of one exact Drive file as a new revision.",
+      "capabilities": ["drive.write"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.drive.item.update",
+      "displayName": "Rename Drive item",
+      "description": "Rename or update the description of one exact Drive item.",
+      "capabilities": ["drive.write"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.docs.text.append",
+      "displayName": "Append Google Doc text",
+      "description": "Append plain text to the end of one exact Google Doc.",
+      "capabilities": ["drive.write"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.docs.text.replace",
+      "displayName": "Replace Google Doc text",
+      "description": "Replace every match of exact text in one Google Doc.",
+      "capabilities": ["drive.write"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.sheets.values.update",
+      "displayName": "Write Google Sheet range",
+      "description": "Overwrite one bounded A1 range with literal values.",
+      "capabilities": ["drive.write"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.sheets.values.append",
+      "displayName": "Append Google Sheet rows",
+      "description": "Append literal rows after the table in one A1 range.",
+      "capabilities": ["drive.write"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.slides.text.replace",
+      "displayName": "Replace Google Slides text",
+      "description": "Replace every match of exact text in one presentation.",
+      "capabilities": ["drive.write"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.slides.text.insert",
+      "displayName": "Insert Google Slides text",
+      "description": "Insert plain text into one exact shape on a slide.",
+      "capabilities": ["drive.write"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.slides.slide.create",
+      "displayName": "Add Google Slides slide",
+      "description": "Add one slide with a predefined layout to a presentation.",
+      "capabilities": ["drive.write"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.slides.object.delete",
+      "displayName": "Delete Google Slides object",
+      "description": "Delete one exact slide or page element from a presentation.",
+      "capabilities": ["drive.write"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.drive.item.move",
+      "displayName": "Move Drive item",
+      "description": "Move one exact Drive item into another folder.",
+      "capabilities": ["drive.organize"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.drive.item.trash",
+      "displayName": "Trash Drive item",
+      "description": "Move one exact Drive item to the trash.",
+      "capabilities": ["drive.organize"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.drive.item.restore",
+      "displayName": "Restore Drive item",
+      "description": "Restore one exact Drive item from the trash.",
+      "capabilities": ["drive.organize"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.drive.item.delete",
+      "displayName": "Permanently delete Drive item",
+      "description": "Permanently delete one exact Drive item, bypassing the trash.",
+      "capabilities": ["drive.delete"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.drive.permissions.list",
+      "displayName": "List Drive sharing",
+      "description": "List sharing permissions on one exact Drive item.",
+      "capabilities": ["drive.share"],
+      "effect": "read"
+    },
+    {
+      "name": "googleworkspace.drive.permission.create",
+      "displayName": "Share Drive item",
+      "description": "Share one exact Drive item with a user, group, domain, or anyone with the link.",
+      "capabilities": ["drive.share"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.drive.permission.update",
+      "displayName": "Change Drive sharing role",
+      "description": "Change the role of one exact sharing permission.",
+      "capabilities": ["drive.share"],
+      "effect": "write"
+    },
+    {
+      "name": "googleworkspace.drive.permission.delete",
+      "displayName": "Remove Drive sharing",
+      "description": "Remove one exact sharing permission from a Drive item.",
+      "capabilities": ["drive.share"],
+      "effect": "write"
     },
     {
       "name": "googleworkspace.mail.search",
@@ -176,8 +340,8 @@
   "skills": [
     {
       "name": "google-drive",
-      "description": "Search or read UC San Diego Google Drive, Docs, Sheets, or Slides through TritonAI Harness. Use when the user asks to find or inspect Workspace files without changing them.",
-      "capabilities": ["drive.read"]
+      "description": "Search, read, create, edit, organize, delete, or share UC San Diego Google Drive, Docs, Sheets, or Slides through TritonAI Harness. Use when the user asks to find, inspect, change, move, remove, or share Workspace files.",
+      "capabilities": ["drive.read", "drive.write", "drive.organize", "drive.delete", "drive.share"]
     },
     {
       "name": "gmail",
