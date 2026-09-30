@@ -1247,6 +1247,9 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
             updatedCells: 4,
           });
         }
+        if (url.includes("/files/native-doc?")) {
+          return jsonResponse({ mimeType: "application/vnd.google-apps.document" });
+        }
         const body =
           typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : {};
         return jsonResponse({
@@ -1360,7 +1363,8 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
           lifecycle([], true),
         ),
       ).resolves.toMatchObject({ status: "file-updated", itemId: "item-1" });
-      const media = apiCalls[3]!;
+      expect(apiCalls[3]?.init?.method).toBe("GET");
+      const media = apiCalls[4]!;
       expect(media.init?.method).toBe("PATCH");
       expect(new URL(media.url).pathname).toBe("/upload/drive/v3/files/file-1");
       expect(new URL(media.url).searchParams.get("uploadType")).toBe("media");
@@ -1381,8 +1385,8 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
           lifecycle([], true),
         ),
       ).resolves.toMatchObject({ status: "item-updated" });
-      expect(apiCalls[4]?.init?.method).toBe("PATCH");
-      expect(JSON.parse(String(apiCalls[4]?.init?.body))).toEqual({ name: "Renamed" });
+      expect(apiCalls[5]?.init?.method).toBe("PATCH");
+      expect(JSON.parse(String(apiCalls[5]?.init?.body))).toEqual({ name: "Renamed" });
 
       await expect(
         fixture.provider.invoke(
@@ -1391,10 +1395,10 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
           lifecycle([], true),
         ),
       ).resolves.toEqual({ status: "text-appended", documentId: "doc-1" });
-      expect(apiCalls[5]?.url).toBe(
+      expect(apiCalls[6]?.url).toBe(
         "https://docs.googleapis.com/v1/documents/doc-append:batchUpdate",
       );
-      expect(JSON.parse(String(apiCalls[5]?.init?.body))).toEqual({
+      expect(JSON.parse(String(apiCalls[6]?.init?.body))).toEqual({
         requests: [{ insertText: { endOfSegmentLocation: {}, text: "Next steps" } }],
       });
 
@@ -1405,7 +1409,7 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
           lifecycle([], true),
         ),
       ).resolves.toEqual({ status: "text-replaced", documentId: "doc-1", occurrencesChanged: 3 });
-      expect(JSON.parse(String(apiCalls[6]?.init?.body))).toEqual({
+      expect(JSON.parse(String(apiCalls[7]?.init?.body))).toEqual({
         requests: [
           {
             replaceAllText: {
@@ -1434,7 +1438,7 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
         updatedColumns: 2,
         updatedCells: 4,
       });
-      const update = apiCalls[7]!;
+      const update = apiCalls[8]!;
       expect(update.init?.method).toBe("PUT");
       expect(update.url).toContain("/v4/spreadsheets/sheet-1/values/Sheet1!A1%3AB2?");
       expect(new URL(update.url).searchParams.get("valueInputOption")).toBe("RAW");
@@ -1447,8 +1451,8 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
           lifecycle([], true),
         ),
       ).resolves.toMatchObject({ status: "values-appended", updatedRange: "Sheet1!A3:B3" });
-      const append = new URL(apiCalls[8]!.url);
-      expect(apiCalls[8]?.init?.method).toBe("POST");
+      const append = new URL(apiCalls[9]!.url);
+      expect(apiCalls[9]?.init?.method).toBe("POST");
       expect(append.pathname).toBe("/v4/spreadsheets/sheet-1/values/Sheet1!A%3AB:append");
       expect(append.searchParams.get("valueInputOption")).toBe("RAW");
       expect(append.searchParams.get("insertDataOption")).toBe("INSERT_ROWS");
@@ -1461,7 +1465,16 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
           lifecycle([], true),
         ),
       ).rejects.toThrow(/10,000 cells/u);
-      expect(apiCalls).toHaveLength(9);
+      const nativeUpdate = lifecycle([], true);
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.file.update",
+          { itemId: "native-doc", content: "text", contentType: "text/plain" },
+          nativeUpdate,
+        ),
+      ).rejects.toThrow(/native Google files/u);
+      expect(nativeUpdate.beginCommit).not.toHaveBeenCalled();
+      expect(apiCalls).toHaveLength(11);
       expect(
         apiCalls.every(
           ({ url, init }) =>

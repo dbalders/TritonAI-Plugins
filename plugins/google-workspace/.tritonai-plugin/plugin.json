@@ -136,7 +136,7 @@
     {
       "name": "googleworkspace.drive.file.update",
       "displayName": "Replace Drive file content",
-      "description": "Replace the content of one exact Drive file as a new revision.",
+      "description": "Replace the content of one exact uploaded (non-native) Drive file as a new revision.",
       "capabilities": ["drive.write"],
       "effect": "write"
     },

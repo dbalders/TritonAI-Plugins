@@ -336,7 +336,7 @@ const SlidesTextInsertInput = Schema.Struct({
     description: "Exact Google Slides presentation identifier.",
   }),
   objectId: SlidesObjectId.annotate({
-    description: "Exact shape or table cell container object identifier on a slide.",
+    description: "Exact shape object identifier on a slide; table cells are not supported.",
   }),
   text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(10_000)).annotate({
     description: "Plain text to insert.",
@@ -761,7 +761,8 @@ export const GOOGLE_WORKSPACE_TOOLS = [
   },
   {
     name: "googleworkspace.slides.text.insert",
-    description: "Insert plain text into one exact slide shape through presentations.batchUpdate.",
+    description:
+      "Insert plain text into one exact slide shape, not a table, through presentations.batchUpdate.",
     input: SlidesTextInsertInput,
     readOnly: false,
     destructive: false,
@@ -3162,6 +3163,21 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
         contentType: uploadContentType(values.contentType, values.contentEncoding),
         bytes: uploadBytes(values.content, values.contentEncoding),
       };
+      const metadataUrl = new URL(`${DRIVE_API}/files/${encodeURIComponent(values.itemId)}`);
+      metadataUrl.searchParams.set("supportsAllDrives", "true");
+      metadataUrl.searchParams.set("fields", "mimeType");
+      const metadata = await this.#apiJson(metadataUrl, access.value, {
+        signal: context?.signal,
+      });
+      if (
+        boundedString(metadata.mimeType, 255, "Google Drive item").startsWith(
+          "application/vnd.google-apps.",
+        )
+      ) {
+        throw new IntegrationProviderPublicError(
+          "Drive content replacement applies only to uploaded files. Use the Docs, Sheets, or Slides tools to edit native Google files.",
+        );
+      }
       const url = new URL(`${DRIVE_UPLOAD_API}/files/${encodeURIComponent(values.itemId)}`);
       url.searchParams.set("uploadType", "media");
       url.searchParams.set("supportsAllDrives", "true");

@@ -27,10 +27,11 @@ change with the user before invoking a write.
   rows. Values are literal: strings are never evaluated as formulas, and `null` leaves a cell
   unchanged.
 - Use `slides.text.replace`, `slides.text.insert`, `slides.slide.create`, and
-  `slides.object.delete` to edit a presentation in place. Read it with `slides.get` first to find
+  `slides.object.delete` to edit a presentation in place. Text insertion targets shapes, not
+  tables. Read it with `slides.get` first to find
   slide and shape object IDs; a new slide's placeholders appear there after creation.
-- `drive.file.update` replaces a file's entire content as a new revision. Prefer the Docs and
-  Sheets tools for native files, because replacing a native file's content rebuilds it.
+- `drive.file.update` replaces an uploaded file's entire content as a new revision. It rejects
+  native Docs, Sheets, and Slides files; edit those with their own tools.
 - `drive.item.update` renames an item or changes its description.
 - A file created in or moved into a shared folder inherits that folder's access, so confirm the
   destination.

@@ -20,7 +20,7 @@ administrator policy.
   ownership changes, and delete operations.
 - Calendar writes return only a bounded ID receipt; event details remain behind `calendar.read`.
 - `drive.write` can create folders and files (optionally converted to native Docs, Sheets, or
-  Slides), replace file content as a new revision, rename items, append or replace Docs text, edit
+  Slides), replace an uploaded (non-native) file's content as a new revision, rename items, append or replace Docs text, edit
   Slides text and slides, and write literal Sheets values.
 - `drive.organize` can move items between folders, trash items, and restore them from the trash.
 - `drive.delete` can permanently delete items, bypassing the trash.

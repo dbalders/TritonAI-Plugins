@@ -194,7 +194,7 @@ export declare const GOOGLE_WORKSPACE_TOOLS: readonly [{
     readonly openWorld: true;
 }, {
     readonly name: "googleworkspace.slides.text.insert";
-    readonly description: "Insert plain text into one exact slide shape through presentations.batchUpdate.";
+    readonly description: "Insert plain text into one exact slide shape, not a table, through presentations.batchUpdate.";
     readonly input: Schema.Struct<{
         readonly presentationId: Schema.String;
         readonly objectId: Schema.String;
@@ -649,7 +649,7 @@ export declare class GoogleWorkspaceProvider implements IntegrationProvider {
         readonly openWorld: true;
     }, {
         readonly name: "googleworkspace.slides.text.insert";
-        readonly description: "Insert plain text into one exact slide shape through presentations.batchUpdate.";
+        readonly description: "Insert plain text into one exact slide shape, not a table, through presentations.batchUpdate.";
         readonly input: Schema.Struct<{
             readonly presentationId: Schema.String;
             readonly objectId: Schema.String;
