@@ -4,8 +4,8 @@
   "manifestVersion": 2,
   "id": "microsoft-365",
   "name": "Microsoft 365",
-  "description": "Read mail, calendars, and chats, and opt in to narrowly scoped Microsoft Graph writes.",
-  "version": "1.2.2",
+  "description": "Read mail, calendars, chats, and OneDrive files, and opt in to narrowly scoped Microsoft Graph writes.",
+  "version": "1.3.0",
   "provider": "microsoft-graph",
   "capabilities": [
     {
@@ -42,12 +42,24 @@
       "id": "chat.read",
       "displayName": "Read chats",
       "description": "List chats and read bounded message history. Cannot create, edit, or delete chats or messages.",
-      "access": "opt-in"
+      "access": "default"
     },
     {
       "id": "chat.write",
       "displayName": "Send chat messages",
       "description": "Send a plain-text message to an existing chat. Cannot create chats or edit or delete messages.",
+      "access": "opt-in"
+    },
+    {
+      "id": "files.read",
+      "displayName": "Read OneDrive files",
+      "description": "Browse, search, and read files in your OneDrive. No create, edit, move, share, or delete access.",
+      "access": "default"
+    },
+    {
+      "id": "files.write",
+      "displayName": "Create and edit OneDrive files",
+      "description": "Create folders, upload new files, replace file content, and rename items in your OneDrive. Cannot delete, move, or share files.",
       "access": "opt-in"
     }
   ],
@@ -170,6 +182,62 @@
       "description": "Send one plain-text message to an existing Microsoft 365 chat.",
       "capabilities": ["chat.write"],
       "effect": "write"
+    },
+    {
+      "name": "microsoft365.files.list",
+      "displayName": "List OneDrive files",
+      "description": "List bounded item metadata in the OneDrive root or one OneDrive folder.",
+      "capabilities": ["files.read"],
+      "effect": "read"
+    },
+    {
+      "name": "microsoft365.files.search",
+      "displayName": "Search OneDrive",
+      "description": "Search the signed-in user's OneDrive and return bounded item metadata.",
+      "capabilities": ["files.read"],
+      "effect": "read"
+    },
+    {
+      "name": "microsoft365.files.get",
+      "displayName": "Read OneDrive item details",
+      "description": "Read metadata for one OneDrive item.",
+      "capabilities": ["files.read"],
+      "effect": "read"
+    },
+    {
+      "name": "microsoft365.files.content.get",
+      "displayName": "Read OneDrive file",
+      "description": "Read the content of one OneDrive file of at most 256 KB.",
+      "capabilities": ["files.read"],
+      "effect": "read"
+    },
+    {
+      "name": "microsoft365.files.folder.create",
+      "displayName": "Create OneDrive folder",
+      "description": "Create one OneDrive folder in the root or a selected folder.",
+      "capabilities": ["files.write"],
+      "effect": "write"
+    },
+    {
+      "name": "microsoft365.files.create",
+      "displayName": "Upload OneDrive file",
+      "description": "Upload one new OneDrive file of at most 4 MB without replacing an existing file.",
+      "capabilities": ["files.write"],
+      "effect": "write"
+    },
+    {
+      "name": "microsoft365.files.content.update",
+      "displayName": "Replace OneDrive file content",
+      "description": "Replace the content of one OneDrive file as a new version.",
+      "capabilities": ["files.write"],
+      "effect": "write"
+    },
+    {
+      "name": "microsoft365.files.rename",
+      "displayName": "Rename OneDrive item",
+      "description": "Rename one OneDrive file or folder without moving it.",
+      "capabilities": ["files.write"],
+      "effect": "write"
     }
   ],
   "skills": [
@@ -187,6 +255,11 @@
       "name": "teams-chat",
       "description": "Read Microsoft Teams chats or send a message to an existing chat through TritonAI Harness. Use when the user asks to review Teams chats, read chat history, or send a chat reply.",
       "capabilities": ["chat.read", "chat.write"]
+    },
+    {
+      "name": "onedrive-files",
+      "description": "Browse, search, read, create, or edit files in the user's OneDrive through TritonAI Harness. Use when the user asks to find, open, upload, update, or rename OneDrive files or folders.",
+      "capabilities": ["files.read", "files.write"]
     }
   ]
 }
