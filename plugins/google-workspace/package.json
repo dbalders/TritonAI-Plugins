@@ -1,6 +1,6 @@
 {
   "name": "@tritonai/plugin-google-workspace",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "license": "MIT",
   "files": [
@@ -27,7 +27,7 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "effect": "4.0.0-beta.103"
+    "effect": "4.0.0-rc.112"
   },
   "peerDependencies": {
     "effect": ">=4.0.0-beta.78 <4.0.0"

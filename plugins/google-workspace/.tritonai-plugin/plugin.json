@@ -5,7 +5,7 @@
   "id": "google-workspace",
   "name": "Google Workspace",
   "description": "Use UC San Diego Google Drive, Gmail, and Calendar through fixed, bounded tools.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "provider": "google-workspace",
   "capabilities": [
     {
