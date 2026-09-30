@@ -25,6 +25,16 @@ execution, or Data Table state before changing it.
   Deleting a Data Table column permanently removes that column and its data.
 - `create_workflow_from_code` makes the new workflow available to MCP. Publishing is a separate
   action. Report the actual project and workflow identifiers returned by n8n.
+- Do not claim a workflow succeeded from an execution-start receipt. Use the returned execution ID
+  and read its final status when the user needs completion proof.
+- At the start of open-ended work, read `get_instance_context` and `get_user_preferences` when they
+  are available, and follow the saved preferences when choosing nodes, credentials, and names.
+- For Agents, read the builder reference and `get_agent` first, and pass the latest `configHash` to
+  `mutate_agent`. `call_agent` runs the draft with its real tools and credentials, so treat it like
+  a production execution. Confirm before publishing, unpublishing, reverting, or deleting an Agent,
+  or changing its chat integrations.
+- `install_community_node` installs code onto the shared n8n instance. Only offer it for a verified
+  package that `search_nodes` reported as missing, and confirm with the user first.
 
 ## Editing an existing workflow
 
@@ -34,7 +44,7 @@ names. Each operation has a `type` and only the fields documented for that type;
 
 ```json
 {
-  "workflowId": "<workflow id>",
+  "workflowId": "<workflowId>",
   "versionName": "Skip rows without an email",
   "operations": [
     {
@@ -53,16 +63,8 @@ names. Each operation has a `type` and only the fields documented for that type;
 - Keep each call to one logical change so a failure is easy to read. If one operation fails,
   nothing in that call is saved, except invalid node-group operations, which are skipped and
   reported in `skippedOperations`.
-- If the call is rejected, read the error, fix the input, and retry. Do not report the tool as
-  unavailable because of an input error.
+- If the call is rejected as invalid input, nothing was sent to n8n: read the error, fix the
+  input, and retry. Do not report the tool as unavailable because of an input error.
+- If the result says the operation may have completed, do not resend it. Read
+  `get_workflow_details` first, because repeating structural operations can duplicate changes.
 - After saving, read `get_workflow_details` again to confirm the change before you report it.
-- Do not claim a workflow succeeded from an execution-start receipt. Use the returned execution ID
-  and read its final status when the user needs completion proof.
-- At the start of open-ended work, read `get_instance_context` and `get_user_preferences` when they
-  are available, and follow the saved preferences when choosing nodes, credentials, and names.
-- For Agents, read the builder reference and `get_agent` first, and pass the latest `configHash` to
-  `mutate_agent`. `call_agent` runs the draft with its real tools and credentials, so treat it like
-  a production execution. Confirm before publishing, unpublishing, reverting, or deleting an Agent,
-  or changing its chat integrations.
-- `install_community_node` installs code onto the shared n8n instance. Only offer it for a verified
-  package that `search_nodes` reported as missing, and confirm with the user first.
