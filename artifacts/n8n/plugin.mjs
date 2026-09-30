@@ -12684,8 +12684,7 @@ var N8nProvider = class {
         if (!commitSignal.aborted) {
           try {
             await this.#retryPendingRevocations(discovery, commitSignal);
-          } catch (error) {
-            if (!commitSignal.aborted) throw error;
+          } catch {
           }
         }
       } catch (error) {

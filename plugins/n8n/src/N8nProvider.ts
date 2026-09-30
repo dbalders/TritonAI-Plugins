@@ -2846,8 +2846,9 @@ export class N8nProvider implements IntegrationProvider {
         if (!commitSignal.aborted) {
           try {
             await this.#retryPendingRevocations(discovery, commitSignal);
-          } catch (error) {
-            if (!commitSignal.aborted) throw error;
+          } catch {
+            // The local reset is complete and unconfirmed grants are already queued.
+            // Cleanup storage failures must not fault a disconnected provider.
           }
         }
       } catch (error) {

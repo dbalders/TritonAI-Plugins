@@ -1120,6 +1120,53 @@ describe("N8nProvider", () => {
     }
   });
 
+  it.each(["read", "remove"])(
+    "settles local disconnect when optional revocation queue %s fails",
+    async (operation) => {
+      const secrets = memorySecrets();
+      const mock = oauthMcpFetch();
+      let cleanupFails = false;
+      const failCleanup = (name: string, current: string) => {
+        if (
+          cleanupFails &&
+          current === operation &&
+          name === N8N_REVOCATION_SECRET_SUFFIX &&
+          !secrets.values.has(N8N_SECRET_SUFFIX)
+        ) {
+          cleanupFails = false;
+          throw new Error("fixture cleanup storage unavailable");
+        }
+      };
+      const store: IntegrationSecretStore = {
+        ...secrets.service,
+        get: async (name) => {
+          failCleanup(name, "read");
+          return secrets.service.get(name);
+        },
+        remove: async (name) => {
+          failCleanup(name, "remove");
+          return secrets.service.remove(name);
+        },
+      };
+      const provider = new N8nProvider(store, { serverUrl: SERVER }, mock.fetchImplementation);
+      await authorize(provider, mock.requests);
+      cleanupFails = true;
+      await expect(provider.disconnect(lifecycle())).resolves.toBeUndefined();
+      expect(cleanupFails).toBe(false);
+      expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
+      expect(
+        JSON.parse(new TextDecoder().decode(secrets.values.get(N8N_REVOCATION_SECRET_SUFFIX)))
+          .grants,
+      ).toEqual([{ clientId: "dynamic-client-fixture", refreshToken: "refresh-fixture" }]);
+      await expect(provider.status()).resolves.toMatchObject({ state: "not_connected" });
+      await expect(provider.connect(["read"], lifecycle())).resolves.toMatchObject({
+        kind: "authorization_url",
+      });
+      expect(secrets.values.has(N8N_REVOCATION_SECRET_SUFFIX)).toBe(false);
+      await provider.close();
+    },
+  );
+
   it("clears local access and retains every queued grant when revocation stalls", async () => {
     const secrets = memorySecrets();
     const mock = oauthMcpFetch();
