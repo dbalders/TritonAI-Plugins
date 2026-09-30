@@ -5,7 +5,7 @@
   "id": "github",
   "name": "GitHub",
   "description": "Connect a GitHub account with OAuth to read repositories and perform bounded developer workflows.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "provider": "github",
   "capabilities": [
     {
