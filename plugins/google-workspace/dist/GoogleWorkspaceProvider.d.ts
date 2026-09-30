@@ -81,6 +81,245 @@ export declare const GOOGLE_WORKSPACE_TOOLS: readonly [{
     readonly idempotent: true;
     readonly openWorld: true;
 }, {
+    readonly name: "googleworkspace.drive.folder.create";
+    readonly description: "Create one Drive folder through files.create without sharing it.";
+    readonly input: Schema.Struct<{
+        readonly name: Schema.String;
+        readonly parentId: Schema.optionalKey<Schema.String>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: false;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.drive.file.create";
+    readonly description: "Create one Drive file through files.create, optionally importing it as a native Docs, Sheets, or Slides file.";
+    readonly input: Schema.Struct<{
+        readonly name: Schema.String;
+        readonly parentId: Schema.optionalKey<Schema.String>;
+        readonly content: Schema.optionalKey<Schema.String>;
+        readonly contentEncoding: Schema.optionalKey<Schema.Literals<readonly ["text", "base64"]>>;
+        readonly contentType: Schema.optionalKey<Schema.String>;
+        readonly convertTo: Schema.optionalKey<Schema.Literals<readonly ["document", "spreadsheet", "presentation"]>>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: false;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.drive.file.update";
+    readonly description: "Replace the content of one exact Drive file through a files.update media upload.";
+    readonly input: Schema.Struct<{
+        readonly content: Schema.String;
+        readonly contentEncoding: Schema.optionalKey<Schema.Literals<readonly ["text", "base64"]>>;
+        readonly contentType: Schema.String;
+        readonly itemId: Schema.String;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: true;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.drive.item.update";
+    readonly description: "Rename or describe one exact Drive item through files.update.";
+    readonly input: Schema.Struct<{
+        readonly itemId: Schema.String;
+        readonly name: Schema.optionalKey<Schema.String>;
+        readonly description: Schema.optionalKey<Schema.String>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: true;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.docs.text.append";
+    readonly description: "Append plain text to the end of one exact Google Doc through documents.batchUpdate.";
+    readonly input: Schema.Struct<{
+        readonly documentId: Schema.String;
+        readonly text: Schema.String;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: false;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.docs.text.replace";
+    readonly description: "Replace every match of exact text in one Google Doc through documents.batchUpdate.";
+    readonly input: Schema.Struct<{
+        readonly documentId: Schema.String;
+        readonly find: Schema.String;
+        readonly replaceWith: Schema.String;
+        readonly matchCase: Schema.optionalKey<Schema.Boolean>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: true;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.sheets.values.update";
+    readonly description: "Overwrite one bounded A1 range with literal values through values.update.";
+    readonly input: Schema.Struct<{
+        readonly spreadsheetId: Schema.String;
+        readonly range: Schema.String;
+        readonly values: Schema.$Array<Schema.$Array<Schema.Union<readonly [Schema.String, Schema.Finite, Schema.Boolean, Schema.Null]>>>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: true;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.sheets.values.append";
+    readonly description: "Append literal rows after the table in one A1 range through values.append.";
+    readonly input: Schema.Struct<{
+        readonly spreadsheetId: Schema.String;
+        readonly range: Schema.String;
+        readonly values: Schema.$Array<Schema.$Array<Schema.Union<readonly [Schema.String, Schema.Finite, Schema.Boolean, Schema.Null]>>>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: false;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.slides.text.replace";
+    readonly description: "Replace every match of exact text in one presentation through presentations.batchUpdate.";
+    readonly input: Schema.Struct<{
+        readonly presentationId: Schema.String;
+        readonly find: Schema.String;
+        readonly replaceWith: Schema.String;
+        readonly matchCase: Schema.optionalKey<Schema.Boolean>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: true;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.slides.text.insert";
+    readonly description: "Insert plain text into one exact slide shape, not a table, through presentations.batchUpdate.";
+    readonly input: Schema.Struct<{
+        readonly presentationId: Schema.String;
+        readonly objectId: Schema.String;
+        readonly text: Schema.String;
+        readonly insertionIndex: Schema.optionalKey<Schema.Int>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: false;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.slides.slide.create";
+    readonly description: "Add one slide with a predefined layout through presentations.batchUpdate.";
+    readonly input: Schema.Struct<{
+        readonly presentationId: Schema.String;
+        readonly layout: Schema.optionalKey<Schema.Literals<readonly ["BLANK", "CAPTION_ONLY", "TITLE", "TITLE_AND_BODY", "TITLE_AND_TWO_COLUMNS", "TITLE_ONLY", "SECTION_HEADER", "SECTION_TITLE_AND_DESCRIPTION", "ONE_COLUMN_TEXT", "MAIN_POINT", "BIG_NUMBER"]>>;
+        readonly insertionIndex: Schema.optionalKey<Schema.Int>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: false;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.slides.object.delete";
+    readonly description: "Delete one exact slide or page element through presentations.batchUpdate.";
+    readonly input: Schema.Struct<{
+        readonly presentationId: Schema.String;
+        readonly objectId: Schema.String;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: true;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.drive.item.move";
+    readonly description: "Move one exact Drive item into one destination folder through files.update.";
+    readonly input: Schema.Struct<{
+        readonly itemId: Schema.String;
+        readonly folderId: Schema.String;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: true;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.drive.item.trash";
+    readonly description: "Move one exact Drive item to the trash through files.update.";
+    readonly input: Schema.Struct<{
+        readonly itemId: Schema.String;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: true;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.drive.item.restore";
+    readonly description: "Restore one exact Drive item from the trash through files.update.";
+    readonly input: Schema.Struct<{
+        readonly itemId: Schema.String;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: false;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.drive.item.delete";
+    readonly description: "Permanently delete one exact Drive item through files.delete, bypassing the trash.";
+    readonly input: Schema.Struct<{
+        readonly itemId: Schema.String;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: true;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.drive.permissions.list";
+    readonly description: "List bounded sharing permissions for one exact Drive item through permissions.list.";
+    readonly input: Schema.Struct<{
+        readonly itemId: Schema.String;
+        readonly limit: Schema.optionalKey<Schema.Int>;
+        readonly cursor: Schema.optionalKey<Schema.String>;
+    }>;
+    readonly readOnly: true;
+    readonly destructive: false;
+    readonly idempotent: true;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.drive.permission.create";
+    readonly description: "Share one exact Drive item with a user, group, domain, or anyone through permissions.create.";
+    readonly input: Schema.Struct<{
+        readonly itemId: Schema.String;
+        readonly type: Schema.Literals<readonly ["user", "group", "domain", "anyone"]>;
+        readonly role: Schema.Literals<readonly ["reader", "commenter", "writer"]>;
+        readonly emailAddress: Schema.optionalKey<Schema.String>;
+        readonly domain: Schema.optionalKey<Schema.String>;
+        readonly notify: Schema.optionalKey<Schema.Boolean>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: false;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.drive.permission.update";
+    readonly description: "Change the role of one exact Drive permission through permissions.update.";
+    readonly input: Schema.Struct<{
+        readonly itemId: Schema.String;
+        readonly permissionId: Schema.String;
+        readonly role: Schema.Literals<readonly ["reader", "commenter", "writer"]>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: true;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
+    readonly name: "googleworkspace.drive.permission.delete";
+    readonly description: "Remove one exact Drive permission through permissions.delete.";
+    readonly input: Schema.Struct<{
+        readonly itemId: Schema.String;
+        readonly permissionId: Schema.String;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: true;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
     readonly name: "googleworkspace.mail.search";
     readonly description: "Search Gmail through messages.list using structured bounded filters.";
     readonly input: Schema.Struct<{
@@ -295,6 +534,245 @@ export declare class GoogleWorkspaceProvider implements IntegrationProvider {
         readonly readOnly: true;
         readonly destructive: false;
         readonly idempotent: true;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.drive.folder.create";
+        readonly description: "Create one Drive folder through files.create without sharing it.";
+        readonly input: Schema.Struct<{
+            readonly name: Schema.String;
+            readonly parentId: Schema.optionalKey<Schema.String>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: false;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.drive.file.create";
+        readonly description: "Create one Drive file through files.create, optionally importing it as a native Docs, Sheets, or Slides file.";
+        readonly input: Schema.Struct<{
+            readonly name: Schema.String;
+            readonly parentId: Schema.optionalKey<Schema.String>;
+            readonly content: Schema.optionalKey<Schema.String>;
+            readonly contentEncoding: Schema.optionalKey<Schema.Literals<readonly ["text", "base64"]>>;
+            readonly contentType: Schema.optionalKey<Schema.String>;
+            readonly convertTo: Schema.optionalKey<Schema.Literals<readonly ["document", "spreadsheet", "presentation"]>>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: false;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.drive.file.update";
+        readonly description: "Replace the content of one exact Drive file through a files.update media upload.";
+        readonly input: Schema.Struct<{
+            readonly content: Schema.String;
+            readonly contentEncoding: Schema.optionalKey<Schema.Literals<readonly ["text", "base64"]>>;
+            readonly contentType: Schema.String;
+            readonly itemId: Schema.String;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: true;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.drive.item.update";
+        readonly description: "Rename or describe one exact Drive item through files.update.";
+        readonly input: Schema.Struct<{
+            readonly itemId: Schema.String;
+            readonly name: Schema.optionalKey<Schema.String>;
+            readonly description: Schema.optionalKey<Schema.String>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: true;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.docs.text.append";
+        readonly description: "Append plain text to the end of one exact Google Doc through documents.batchUpdate.";
+        readonly input: Schema.Struct<{
+            readonly documentId: Schema.String;
+            readonly text: Schema.String;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: false;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.docs.text.replace";
+        readonly description: "Replace every match of exact text in one Google Doc through documents.batchUpdate.";
+        readonly input: Schema.Struct<{
+            readonly documentId: Schema.String;
+            readonly find: Schema.String;
+            readonly replaceWith: Schema.String;
+            readonly matchCase: Schema.optionalKey<Schema.Boolean>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: true;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.sheets.values.update";
+        readonly description: "Overwrite one bounded A1 range with literal values through values.update.";
+        readonly input: Schema.Struct<{
+            readonly spreadsheetId: Schema.String;
+            readonly range: Schema.String;
+            readonly values: Schema.$Array<Schema.$Array<Schema.Union<readonly [Schema.String, Schema.Finite, Schema.Boolean, Schema.Null]>>>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: true;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.sheets.values.append";
+        readonly description: "Append literal rows after the table in one A1 range through values.append.";
+        readonly input: Schema.Struct<{
+            readonly spreadsheetId: Schema.String;
+            readonly range: Schema.String;
+            readonly values: Schema.$Array<Schema.$Array<Schema.Union<readonly [Schema.String, Schema.Finite, Schema.Boolean, Schema.Null]>>>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: false;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.slides.text.replace";
+        readonly description: "Replace every match of exact text in one presentation through presentations.batchUpdate.";
+        readonly input: Schema.Struct<{
+            readonly presentationId: Schema.String;
+            readonly find: Schema.String;
+            readonly replaceWith: Schema.String;
+            readonly matchCase: Schema.optionalKey<Schema.Boolean>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: true;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.slides.text.insert";
+        readonly description: "Insert plain text into one exact slide shape, not a table, through presentations.batchUpdate.";
+        readonly input: Schema.Struct<{
+            readonly presentationId: Schema.String;
+            readonly objectId: Schema.String;
+            readonly text: Schema.String;
+            readonly insertionIndex: Schema.optionalKey<Schema.Int>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: false;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.slides.slide.create";
+        readonly description: "Add one slide with a predefined layout through presentations.batchUpdate.";
+        readonly input: Schema.Struct<{
+            readonly presentationId: Schema.String;
+            readonly layout: Schema.optionalKey<Schema.Literals<readonly ["BLANK", "CAPTION_ONLY", "TITLE", "TITLE_AND_BODY", "TITLE_AND_TWO_COLUMNS", "TITLE_ONLY", "SECTION_HEADER", "SECTION_TITLE_AND_DESCRIPTION", "ONE_COLUMN_TEXT", "MAIN_POINT", "BIG_NUMBER"]>>;
+            readonly insertionIndex: Schema.optionalKey<Schema.Int>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: false;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.slides.object.delete";
+        readonly description: "Delete one exact slide or page element through presentations.batchUpdate.";
+        readonly input: Schema.Struct<{
+            readonly presentationId: Schema.String;
+            readonly objectId: Schema.String;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: true;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.drive.item.move";
+        readonly description: "Move one exact Drive item into one destination folder through files.update.";
+        readonly input: Schema.Struct<{
+            readonly itemId: Schema.String;
+            readonly folderId: Schema.String;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: true;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.drive.item.trash";
+        readonly description: "Move one exact Drive item to the trash through files.update.";
+        readonly input: Schema.Struct<{
+            readonly itemId: Schema.String;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: true;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.drive.item.restore";
+        readonly description: "Restore one exact Drive item from the trash through files.update.";
+        readonly input: Schema.Struct<{
+            readonly itemId: Schema.String;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: false;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.drive.item.delete";
+        readonly description: "Permanently delete one exact Drive item through files.delete, bypassing the trash.";
+        readonly input: Schema.Struct<{
+            readonly itemId: Schema.String;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: true;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.drive.permissions.list";
+        readonly description: "List bounded sharing permissions for one exact Drive item through permissions.list.";
+        readonly input: Schema.Struct<{
+            readonly itemId: Schema.String;
+            readonly limit: Schema.optionalKey<Schema.Int>;
+            readonly cursor: Schema.optionalKey<Schema.String>;
+        }>;
+        readonly readOnly: true;
+        readonly destructive: false;
+        readonly idempotent: true;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.drive.permission.create";
+        readonly description: "Share one exact Drive item with a user, group, domain, or anyone through permissions.create.";
+        readonly input: Schema.Struct<{
+            readonly itemId: Schema.String;
+            readonly type: Schema.Literals<readonly ["user", "group", "domain", "anyone"]>;
+            readonly role: Schema.Literals<readonly ["reader", "commenter", "writer"]>;
+            readonly emailAddress: Schema.optionalKey<Schema.String>;
+            readonly domain: Schema.optionalKey<Schema.String>;
+            readonly notify: Schema.optionalKey<Schema.Boolean>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: false;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.drive.permission.update";
+        readonly description: "Change the role of one exact Drive permission through permissions.update.";
+        readonly input: Schema.Struct<{
+            readonly itemId: Schema.String;
+            readonly permissionId: Schema.String;
+            readonly role: Schema.Literals<readonly ["reader", "commenter", "writer"]>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: true;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "googleworkspace.drive.permission.delete";
+        readonly description: "Remove one exact Drive permission through permissions.delete.";
+        readonly input: Schema.Struct<{
+            readonly itemId: Schema.String;
+            readonly permissionId: Schema.String;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: true;
+        readonly idempotent: false;
         readonly openWorld: true;
     }, {
         readonly name: "googleworkspace.mail.search";

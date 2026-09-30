@@ -34,7 +34,10 @@ passthrough, or field masks. Responses have byte ceilings and abort-aware timeou
 is bounded base64. Continuation cursors are authenticated and account-bound.
 
 Writes require the selected scope, `writeApproved === true`, and commit admission immediately before
-the fixed mutation. Gmail creates unsent plain-text drafts only. Calendar sends no updates and
+the fixed mutation. Gmail creates unsent plain-text drafts only. Moving and trashing (`drive.organize`),
+permanent deletion (`drive.delete`), and sharing (`drive.share`) are separate opt-in capabilities.
+Sharing cannot transfer ownership or grant owner or organizer roles, and it sends no notification
+email unless requested. Sheets writes store literal values without formula evaluation. Calendar sends no updates and
 cannot manage attendees, responses, ownership, ACLs, sharing, or deletion. The provider retains
 `connect` and `disconnect` recovery behavior for faulted write state.
 

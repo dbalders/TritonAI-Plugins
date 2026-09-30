@@ -10,6 +10,7 @@ import type {
   IntegrationLifecycleContext,
   IntegrationSecretStore,
 } from "./host-contract.ts";
+import { IntegrationProviderPublicError } from "./host-contract.ts";
 import {
   GOOGLE_WORKSPACE_SECRET_SUFFIX,
   GOOGLE_WORKSPACE_TOOLS,
@@ -277,14 +278,16 @@ describe("GoogleWorkspaceProvider authorization", () => {
   });
 
   it("publishes exact executable schemas and truthful effect metadata", async () => {
-    expect(GOOGLE_WORKSPACE_TOOLS).toHaveLength(18);
+    expect(GOOGLE_WORKSPACE_TOOLS).toHaveLength(38);
     const names = new Set<string>();
     for (const tool of GOOGLE_WORKSPACE_TOOLS) {
       expect(names.has(tool.name)).toBe(false);
       names.add(tool.name);
       expect(Schema.toJsonSchemaDocument(tool.input).schema).toMatchObject({ type: "object" });
       expect(tool.openWorld).toBe(true);
-      expect(tool.readOnly).toBe(!tool.name.endsWith(".create") && !tool.name.endsWith(".update"));
+      expect(tool.readOnly).toBe(
+        !/\.(?:create|update|append|replace|insert|move|trash|restore|delete)$/u.test(tool.name),
+      );
     }
     await expect(
       Schema.decodeUnknownPromise(GOOGLE_WORKSPACE_TOOLS[1]!.input)(
@@ -348,7 +351,7 @@ describe("GoogleWorkspaceProvider authorization", () => {
     try {
       for (const capabilities of [
         [],
-        ["drive.write"],
+        ["drive.admin"],
         ["constructor"],
         ["__proto__"],
         ["mail.read", "mail.read"],
@@ -1204,6 +1207,584 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
           lifecycle([], true),
         ),
       ).rejects.toThrow(/at least one/u);
+    } finally {
+      await fixture.provider.close();
+    }
+  });
+
+  it("writes Drive, Docs, and Sheets only through fixed endpoints after invocation-time approval", async () => {
+    const apiCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fixture = oauthFixture({
+      api: (url, init) => {
+        apiCalls.push({ url, init });
+        if (url.includes("docs.googleapis.com")) {
+          return jsonResponse({
+            documentId: "doc-1",
+            replies: url.includes("doc-replace")
+              ? [{ replaceAllText: { occurrencesChanged: 3 } }]
+              : [{}],
+          });
+        }
+        if (url.includes(":append")) {
+          return jsonResponse({
+            spreadsheetId: "sheet-1",
+            tableRange: "Sheet1!A1:B2",
+            updates: {
+              spreadsheetId: "sheet-1",
+              updatedRange: "Sheet1!A3:B3",
+              updatedRows: 1,
+              updatedColumns: 2,
+              updatedCells: 2,
+            },
+          });
+        }
+        if (url.includes("sheets.googleapis.com")) {
+          return jsonResponse({
+            spreadsheetId: "sheet-1",
+            updatedRange: "Sheet1!A1:B2",
+            updatedRows: 2,
+            updatedColumns: 2,
+            updatedCells: 4,
+          });
+        }
+        if (url.includes("/files/native-doc?")) {
+          return jsonResponse({ mimeType: "application/vnd.google-apps.document" });
+        }
+        const body =
+          typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+        return jsonResponse({
+          id: "item-1",
+          mimeType: typeof body.mimeType === "string" ? body.mimeType : "text/markdown",
+        });
+      },
+    });
+    try {
+      const { authorizationUrl } = await fixture.complete(["identity.read", "drive.write"]);
+      expect(authorizationUrl.searchParams.get("scope")?.split(" ")).toContain(
+        "https://www.googleapis.com/auth/drive",
+      );
+
+      const folder = { name: "Reports", parentId: "parent-1" };
+      await expect(
+        fixture.provider.invoke("googleworkspace.drive.folder.create", folder, invocation(false)),
+      ).rejects.toThrow(/requires task access approval/u);
+      await expect(
+        fixture.provider.invoke("googleworkspace.drive.folder.create", folder, invocation(true)),
+      ).rejects.toThrow(/commit admission/u);
+      expect(apiCalls).toHaveLength(0);
+
+      const events: string[] = [];
+      const folderContext = lifecycle(events, true);
+      await expect(
+        fixture.provider.invoke("googleworkspace.drive.folder.create", folder, folderContext),
+      ).resolves.toEqual({
+        status: "folder-created",
+        itemId: "item-1",
+        mimeType: "application/vnd.google-apps.folder",
+      });
+      expect(events).toEqual(["beginCommit"]);
+      expect(apiCalls[0]?.init?.method).toBe("POST");
+      expect(new URL(apiCalls[0]!.url).pathname).toBe("/drive/v3/files");
+      expect(JSON.parse(String(apiCalls[0]?.init?.body))).toEqual({
+        name: "Reports",
+        mimeType: "application/vnd.google-apps.folder",
+        parents: ["parent-1"],
+      });
+
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.file.create",
+          {
+            name: "Notes",
+            parentId: "item-1",
+            content: "# Notes\n",
+            contentType: "text/markdown",
+            convertTo: "document",
+          },
+          lifecycle([], true),
+        ),
+      ).resolves.toMatchObject({ status: "file-created", itemId: "item-1" });
+      const upload = apiCalls[1]!;
+      const uploadUrl = new URL(upload.url);
+      expect(uploadUrl.pathname).toBe("/upload/drive/v3/files");
+      expect(uploadUrl.searchParams.get("uploadType")).toBe("multipart");
+      const uploadType = new Headers(upload.init?.headers).get("content-type") ?? "";
+      expect(uploadType).toMatch(/^multipart\/related; boundary=tritonai-/u);
+      const multipart = decoder.decode(upload.init?.body as Uint8Array);
+      expect(multipart).toContain(
+        '{"name":"Notes","parents":["item-1"],"mimeType":"application/vnd.google-apps.document"}',
+      );
+      expect(multipart).toContain("Content-Type: text/markdown; charset=UTF-8\r\n\r\n# Notes\n");
+
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.file.create",
+          { name: "Blank", convertTo: "spreadsheet" },
+          lifecycle([], true),
+        ),
+      ).resolves.toMatchObject({ mimeType: "application/vnd.google-apps.spreadsheet" });
+      expect(new URL(apiCalls[2]!.url).pathname).toBe("/drive/v3/files");
+
+      const rejectedCreate = lifecycle([], true);
+      for (const input of [
+        { name: "Nothing" },
+        { name: "Untyped", content: "text" },
+        { name: "Bad", content: "%%%", contentEncoding: "base64", contentType: "image/png" },
+        { name: "Native", content: "x", contentType: "application/vnd.google-apps.folder" },
+      ]) {
+        await expect(
+          fixture.provider.invoke("googleworkspace.drive.file.create", input, rejectedCreate),
+        ).rejects.toThrow(IntegrationProviderPublicError);
+      }
+      expect(rejectedCreate.beginCommit).not.toHaveBeenCalled();
+
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.file.update",
+          {
+            itemId: "file/../escape",
+            content: png.toString("base64"),
+            contentEncoding: "base64",
+            contentType: "image/png",
+          },
+          lifecycle([], true),
+        ),
+      ).rejects.toBeDefined();
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.file.update",
+          {
+            itemId: "file-1",
+            content: png.toString("base64"),
+            contentEncoding: "base64",
+            contentType: "image/png",
+          },
+          lifecycle([], true),
+        ),
+      ).resolves.toMatchObject({ status: "file-updated", itemId: "item-1" });
+      expect(apiCalls[3]?.init?.method).toBe("GET");
+      const media = apiCalls[4]!;
+      expect(media.init?.method).toBe("PATCH");
+      expect(new URL(media.url).pathname).toBe("/upload/drive/v3/files/file-1");
+      expect(new URL(media.url).searchParams.get("uploadType")).toBe("media");
+      expect(new Headers(media.init?.headers).get("content-type")).toBe("image/png");
+      expect(Buffer.from(media.init?.body as Uint8Array)).toEqual(png);
+
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.item.update",
+          { itemId: "file-1" },
+          lifecycle([], true),
+        ),
+      ).rejects.toThrow(/name or description/u);
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.item.update",
+          { itemId: "file-1", name: "Renamed" },
+          lifecycle([], true),
+        ),
+      ).resolves.toMatchObject({ status: "item-updated" });
+      expect(apiCalls[5]?.init?.method).toBe("PATCH");
+      expect(JSON.parse(String(apiCalls[5]?.init?.body))).toEqual({ name: "Renamed" });
+
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.docs.text.append",
+          { documentId: "doc-append", text: "Next steps" },
+          lifecycle([], true),
+        ),
+      ).resolves.toEqual({ status: "text-appended", documentId: "doc-1" });
+      expect(apiCalls[6]?.url).toBe(
+        "https://docs.googleapis.com/v1/documents/doc-append:batchUpdate",
+      );
+      expect(JSON.parse(String(apiCalls[6]?.init?.body))).toEqual({
+        requests: [{ insertText: { endOfSegmentLocation: {}, text: "Next steps" } }],
+      });
+
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.docs.text.replace",
+          { documentId: "doc-replace", find: "Draft", replaceWith: "Final" },
+          lifecycle([], true),
+        ),
+      ).resolves.toEqual({ status: "text-replaced", documentId: "doc-1", occurrencesChanged: 3 });
+      expect(JSON.parse(String(apiCalls[7]?.init?.body))).toEqual({
+        requests: [
+          {
+            replaceAllText: {
+              containsText: { text: "Draft", matchCase: true },
+              replaceText: "Final",
+            },
+          },
+        ],
+      });
+
+      const values = [
+        ["Name", '=IMPORTXML("https://example.invalid","//a")'],
+        [1, true],
+      ];
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.sheets.values.update",
+          { spreadsheetId: "sheet-1", range: "Sheet1!A1:B2", values },
+          lifecycle([], true),
+        ),
+      ).resolves.toEqual({
+        status: "values-updated",
+        spreadsheetId: "sheet-1",
+        updatedRange: "Sheet1!A1:B2",
+        updatedRows: 2,
+        updatedColumns: 2,
+        updatedCells: 4,
+      });
+      const update = apiCalls[8]!;
+      expect(update.init?.method).toBe("PUT");
+      expect(update.url).toContain("/v4/spreadsheets/sheet-1/values/Sheet1!A1%3AB2?");
+      expect(new URL(update.url).searchParams.get("valueInputOption")).toBe("RAW");
+      expect(JSON.parse(String(update.init?.body))).toEqual({ majorDimension: "ROWS", values });
+
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.sheets.values.append",
+          { spreadsheetId: "sheet-1", range: "Sheet1!A:B", values: [["Row", 2]] },
+          lifecycle([], true),
+        ),
+      ).resolves.toMatchObject({ status: "values-appended", updatedRange: "Sheet1!A3:B3" });
+      const append = new URL(apiCalls[9]!.url);
+      expect(apiCalls[9]?.init?.method).toBe("POST");
+      expect(append.pathname).toBe("/v4/spreadsheets/sheet-1/values/Sheet1!A%3AB:append");
+      expect(append.searchParams.get("valueInputOption")).toBe("RAW");
+      expect(append.searchParams.get("insertDataOption")).toBe("INSERT_ROWS");
+
+      const tooMany = Array.from({ length: 51 }, () => Array.from({ length: 200 }, () => 1));
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.sheets.values.update",
+          { spreadsheetId: "sheet-1", range: "A1", values: tooMany },
+          lifecycle([], true),
+        ),
+      ).rejects.toThrow(/10,000 cells/u);
+      const nativeUpdate = lifecycle([], true);
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.file.update",
+          { itemId: "native-doc", content: "text", contentType: "text/plain" },
+          nativeUpdate,
+        ),
+      ).rejects.toThrow(/native Google files/u);
+      expect(nativeUpdate.beginCommit).not.toHaveBeenCalled();
+      expect(apiCalls).toHaveLength(11);
+      expect(
+        apiCalls.every(
+          ({ url, init }) =>
+            init?.method !== "DELETE" && !url.includes("permissions") && !url.includes("Parents"),
+        ),
+      ).toBe(true);
+    } finally {
+      await fixture.provider.close();
+    }
+  });
+
+  it("edits Slides and moves, trashes, deletes, and shares only through fixed endpoints", async () => {
+    const apiCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fixture = oauthFixture({
+      api: (url, init) => {
+        apiCalls.push({ url, init });
+        if (url.includes("slides.googleapis.com")) {
+          const body = JSON.parse(String(init?.body)) as {
+            readonly requests: ReadonlyArray<Record<string, unknown>>;
+          };
+          const request = body.requests[0] ?? {};
+          return jsonResponse({
+            presentationId: "deck-1",
+            replies: [
+              "replaceAllText" in request
+                ? { replaceAllText: { occurrencesChanged: 2 } }
+                : "createSlide" in request
+                  ? { createSlide: { objectId: "slide_2" } }
+                  : {},
+            ],
+          });
+        }
+        if (init?.method === "DELETE") return new Response(null, { status: 204 });
+        if (url.includes("/permissions") && init?.method === "GET") {
+          return jsonResponse({
+            permissions: [
+              { id: "perm-1", type: "user", role: "writer", emailAddress: "a@ucsd.edu" },
+            ],
+            nextPageToken: "raw-permission-page",
+          });
+        }
+        if (url.includes("/permissions")) return jsonResponse({ id: "perm-2" });
+        if (url.includes("/files/root?")) {
+          return jsonResponse({ id: "root-id", mimeType: "application/vnd.google-apps.folder" });
+        }
+        if (url.includes("/files/new-1?")) {
+          return jsonResponse({ id: "new-1", mimeType: "application/vnd.google-apps.folder" });
+        }
+        if (init?.method === "GET") {
+          return jsonResponse({ id: "file-1", parents: ["root-id", "old-1"] });
+        }
+        return jsonResponse({ id: "file-1", mimeType: "application/pdf" });
+      },
+    });
+    const body = (index: number) => JSON.parse(String(apiCalls[index]?.init?.body)) as unknown;
+    try {
+      await fixture.complete([
+        "identity.read",
+        "drive.write",
+        "drive.organize",
+        "drive.delete",
+        "drive.share",
+      ]);
+
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.slides.text.replace",
+          { presentationId: "deck-1", find: "Q3", replaceWith: "Q4" },
+          lifecycle([], true),
+        ),
+      ).resolves.toEqual({
+        status: "text-replaced",
+        presentationId: "deck-1",
+        occurrencesChanged: 2,
+      });
+      expect(apiCalls[0]?.url).toBe(
+        "https://slides.googleapis.com/v1/presentations/deck-1:batchUpdate",
+      );
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.slides.slide.create",
+          { presentationId: "deck-1", layout: "TITLE_ONLY", insertionIndex: 1 },
+          lifecycle([], true),
+        ),
+      ).resolves.toEqual({
+        status: "slide-created",
+        presentationId: "deck-1",
+        objectId: "slide_2",
+      });
+      expect(body(1)).toEqual({
+        requests: [
+          {
+            createSlide: {
+              insertionIndex: 1,
+              slideLayoutReference: { predefinedLayout: "TITLE_ONLY" },
+            },
+          },
+        ],
+      });
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.slides.text.insert",
+          { presentationId: "deck-1", objectId: "shape_1", text: "Agenda" },
+          lifecycle([], true),
+        ),
+      ).resolves.toEqual({ status: "text-inserted", presentationId: "deck-1" });
+      expect(body(2)).toEqual({
+        requests: [{ insertText: { objectId: "shape_1", text: "Agenda", insertionIndex: 0 } }],
+      });
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.slides.object.delete",
+          { presentationId: "deck-1", objectId: "slide_2" },
+          lifecycle([], true),
+        ),
+      ).resolves.toEqual({ status: "object-deleted", presentationId: "deck-1" });
+      expect(body(3)).toEqual({ requests: [{ deleteObject: { objectId: "slide_2" } }] });
+
+      const moveContext = lifecycle([], true);
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.item.move",
+          { itemId: "file-1", folderId: "new-1" },
+          moveContext,
+        ),
+      ).resolves.toEqual({
+        status: "item-moved",
+        itemId: "file-1",
+        mimeType: "application/pdf",
+        folderId: "new-1",
+      });
+      expect(apiCalls[4]?.init?.method).toBe("GET");
+      expect(new URL(apiCalls[5]!.url).pathname).toBe("/drive/v3/files/new-1");
+      const move = new URL(apiCalls[6]!.url);
+      expect(apiCalls[6]?.init?.method).toBe("PATCH");
+      expect(move.searchParams.get("addParents")).toBe("new-1");
+      expect(move.searchParams.get("removeParents")).toBe("root-id,old-1");
+      expect(moveContext.beginCommit).toHaveBeenCalledOnce();
+
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.item.trash",
+          { itemId: "file-1" },
+          lifecycle([], true),
+        ),
+      ).resolves.toMatchObject({ status: "item-trashed" });
+      expect(body(7)).toEqual({ trashed: true });
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.item.restore",
+          { itemId: "file-1" },
+          lifecycle([], true),
+        ),
+      ).resolves.toMatchObject({ status: "item-restored" });
+      expect(body(8)).toEqual({ trashed: false });
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.item.delete",
+          { itemId: "file-1" },
+          invocation(false),
+        ),
+      ).rejects.toThrow(/requires task access approval/u);
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.item.delete",
+          { itemId: "file-1" },
+          lifecycle([], true),
+        ),
+      ).resolves.toEqual({ status: "item-deleted", itemId: "file-1" });
+      expect(apiCalls[9]?.init?.method).toBe("DELETE");
+      expect(new URL(apiCalls[9]!.url).pathname).toBe("/drive/v3/files/file-1");
+
+      const listed = (await fixture.provider.invoke(
+        "googleworkspace.drive.permissions.list",
+        { itemId: "file-1", limit: 1 },
+        invocation(),
+      )) as { readonly cursor: string; readonly permissions: ReadonlyArray<unknown> };
+      expect(listed.permissions).toEqual([
+        {
+          id: "perm-1",
+          type: "user",
+          role: "writer",
+          emailAddress: "a@ucsd.edu",
+          domain: null,
+          displayName: null,
+          expirationTime: null,
+          deleted: false,
+        },
+      ]);
+      expect(listed.cursor).not.toContain("raw-permission-page");
+
+      const rejectedShare = lifecycle([], true);
+      for (const input of [
+        { itemId: "file-1", type: "user", role: "reader" },
+        { itemId: "file-1", type: "anyone", role: "reader", emailAddress: "a@ucsd.edu" },
+        { itemId: "file-1", type: "domain", role: "reader" },
+        { itemId: "file-1", type: "anyone", role: "reader", notify: true },
+      ]) {
+        await expect(
+          fixture.provider.invoke("googleworkspace.drive.permission.create", input, rejectedShare),
+        ).rejects.toThrow(IntegrationProviderPublicError);
+      }
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.permission.create",
+          { itemId: "file-1", type: "user", role: "owner", emailAddress: "a@ucsd.edu" },
+          rejectedShare,
+        ),
+      ).rejects.toBeDefined();
+      expect(rejectedShare.beginCommit).not.toHaveBeenCalled();
+
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.permission.create",
+          { itemId: "file-1", type: "user", role: "commenter", emailAddress: "b@ucsd.edu" },
+          lifecycle([], true),
+        ),
+      ).resolves.toEqual({
+        status: "permission-created",
+        itemId: "file-1",
+        permissionId: "perm-2",
+      });
+      const share = new URL(apiCalls[11]!.url);
+      expect(share.pathname).toBe("/drive/v3/files/file-1/permissions");
+      expect(share.searchParams.get("sendNotificationEmail")).toBe("false");
+      expect(body(11)).toEqual({ type: "user", role: "commenter", emailAddress: "b@ucsd.edu" });
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.permission.create",
+          { itemId: "file-1", type: "anyone", role: "reader" },
+          lifecycle([], true),
+        ),
+      ).resolves.toMatchObject({ status: "permission-created" });
+      expect(new URL(apiCalls[12]!.url).searchParams.has("sendNotificationEmail")).toBe(false);
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.permission.update",
+          { itemId: "file-1", permissionId: "perm-2", role: "reader" },
+          lifecycle([], true),
+        ),
+      ).resolves.toMatchObject({ status: "permission-updated" });
+      expect(apiCalls[13]?.init?.method).toBe("PATCH");
+      expect(body(13)).toEqual({ role: "reader" });
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.permission.delete",
+          { itemId: "file-1", permissionId: "perm-2" },
+          lifecycle([], true),
+        ),
+      ).resolves.toEqual({
+        status: "permission-deleted",
+        itemId: "file-1",
+        permissionId: "perm-2",
+      });
+      expect(apiCalls[14]?.init?.method).toBe("DELETE");
+      expect(new URL(apiCalls[14]!.url).pathname).toBe("/drive/v3/files/file-1/permissions/perm-2");
+
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.item.move",
+          { itemId: "file-1", folderId: "root" },
+          lifecycle([], true),
+        ),
+      ).resolves.toMatchObject({ status: "item-moved", folderId: "root-id" });
+      const rootMove = new URL(apiCalls[17]!.url);
+      expect(rootMove.searchParams.get("addParents")).toBe("root-id");
+      expect(rootMove.searchParams.get("removeParents")).toBe("old-1");
+      const fileMove = lifecycle([], true);
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.item.move",
+          { itemId: "file-1", folderId: "file-1" },
+          fileMove,
+        ),
+      ).rejects.toThrow(/must be a folder/u);
+      expect(fileMove.beginCommit).not.toHaveBeenCalled();
+    } finally {
+      await fixture.provider.close();
+    }
+  });
+
+  it("gates Drive organize, delete, and share tools on their own grants", async () => {
+    const fixture = oauthFixture({ api: () => jsonResponse({ id: "item-1", mimeType: "x/y" }) });
+    try {
+      await fixture.complete(["identity.read", "drive.read"]);
+      for (const [tool, capability] of [
+        ["googleworkspace.drive.item.trash", "drive.organize"],
+        ["googleworkspace.drive.item.delete", "drive.delete"],
+        ["googleworkspace.drive.permissions.list", "drive.share"],
+      ] as const) {
+        await expect(
+          fixture.provider.invoke(tool, { itemId: "file-1" }, lifecycle([], true)),
+        ).rejects.toThrow(new RegExp(`${capability} access is not granted`, "u"));
+      }
+    } finally {
+      await fixture.provider.close();
+    }
+  });
+
+  it("requires the drive.write grant for Drive writes", async () => {
+    const fixture = oauthFixture({ api: () => jsonResponse({ id: "item-1", mimeType: "x/y" }) });
+    try {
+      await fixture.complete(["identity.read", "drive.read"]);
+      await expect(
+        fixture.provider.invoke(
+          "googleworkspace.drive.folder.create",
+          { name: "Reports" },
+          lifecycle([], true),
+        ),
+      ).rejects.toThrow(/drive.write access is not granted/u);
     } finally {
       await fixture.provider.close();
     }

@@ -29,6 +29,7 @@ const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const REVOCATION_ENDPOINT = "https://oauth2.googleapis.com/revoke";
 const JWKS_ENDPOINT = "https://www.googleapis.com/oauth2/v3/certs";
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
+const DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
 const GMAIL_API = "https://gmail.googleapis.com/gmail/v1";
 const CALENDAR_API = "https://www.googleapis.com/calendar/v3";
 const DOCS_API = "https://docs.googleapis.com/v1";
@@ -40,6 +41,7 @@ const SCOPE_OPENID = "openid";
 const SCOPE_EMAIL = "email";
 const SCOPE_PROFILE = "profile";
 const SCOPE_DRIVE_READ = "https://www.googleapis.com/auth/drive.readonly";
+const SCOPE_DRIVE_WRITE = "https://www.googleapis.com/auth/drive";
 const SCOPE_DOCS_READ = "https://www.googleapis.com/auth/documents.readonly";
 const SCOPE_SHEETS_READ = "https://www.googleapis.com/auth/spreadsheets.readonly";
 const SCOPE_SLIDES_READ = "https://www.googleapis.com/auth/presentations.readonly";
@@ -52,6 +54,10 @@ const SCOPE_CALENDAR_EVENTS_WRITE = "https://www.googleapis.com/auth/calendar.ev
 const CAPABILITY_SCOPES = {
   "identity.read": [SCOPE_OPENID, SCOPE_EMAIL, SCOPE_PROFILE],
   "drive.read": [SCOPE_DRIVE_READ, SCOPE_DOCS_READ, SCOPE_SHEETS_READ, SCOPE_SLIDES_READ],
+  "drive.write": [SCOPE_DRIVE_WRITE],
+  "drive.organize": [SCOPE_DRIVE_WRITE],
+  "drive.delete": [SCOPE_DRIVE_WRITE],
+  "drive.share": [SCOPE_DRIVE_WRITE],
   "mail.read": [SCOPE_GMAIL_READ],
   "mail.draft.create": [SCOPE_GMAIL_COMPOSE],
   "calendar.read": [SCOPE_CALENDAR_LIST_READ, SCOPE_CALENDAR_EVENTS_READ],
@@ -61,6 +67,25 @@ const CAPABILITY_SCOPES = {
 const CAPABILITY_NAMES = new Set<string>(Object.keys(CAPABILITY_SCOPES));
 const ALL_SCOPES = new Set<string>(Object.values(CAPABILITY_SCOPES).flat());
 const WRITE_TOOLS = new Set([
+  "googleworkspace.drive.folder.create",
+  "googleworkspace.drive.file.create",
+  "googleworkspace.drive.file.update",
+  "googleworkspace.drive.item.update",
+  "googleworkspace.docs.text.append",
+  "googleworkspace.docs.text.replace",
+  "googleworkspace.sheets.values.update",
+  "googleworkspace.sheets.values.append",
+  "googleworkspace.slides.text.replace",
+  "googleworkspace.slides.text.insert",
+  "googleworkspace.slides.slide.create",
+  "googleworkspace.slides.object.delete",
+  "googleworkspace.drive.item.move",
+  "googleworkspace.drive.item.trash",
+  "googleworkspace.drive.item.restore",
+  "googleworkspace.drive.item.delete",
+  "googleworkspace.drive.permission.create",
+  "googleworkspace.drive.permission.update",
+  "googleworkspace.drive.permission.delete",
   "googleworkspace.mail.draft.create",
   "googleworkspace.calendar.event.create",
   "googleworkspace.calendar.event.update",
@@ -84,6 +109,12 @@ const MAX_CALENDAR_RANGE_MS = 31 * 86_400_000;
 const MAX_CURSOR_CHARS = 4_096;
 const MAX_PAGE_TOKEN_CHARS = 2_048;
 const MAX_DRAFT_REQUEST_BYTES = 128 * 1024;
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const MAX_WRITE_REQUEST_BYTES = 2 * 1024 * 1024;
+const MAX_SHEET_ROWS = 1_000;
+const MAX_SHEET_COLUMNS = 200;
+const MAX_SHEET_CELLS = 10_000;
+const MAX_SHEET_CELL_CHARS = 50_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -167,6 +198,250 @@ const SlidesGetInput = Schema.Struct({
   presentationId: BoundedResourceId.annotate({
     description: "Exact Google Slides presentation identifier.",
   }),
+});
+
+const DriveItemName = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(1_024),
+  Schema.isPattern(/^[^\p{Cc}]+$/u),
+).annotate({ description: "Drive item name without control characters." });
+
+const DriveParentId = Schema.optionalKey(
+  BoundedResourceId.annotate({
+    description: "Exact destination folder identifier; defaults to My Drive root.",
+  }),
+);
+
+const NativeKind = Schema.Literals(["document", "spreadsheet", "presentation"]);
+
+const ContentType = Schema.String.check(
+  Schema.isMinLength(3),
+  Schema.isMaxLength(255),
+  Schema.isPattern(/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/u),
+).annotate({ description: "MIME type of the supplied content, without parameters." });
+
+const UploadContentFields = {
+  content: Schema.String.check(Schema.isMaxLength(Math.ceil(MAX_UPLOAD_BYTES / 3) * 4)).annotate({
+    description: "File content as UTF-8 text or standard base64 (decoded maximum 5 MiB).",
+  }),
+  contentEncoding: Schema.optionalKey(
+    Schema.Literals(["text", "base64"]).annotate({
+      description: "Encoding of content; defaults to text.",
+    }),
+  ),
+  contentType: ContentType,
+};
+
+const DriveFolderCreateInput = Schema.Struct({
+  name: DriveItemName,
+  parentId: DriveParentId,
+});
+
+const DriveFileCreateInput = Schema.Struct({
+  name: DriveItemName,
+  parentId: DriveParentId,
+  content: Schema.optionalKey(UploadContentFields.content),
+  contentEncoding: UploadContentFields.contentEncoding,
+  contentType: Schema.optionalKey(UploadContentFields.contentType),
+  convertTo: Schema.optionalKey(
+    NativeKind.annotate({
+      description:
+        "Create a native Google Docs, Sheets, or Slides file, importing content when supplied.",
+    }),
+  ),
+});
+
+const DriveFileUpdateInput = Schema.Struct({
+  itemId: BoundedResourceId.annotate({ description: "Exact Google Drive file identifier." }),
+  ...UploadContentFields,
+});
+
+const DriveItemUpdateInput = Schema.Struct({
+  itemId: BoundedResourceId.annotate({ description: "Exact Google Drive item identifier." }),
+  name: Schema.optionalKey(DriveItemName),
+  description: Schema.optionalKey(
+    Schema.String.check(Schema.isMaxLength(10_000)).annotate({
+      description: "Plain-text item description.",
+    }),
+  ),
+});
+
+const DocsTextAppendInput = Schema.Struct({
+  documentId: BoundedResourceId.annotate({ description: "Exact Google Docs document identifier." }),
+  text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100_000)).annotate({
+    description: "Plain text appended to the end of the document body.",
+  }),
+});
+
+const DocsTextReplaceInput = Schema.Struct({
+  documentId: BoundedResourceId.annotate({ description: "Exact Google Docs document identifier." }),
+  find: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1_000)).annotate({
+    description: "Exact text to find throughout the document.",
+  }),
+  replaceWith: Schema.String.check(Schema.isMaxLength(10_000)).annotate({
+    description: "Replacement text; empty removes each match.",
+  }),
+  matchCase: Schema.optionalKey(
+    Schema.Boolean.annotate({ description: "Match case exactly; defaults to true." }),
+  ),
+});
+
+const SheetRange = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(256),
+  Schema.isPattern(/^[^\p{Cc}]+$/u),
+).annotate({ description: "Bounded A1 range." });
+
+const SheetValues = Schema.Array(
+  Schema.Array(
+    Schema.Union([
+      Schema.String.check(Schema.isMaxLength(MAX_SHEET_CELL_CHARS)),
+      Schema.Finite,
+      Schema.Boolean,
+      Schema.Null,
+    ]),
+  ).check(Schema.isMaxLength(MAX_SHEET_COLUMNS)),
+)
+  .check(Schema.isMinLength(1), Schema.isMaxLength(MAX_SHEET_ROWS))
+  .annotate({
+    description:
+      "Rows of literal cell values (maximum 1,000 rows, 200 columns, 10,000 cells). Strings are stored as text and never evaluated as formulas; null leaves a cell unchanged.",
+  });
+
+const SheetsValuesWriteInput = Schema.Struct({
+  spreadsheetId: BoundedResourceId.annotate({
+    description: "Exact Google Sheets spreadsheet identifier.",
+  }),
+  range: SheetRange,
+  values: SheetValues,
+});
+
+const SlidesObjectId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(50),
+  Schema.isPattern(/^[A-Za-z0-9_][A-Za-z0-9_:-]*$/u),
+);
+
+const SlidesTextReplaceInput = Schema.Struct({
+  presentationId: BoundedResourceId.annotate({
+    description: "Exact Google Slides presentation identifier.",
+  }),
+  find: DocsTextReplaceInput.fields.find,
+  replaceWith: DocsTextReplaceInput.fields.replaceWith,
+  matchCase: DocsTextReplaceInput.fields.matchCase,
+});
+
+const SlidesTextInsertInput = Schema.Struct({
+  presentationId: BoundedResourceId.annotate({
+    description: "Exact Google Slides presentation identifier.",
+  }),
+  objectId: SlidesObjectId.annotate({
+    description: "Exact shape object identifier on a slide; table cells are not supported.",
+  }),
+  text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(10_000)).annotate({
+    description: "Plain text to insert.",
+  }),
+  insertionIndex: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100_000 })).annotate({
+      description: "Character index to insert at; defaults to 0 (start of the text).",
+    }),
+  ),
+});
+
+const SlidesSlideCreateInput = Schema.Struct({
+  presentationId: BoundedResourceId.annotate({
+    description: "Exact Google Slides presentation identifier.",
+  }),
+  layout: Schema.optionalKey(
+    Schema.Literals([
+      "BLANK",
+      "CAPTION_ONLY",
+      "TITLE",
+      "TITLE_AND_BODY",
+      "TITLE_AND_TWO_COLUMNS",
+      "TITLE_ONLY",
+      "SECTION_HEADER",
+      "SECTION_TITLE_AND_DESCRIPTION",
+      "ONE_COLUMN_TEXT",
+      "MAIN_POINT",
+      "BIG_NUMBER",
+    ]).annotate({ description: "Predefined slide layout; defaults to TITLE_AND_BODY." }),
+  ),
+  insertionIndex: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10_000 })).annotate({
+      description: "Zero-based slide position; defaults to the end.",
+    }),
+  ),
+});
+
+const SlidesObjectDeleteInput = Schema.Struct({
+  presentationId: BoundedResourceId.annotate({
+    description: "Exact Google Slides presentation identifier.",
+  }),
+  objectId: SlidesObjectId.annotate({
+    description: "Exact slide or page element object identifier.",
+  }),
+});
+
+const DriveItemMoveInput = Schema.Struct({
+  itemId: BoundedResourceId.annotate({ description: "Exact Google Drive item identifier." }),
+  folderId: BoundedResourceId.annotate({
+    description: "Exact destination folder identifier, or root for My Drive.",
+  }),
+});
+
+const DriveItemIdInput = Schema.Struct({
+  itemId: BoundedResourceId.annotate({ description: "Exact Google Drive item identifier." }),
+});
+
+const DrivePermissionsListInput = Schema.Struct({
+  itemId: BoundedResourceId.annotate({ description: "Exact Google Drive item identifier." }),
+  limit: Limit,
+  cursor: OptionalCursor,
+});
+
+const PermissionRole = Schema.Literals(["reader", "commenter", "writer"]).annotate({
+  description: "Access role. Ownership transfer is not supported.",
+});
+
+const DrivePermissionCreateInput = Schema.Struct({
+  itemId: BoundedResourceId.annotate({ description: "Exact Google Drive item identifier." }),
+  type: Schema.Literals(["user", "group", "domain", "anyone"]).annotate({
+    description: "Grantee type.",
+  }),
+  role: PermissionRole,
+  emailAddress: Schema.optionalKey(
+    EmailAddress.annotate({ description: "User or group email; required for user and group." }),
+  ),
+  domain: Schema.optionalKey(
+    Schema.String.check(
+      Schema.isMinLength(3),
+      Schema.isMaxLength(253),
+      Schema.isPattern(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/u),
+    ).annotate({ description: "Domain; required for domain." }),
+  ),
+  notify: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description: "Send Google's share notification email to a user or group; defaults to false.",
+    }),
+  ),
+});
+
+const PermissionId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(256),
+  Schema.isPattern(/^[A-Za-z0-9_-]+$/u),
+).annotate({ description: "Exact Drive permission identifier." });
+
+const DrivePermissionUpdateInput = Schema.Struct({
+  itemId: BoundedResourceId.annotate({ description: "Exact Google Drive item identifier." }),
+  permissionId: PermissionId,
+  role: PermissionRole,
+});
+
+const DrivePermissionDeleteInput = Schema.Struct({
+  itemId: BoundedResourceId.annotate({ description: "Exact Google Drive item identifier." }),
+  permissionId: PermissionId,
 });
 
 const GmailSearchInput = Schema.Struct({
@@ -306,6 +581,23 @@ const decodeDriveContentGetInput = Schema.decodeUnknownPromise(DriveContentGetIn
 const decodeDocsGetInput = Schema.decodeUnknownPromise(DocsGetInput);
 const decodeSheetsGetInput = Schema.decodeUnknownPromise(SheetsGetInput);
 const decodeSlidesGetInput = Schema.decodeUnknownPromise(SlidesGetInput);
+const decodeDriveFolderCreateInput = Schema.decodeUnknownPromise(DriveFolderCreateInput);
+const decodeDriveFileCreateInput = Schema.decodeUnknownPromise(DriveFileCreateInput);
+const decodeDriveFileUpdateInput = Schema.decodeUnknownPromise(DriveFileUpdateInput);
+const decodeDriveItemUpdateInput = Schema.decodeUnknownPromise(DriveItemUpdateInput);
+const decodeDocsTextAppendInput = Schema.decodeUnknownPromise(DocsTextAppendInput);
+const decodeDocsTextReplaceInput = Schema.decodeUnknownPromise(DocsTextReplaceInput);
+const decodeSheetsValuesWriteInput = Schema.decodeUnknownPromise(SheetsValuesWriteInput);
+const decodeSlidesTextReplaceInput = Schema.decodeUnknownPromise(SlidesTextReplaceInput);
+const decodeSlidesTextInsertInput = Schema.decodeUnknownPromise(SlidesTextInsertInput);
+const decodeSlidesSlideCreateInput = Schema.decodeUnknownPromise(SlidesSlideCreateInput);
+const decodeSlidesObjectDeleteInput = Schema.decodeUnknownPromise(SlidesObjectDeleteInput);
+const decodeDriveItemMoveInput = Schema.decodeUnknownPromise(DriveItemMoveInput);
+const decodeDriveItemIdInput = Schema.decodeUnknownPromise(DriveItemIdInput);
+const decodeDrivePermissionsListInput = Schema.decodeUnknownPromise(DrivePermissionsListInput);
+const decodeDrivePermissionCreateInput = Schema.decodeUnknownPromise(DrivePermissionCreateInput);
+const decodeDrivePermissionUpdateInput = Schema.decodeUnknownPromise(DrivePermissionUpdateInput);
+const decodeDrivePermissionDeleteInput = Schema.decodeUnknownPromise(DrivePermissionDeleteInput);
 const decodeGmailSearchInput = Schema.decodeUnknownPromise(GmailSearchInput);
 const decodeGmailMessageGetInput = Schema.decodeUnknownPromise(GmailMessageGetInput);
 const decodeGmailThreadGetInput = Schema.decodeUnknownPromise(GmailThreadGetInput);
@@ -380,6 +672,194 @@ export const GOOGLE_WORKSPACE_TOOLS = [
     readOnly: true,
     destructive: false,
     idempotent: true,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.drive.folder.create",
+    description: "Create one Drive folder through files.create without sharing it.",
+    input: DriveFolderCreateInput,
+    readOnly: false,
+    destructive: false,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.drive.file.create",
+    description:
+      "Create one Drive file through files.create, optionally importing it as a native Docs, Sheets, or Slides file.",
+    input: DriveFileCreateInput,
+    readOnly: false,
+    destructive: false,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.drive.file.update",
+    description: "Replace the content of one exact Drive file through a files.update media upload.",
+    input: DriveFileUpdateInput,
+    readOnly: false,
+    destructive: true,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.drive.item.update",
+    description: "Rename or describe one exact Drive item through files.update.",
+    input: DriveItemUpdateInput,
+    readOnly: false,
+    destructive: true,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.docs.text.append",
+    description:
+      "Append plain text to the end of one exact Google Doc through documents.batchUpdate.",
+    input: DocsTextAppendInput,
+    readOnly: false,
+    destructive: false,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.docs.text.replace",
+    description:
+      "Replace every match of exact text in one Google Doc through documents.batchUpdate.",
+    input: DocsTextReplaceInput,
+    readOnly: false,
+    destructive: true,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.sheets.values.update",
+    description: "Overwrite one bounded A1 range with literal values through values.update.",
+    input: SheetsValuesWriteInput,
+    readOnly: false,
+    destructive: true,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.sheets.values.append",
+    description: "Append literal rows after the table in one A1 range through values.append.",
+    input: SheetsValuesWriteInput,
+    readOnly: false,
+    destructive: false,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.slides.text.replace",
+    description:
+      "Replace every match of exact text in one presentation through presentations.batchUpdate.",
+    input: SlidesTextReplaceInput,
+    readOnly: false,
+    destructive: true,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.slides.text.insert",
+    description:
+      "Insert plain text into one exact slide shape, not a table, through presentations.batchUpdate.",
+    input: SlidesTextInsertInput,
+    readOnly: false,
+    destructive: false,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.slides.slide.create",
+    description: "Add one slide with a predefined layout through presentations.batchUpdate.",
+    input: SlidesSlideCreateInput,
+    readOnly: false,
+    destructive: false,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.slides.object.delete",
+    description: "Delete one exact slide or page element through presentations.batchUpdate.",
+    input: SlidesObjectDeleteInput,
+    readOnly: false,
+    destructive: true,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.drive.item.move",
+    description: "Move one exact Drive item into one destination folder through files.update.",
+    input: DriveItemMoveInput,
+    readOnly: false,
+    destructive: true,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.drive.item.trash",
+    description: "Move one exact Drive item to the trash through files.update.",
+    input: DriveItemIdInput,
+    readOnly: false,
+    destructive: true,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.drive.item.restore",
+    description: "Restore one exact Drive item from the trash through files.update.",
+    input: DriveItemIdInput,
+    readOnly: false,
+    destructive: false,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.drive.item.delete",
+    description:
+      "Permanently delete one exact Drive item through files.delete, bypassing the trash.",
+    input: DriveItemIdInput,
+    readOnly: false,
+    destructive: true,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.drive.permissions.list",
+    description:
+      "List bounded sharing permissions for one exact Drive item through permissions.list.",
+    input: DrivePermissionsListInput,
+    readOnly: true,
+    destructive: false,
+    idempotent: true,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.drive.permission.create",
+    description:
+      "Share one exact Drive item with a user, group, domain, or anyone through permissions.create.",
+    input: DrivePermissionCreateInput,
+    readOnly: false,
+    destructive: false,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.drive.permission.update",
+    description: "Change the role of one exact Drive permission through permissions.update.",
+    input: DrivePermissionUpdateInput,
+    readOnly: false,
+    destructive: true,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "googleworkspace.drive.permission.delete",
+    description: "Remove one exact Drive permission through permissions.delete.",
+    input: DrivePermissionDeleteInput,
+    readOnly: false,
+    destructive: true,
+    idempotent: false,
     openWorld: true,
   },
   {
@@ -541,6 +1021,19 @@ interface CursorPayload {
 }
 
 type Fetch = typeof globalThis.fetch;
+
+interface Upload {
+  readonly contentType: string;
+  readonly bytes: Uint8Array<ArrayBuffer>;
+}
+
+interface ApiJsonOptions {
+  readonly method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+  readonly body?: unknown;
+  readonly upload?: Upload;
+  readonly signal?: AbortSignal;
+  readonly maximumBytes?: number;
+}
 
 function validateClientId(value: string): string {
   const normalized = value.trim();
@@ -1116,6 +1609,119 @@ function draftRawMessage(input: {
   return Buffer.from(raw).toString("base64url");
 }
 
+const NATIVE_MIME_TYPES = {
+  document: "application/vnd.google-apps.document",
+  spreadsheet: "application/vnd.google-apps.spreadsheet",
+  presentation: "application/vnd.google-apps.presentation",
+} as const;
+
+function uploadBytes(
+  content: string,
+  encoding: "text" | "base64" | undefined,
+): Uint8Array<ArrayBuffer> {
+  let bytes: Buffer<ArrayBuffer>;
+  if ((encoding ?? "text") === "text") {
+    bytes = Buffer.from(content, "utf8");
+  } else {
+    if (content.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(content)) {
+      throw new IntegrationProviderPublicError("File content is not valid base64.");
+    }
+    bytes = Buffer.from(content, "base64");
+    if (bytes.toString("base64") !== content) {
+      throw new IntegrationProviderPublicError("File content is not valid base64.");
+    }
+  }
+  if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+    throw new IntegrationProviderPublicError("File content exceeds the 5 MB upload limit.");
+  }
+  return bytes;
+}
+
+function uploadContentType(contentType: string, encoding: "text" | "base64" | undefined): string {
+  if (contentType.startsWith("application/vnd.google-apps.")) {
+    throw new IntegrationProviderPublicError(
+      "Native Google file types cannot be uploaded as content. Use convertTo instead.",
+    );
+  }
+  return (encoding ?? "text") === "text" && contentType.startsWith("text/")
+    ? `${contentType}; charset=UTF-8`
+    : contentType;
+}
+
+function multipartUpload(
+  metadata: Readonly<Record<string, unknown>>,
+  contentType: string,
+  content: Uint8Array<ArrayBuffer>,
+): Upload {
+  const payload = Buffer.from(content);
+  let boundary = `tritonai-${randomBase64Url(24)}`;
+  while (payload.includes(boundary)) boundary = `tritonai-${randomBase64Url(24)}`;
+  const bytes = Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: ${contentType}\r\n\r\n`,
+    ),
+    payload,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  return { contentType: `multipart/related; boundary=${boundary}`, bytes };
+}
+
+function sheetValuesBody(values: ReadonlyArray<ReadonlyArray<unknown>>) {
+  const cells = values.reduce((total, row) => total + row.length, 0);
+  if (cells === 0 || cells > MAX_SHEET_CELLS) {
+    throw new IntegrationProviderPublicError("Sheet values must contain 1 to 10,000 cells.");
+  }
+  const body = { majorDimension: "ROWS", values };
+  if (Buffer.byteLength(JSON.stringify(body)) > MAX_WRITE_REQUEST_BYTES) {
+    throw new IntegrationProviderPublicError("Sheet values exceed the 2 MB request limit.");
+  }
+  return body;
+}
+
+function projectSheetUpdate(value: unknown, label: string) {
+  const update = asRecord(value, label);
+  const count = (raw: unknown) =>
+    raw === undefined ? 0 : boundedInteger(raw, 0, Number.MAX_SAFE_INTEGER, label);
+  return {
+    spreadsheetId: boundedString(update.spreadsheetId, 1_024, label),
+    updatedRange: boundedOptionalString(update.updatedRange, 512, label),
+    updatedRows: count(update.updatedRows),
+    updatedColumns: count(update.updatedColumns),
+    updatedCells: count(update.updatedCells),
+  };
+}
+
+function occurrencesChanged(result: Record<string, unknown>, label: string): number {
+  const replies = Array.isArray(result.replies) ? result.replies : [];
+  const reply = replies[0] === undefined ? {} : asRecord(replies[0], label);
+  const replaced = reply.replaceAllText === undefined ? {} : asRecord(reply.replaceAllText, label);
+  return replaced.occurrencesChanged === undefined
+    ? 0
+    : boundedInteger(replaced.occurrencesChanged, 0, Number.MAX_SAFE_INTEGER, label);
+}
+
+function projectDrivePermission(value: unknown) {
+  const permission = asRecord(value, "Google Drive permission");
+  return {
+    id: boundedString(permission.id, 256, "Google Drive permission"),
+    type: boundedString(permission.type, 32, "Google Drive permission"),
+    role: boundedString(permission.role, 32, "Google Drive permission"),
+    emailAddress: boundedOptionalString(permission.emailAddress, 320, "Google Drive permission"),
+    domain: boundedOptionalString(permission.domain, 253, "Google Drive permission"),
+    displayName: boundedOptionalString(permission.displayName, 512, "Google Drive permission"),
+    expirationTime: boundedOptionalString(permission.expirationTime, 64, "Google Drive permission"),
+    deleted: permission.deleted === true,
+  };
+}
+
+function driveWriteReceipt(status: string, value: Record<string, unknown>) {
+  return {
+    status,
+    itemId: boundedString(value.id, 1_024, "Google Drive write receipt"),
+    mimeType: boundedString(value.mimeType, 255, "Google Drive write receipt"),
+  };
+}
+
 function eventBody(values: {
   readonly summary: string;
   readonly start: string;
@@ -1334,25 +1940,24 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
   async #apiJson(
     url: URL,
     accessToken: string,
-    options: {
-      readonly method?: "GET" | "POST" | "PATCH";
-      readonly body?: unknown;
-      readonly signal?: AbortSignal;
-      readonly maximumBytes?: number;
-    } = {},
+    options: ApiJsonOptions = {},
   ): Promise<Record<string, unknown>> {
     const headers: Record<string, string> = { authorization: `Bearer ${accessToken}` };
     if (options.body !== undefined) headers["content-type"] = "application/json";
-    const { response, json } = await this.#requestJson(
+    if (options.upload !== undefined) headers["content-type"] = options.upload.contentType;
+    const { response, bytes } = await this.#request(
       url.toString(),
       {
         method: options.method ?? "GET",
         headers,
         ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+        ...(options.upload === undefined ? {} : { body: options.upload.bytes }),
         signal: options.signal ?? null,
       },
       options.maximumBytes ?? JSON_RESPONSE_BYTES,
     );
+    if (response.ok && options.method === "DELETE" && bytes.byteLength === 0) return {};
+    const json = parseJsonResponse(response, bytes);
     if (response.ok) return json;
     throw this.#publicApiError(response, json);
   }
@@ -2480,6 +3085,484 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
       });
       this.#assertInvocationCurrent(generation);
       return result;
+    }
+
+    if (toolName === "googleworkspace.drive.folder.create") {
+      const values = await decodeDriveFolderCreateInput(input, { onExcessProperty: "error" });
+      const access = this.#requireAccess("drive.write");
+      const url = new URL(`${DRIVE_API}/files`);
+      url.searchParams.set("supportsAllDrives", "true");
+      url.searchParams.set("fields", "id,mimeType");
+      const body = {
+        name: values.name,
+        mimeType: "application/vnd.google-apps.folder",
+        ...(values.parentId === undefined ? {} : { parents: [values.parentId] }),
+      };
+      const commitSignal = await this.#beginInvocationCommit(context);
+      const result = await this.#apiJson(url, access.value, {
+        method: "POST",
+        body,
+        signal: commitSignal,
+      });
+      this.#assertInvocationCurrent(generation);
+      return driveWriteReceipt("folder-created", result);
+    }
+
+    if (toolName === "googleworkspace.drive.file.create") {
+      const values = await decodeDriveFileCreateInput(input, { onExcessProperty: "error" });
+      const access = this.#requireAccess("drive.write");
+      const nativeMimeType =
+        values.convertTo === undefined ? null : NATIVE_MIME_TYPES[values.convertTo];
+      const metadata = {
+        name: values.name,
+        ...(values.parentId === undefined ? {} : { parents: [values.parentId] }),
+        ...(nativeMimeType === null ? {} : { mimeType: nativeMimeType }),
+      };
+      let url: URL;
+      let request: ApiJsonOptions;
+      if (values.content === undefined) {
+        if (values.contentType !== undefined || values.contentEncoding !== undefined) {
+          throw new IntegrationProviderPublicError(
+            "Drive contentType and contentEncoding require content.",
+          );
+        }
+        if (nativeMimeType === null) {
+          throw new IntegrationProviderPublicError(
+            "Drive file creation requires content or a native convertTo type.",
+          );
+        }
+        url = new URL(`${DRIVE_API}/files`);
+        request = { method: "POST", body: metadata };
+      } else {
+        if (values.contentType === undefined) {
+          throw new IntegrationProviderPublicError("Drive file content requires a contentType.");
+        }
+        url = new URL(`${DRIVE_UPLOAD_API}/files`);
+        url.searchParams.set("uploadType", "multipart");
+        request = {
+          method: "POST",
+          upload: multipartUpload(
+            metadata,
+            uploadContentType(values.contentType, values.contentEncoding),
+            uploadBytes(values.content, values.contentEncoding),
+          ),
+        };
+      }
+      url.searchParams.set("supportsAllDrives", "true");
+      url.searchParams.set("fields", "id,mimeType");
+      const commitSignal = await this.#beginInvocationCommit(context);
+      const result = await this.#apiJson(url, access.value, { ...request, signal: commitSignal });
+      this.#assertInvocationCurrent(generation);
+      return driveWriteReceipt("file-created", result);
+    }
+
+    if (toolName === "googleworkspace.drive.file.update") {
+      const values = await decodeDriveFileUpdateInput(input, { onExcessProperty: "error" });
+      const access = this.#requireAccess("drive.write");
+      const upload = {
+        contentType: uploadContentType(values.contentType, values.contentEncoding),
+        bytes: uploadBytes(values.content, values.contentEncoding),
+      };
+      const metadataUrl = new URL(`${DRIVE_API}/files/${encodeURIComponent(values.itemId)}`);
+      metadataUrl.searchParams.set("supportsAllDrives", "true");
+      metadataUrl.searchParams.set("fields", "mimeType");
+      const metadata = await this.#apiJson(metadataUrl, access.value, {
+        signal: context?.signal,
+      });
+      if (
+        boundedString(metadata.mimeType, 255, "Google Drive item").startsWith(
+          "application/vnd.google-apps.",
+        )
+      ) {
+        throw new IntegrationProviderPublicError(
+          "Drive content replacement applies only to uploaded files. Use the Docs, Sheets, or Slides tools to edit native Google files.",
+        );
+      }
+      const url = new URL(`${DRIVE_UPLOAD_API}/files/${encodeURIComponent(values.itemId)}`);
+      url.searchParams.set("uploadType", "media");
+      url.searchParams.set("supportsAllDrives", "true");
+      url.searchParams.set("fields", "id,mimeType");
+      const commitSignal = await this.#beginInvocationCommit(context);
+      const result = await this.#apiJson(url, access.value, {
+        method: "PATCH",
+        upload,
+        signal: commitSignal,
+      });
+      this.#assertInvocationCurrent(generation);
+      return driveWriteReceipt("file-updated", result);
+    }
+
+    if (toolName === "googleworkspace.drive.item.update") {
+      const values = await decodeDriveItemUpdateInput(input, { onExcessProperty: "error" });
+      const access = this.#requireAccess("drive.write");
+      const body: Record<string, unknown> = {};
+      if (values.name !== undefined) body.name = values.name;
+      if (values.description !== undefined) body.description = values.description;
+      if (Object.keys(body).length === 0) {
+        throw new IntegrationProviderPublicError(
+          "Drive item update must include a name or description.",
+        );
+      }
+      const url = new URL(`${DRIVE_API}/files/${encodeURIComponent(values.itemId)}`);
+      url.searchParams.set("supportsAllDrives", "true");
+      url.searchParams.set("fields", "id,mimeType");
+      const commitSignal = await this.#beginInvocationCommit(context);
+      const result = await this.#apiJson(url, access.value, {
+        method: "PATCH",
+        body,
+        signal: commitSignal,
+      });
+      this.#assertInvocationCurrent(generation);
+      return driveWriteReceipt("item-updated", result);
+    }
+
+    if (toolName === "googleworkspace.docs.text.append") {
+      const values = await decodeDocsTextAppendInput(input, { onExcessProperty: "error" });
+      const access = this.#requireAccess("drive.write");
+      const url = new URL(
+        `${DOCS_API}/documents/${encodeURIComponent(values.documentId)}:batchUpdate`,
+      );
+      const body = { requests: [{ insertText: { endOfSegmentLocation: {}, text: values.text } }] };
+      const commitSignal = await this.#beginInvocationCommit(context);
+      const result = await this.#apiJson(url, access.value, {
+        method: "POST",
+        body,
+        signal: commitSignal,
+      });
+      this.#assertInvocationCurrent(generation);
+      return {
+        status: "text-appended",
+        documentId: boundedString(result.documentId, 1_024, "Google Docs write receipt"),
+      };
+    }
+
+    if (toolName === "googleworkspace.docs.text.replace") {
+      const values = await decodeDocsTextReplaceInput(input, { onExcessProperty: "error" });
+      const access = this.#requireAccess("drive.write");
+      const url = new URL(
+        `${DOCS_API}/documents/${encodeURIComponent(values.documentId)}:batchUpdate`,
+      );
+      const body = {
+        requests: [
+          {
+            replaceAllText: {
+              containsText: { text: values.find, matchCase: values.matchCase ?? true },
+              replaceText: values.replaceWith,
+            },
+          },
+        ],
+      };
+      const commitSignal = await this.#beginInvocationCommit(context);
+      const result = await this.#apiJson(url, access.value, {
+        method: "POST",
+        body,
+        signal: commitSignal,
+      });
+      this.#assertInvocationCurrent(generation);
+      return {
+        status: "text-replaced",
+        documentId: boundedString(result.documentId, 1_024, "Google Docs write receipt"),
+        occurrencesChanged: occurrencesChanged(result, "Google Docs write receipt"),
+      };
+    }
+
+    if (
+      toolName === "googleworkspace.sheets.values.update" ||
+      toolName === "googleworkspace.sheets.values.append"
+    ) {
+      const values = await decodeSheetsValuesWriteInput(input, { onExcessProperty: "error" });
+      const access = this.#requireAccess("drive.write");
+      const append = toolName === "googleworkspace.sheets.values.append";
+      const body = sheetValuesBody(values.values);
+      const url = new URL(
+        `${SHEETS_API}/spreadsheets/${encodeURIComponent(values.spreadsheetId)}/values/${encodeURIComponent(values.range)}${append ? ":append" : ""}`,
+      );
+      url.searchParams.set("valueInputOption", "RAW");
+      url.searchParams.set("includeValuesInResponse", "false");
+      if (append) url.searchParams.set("insertDataOption", "INSERT_ROWS");
+      const commitSignal = await this.#beginInvocationCommit(context);
+      const result = await this.#apiJson(url, access.value, {
+        method: append ? "POST" : "PUT",
+        body,
+        signal: commitSignal,
+      });
+      const update = projectSheetUpdate(
+        append ? result.updates : result,
+        "Google Sheets write receipt",
+      );
+      this.#assertInvocationCurrent(generation);
+      return { status: append ? "values-appended" : "values-updated", ...update };
+    }
+
+    if (
+      toolName === "googleworkspace.slides.text.replace" ||
+      toolName === "googleworkspace.slides.text.insert" ||
+      toolName === "googleworkspace.slides.slide.create" ||
+      toolName === "googleworkspace.slides.object.delete"
+    ) {
+      let presentationId: string;
+      let request: Record<string, unknown>;
+      if (toolName === "googleworkspace.slides.text.replace") {
+        const values = await decodeSlidesTextReplaceInput(input, { onExcessProperty: "error" });
+        presentationId = values.presentationId;
+        request = {
+          replaceAllText: {
+            containsText: { text: values.find, matchCase: values.matchCase ?? true },
+            replaceText: values.replaceWith,
+          },
+        };
+      } else if (toolName === "googleworkspace.slides.text.insert") {
+        const values = await decodeSlidesTextInsertInput(input, { onExcessProperty: "error" });
+        presentationId = values.presentationId;
+        request = {
+          insertText: {
+            objectId: values.objectId,
+            text: values.text,
+            insertionIndex: values.insertionIndex ?? 0,
+          },
+        };
+      } else if (toolName === "googleworkspace.slides.slide.create") {
+        const values = await decodeSlidesSlideCreateInput(input, { onExcessProperty: "error" });
+        presentationId = values.presentationId;
+        request = {
+          createSlide: {
+            ...(values.insertionIndex === undefined
+              ? {}
+              : { insertionIndex: values.insertionIndex }),
+            slideLayoutReference: { predefinedLayout: values.layout ?? "TITLE_AND_BODY" },
+          },
+        };
+      } else {
+        const values = await decodeSlidesObjectDeleteInput(input, { onExcessProperty: "error" });
+        presentationId = values.presentationId;
+        request = { deleteObject: { objectId: values.objectId } };
+      }
+      const access = this.#requireAccess("drive.write");
+      const url = new URL(
+        `${SLIDES_API}/presentations/${encodeURIComponent(presentationId)}:batchUpdate`,
+      );
+      const commitSignal = await this.#beginInvocationCommit(context);
+      const result = await this.#apiJson(url, access.value, {
+        method: "POST",
+        body: { requests: [request] },
+        signal: commitSignal,
+      });
+      const label = "Google Slides write receipt";
+      const receipt = {
+        presentationId: boundedString(result.presentationId, 1_024, label),
+      };
+      this.#assertInvocationCurrent(generation);
+      if (toolName === "googleworkspace.slides.text.replace") {
+        return {
+          status: "text-replaced",
+          ...receipt,
+          occurrencesChanged: occurrencesChanged(result, label),
+        };
+      }
+      if (toolName === "googleworkspace.slides.slide.create") {
+        const replies = Array.isArray(result.replies) ? result.replies : [];
+        const created = asRecord(asRecord(replies[0], label).createSlide, label);
+        return {
+          status: "slide-created",
+          ...receipt,
+          objectId: boundedString(created.objectId, 50, label),
+        };
+      }
+      return {
+        status:
+          toolName === "googleworkspace.slides.text.insert" ? "text-inserted" : "object-deleted",
+        ...receipt,
+      };
+    }
+
+    if (toolName === "googleworkspace.drive.item.move") {
+      const values = await decodeDriveItemMoveInput(input, { onExcessProperty: "error" });
+      const access = this.#requireAccess("drive.organize");
+      const metadataUrl = new URL(`${DRIVE_API}/files/${encodeURIComponent(values.itemId)}`);
+      metadataUrl.searchParams.set("supportsAllDrives", "true");
+      metadataUrl.searchParams.set("fields", "id,parents");
+      const metadata = await this.#apiJson(metadataUrl, access.value, {
+        signal: context?.signal,
+      });
+      const parents =
+        metadata.parents === undefined
+          ? []
+          : Array.isArray(metadata.parents) && metadata.parents.length <= 100
+            ? metadata.parents.map((parent) => boundedString(parent, 1_024, "Google Drive parent"))
+            : (() => {
+                throw new Error("Google Drive parent list is invalid.");
+              })();
+      // Resolve aliases such as root so the destination compares against real parent IDs.
+      const folderUrl = new URL(`${DRIVE_API}/files/${encodeURIComponent(values.folderId)}`);
+      folderUrl.searchParams.set("supportsAllDrives", "true");
+      folderUrl.searchParams.set("fields", "id,mimeType");
+      const folder = await this.#apiJson(folderUrl, access.value, { signal: context?.signal });
+      const folderId = boundedString(folder.id, 1_024, "Google Drive folder");
+      if (folder.mimeType !== "application/vnd.google-apps.folder") {
+        throw new IntegrationProviderPublicError("Drive move destination must be a folder.");
+      }
+      const url = new URL(`${DRIVE_API}/files/${encodeURIComponent(values.itemId)}`);
+      url.searchParams.set("addParents", folderId);
+      const removeParents = parents.filter((parent) => parent !== folderId);
+      if (removeParents.length > 0) url.searchParams.set("removeParents", removeParents.join(","));
+      url.searchParams.set("supportsAllDrives", "true");
+      url.searchParams.set("fields", "id,mimeType");
+      const commitSignal = await this.#beginInvocationCommit(context);
+      const result = await this.#apiJson(url, access.value, {
+        method: "PATCH",
+        body: {},
+        signal: commitSignal,
+      });
+      this.#assertInvocationCurrent(generation);
+      return { ...driveWriteReceipt("item-moved", result), folderId };
+    }
+
+    if (
+      toolName === "googleworkspace.drive.item.trash" ||
+      toolName === "googleworkspace.drive.item.restore"
+    ) {
+      const values = await decodeDriveItemIdInput(input, { onExcessProperty: "error" });
+      const access = this.#requireAccess("drive.organize");
+      const trashed = toolName === "googleworkspace.drive.item.trash";
+      const url = new URL(`${DRIVE_API}/files/${encodeURIComponent(values.itemId)}`);
+      url.searchParams.set("supportsAllDrives", "true");
+      url.searchParams.set("fields", "id,mimeType");
+      const commitSignal = await this.#beginInvocationCommit(context);
+      const result = await this.#apiJson(url, access.value, {
+        method: "PATCH",
+        body: { trashed },
+        signal: commitSignal,
+      });
+      this.#assertInvocationCurrent(generation);
+      return driveWriteReceipt(trashed ? "item-trashed" : "item-restored", result);
+    }
+
+    if (toolName === "googleworkspace.drive.item.delete") {
+      const values = await decodeDriveItemIdInput(input, { onExcessProperty: "error" });
+      const access = this.#requireAccess("drive.delete");
+      const url = new URL(`${DRIVE_API}/files/${encodeURIComponent(values.itemId)}`);
+      url.searchParams.set("supportsAllDrives", "true");
+      const commitSignal = await this.#beginInvocationCommit(context);
+      await this.#apiJson(url, access.value, { method: "DELETE", signal: commitSignal });
+      this.#assertInvocationCurrent(generation);
+      return { status: "item-deleted", itemId: values.itemId };
+    }
+
+    if (toolName === "googleworkspace.drive.permissions.list") {
+      const values = await decodeDrivePermissionsListInput(input, { onExcessProperty: "error" });
+      const access = this.#requireAccess("drive.share");
+      const limit = values.limit ?? 25;
+      const binding = stableBinding({ itemId: values.itemId, limit });
+      const pageToken = this.#decodeCursor(values.cursor, toolName, binding, access.subject);
+      const url = new URL(`${DRIVE_API}/files/${encodeURIComponent(values.itemId)}/permissions`);
+      url.searchParams.set("supportsAllDrives", "true");
+      url.searchParams.set("pageSize", String(limit));
+      url.searchParams.set(
+        "fields",
+        "nextPageToken,permissions(id,type,role,emailAddress,domain,displayName,expirationTime,deleted)",
+      );
+      if (pageToken) url.searchParams.set("pageToken", pageToken);
+      const json = await this.#apiJson(url, access.value, { signal: context?.signal });
+      if (!Array.isArray(json.permissions) || json.permissions.length > limit) {
+        throw new Error("Google Drive returned an invalid permission list.");
+      }
+      const cursor =
+        json.nextPageToken === undefined
+          ? null
+          : this.#encodeCursor(
+              toolName,
+              binding,
+              access.subject,
+              boundedString(json.nextPageToken, MAX_PAGE_TOKEN_CHARS, "Google Drive page token"),
+            );
+      this.#assertInvocationCurrent(generation);
+      return {
+        itemId: values.itemId,
+        permissions: json.permissions.map(projectDrivePermission),
+        cursor,
+      };
+    }
+
+    if (toolName === "googleworkspace.drive.permission.create") {
+      const values = await decodeDrivePermissionCreateInput(input, { onExcessProperty: "error" });
+      const access = this.#requireAccess("drive.share");
+      const person = values.type === "user" || values.type === "group";
+      if (person !== (values.emailAddress !== undefined)) {
+        throw new IntegrationProviderPublicError(
+          "Drive sharing requires emailAddress for user and group grantees only.",
+        );
+      }
+      if ((values.type === "domain") !== (values.domain !== undefined)) {
+        throw new IntegrationProviderPublicError(
+          "Drive sharing requires domain for domain grantees only.",
+        );
+      }
+      if (!person && values.notify !== undefined) {
+        throw new IntegrationProviderPublicError(
+          "Drive share notifications apply only to user and group grantees.",
+        );
+      }
+      const url = new URL(`${DRIVE_API}/files/${encodeURIComponent(values.itemId)}/permissions`);
+      url.searchParams.set("supportsAllDrives", "true");
+      if (person) url.searchParams.set("sendNotificationEmail", String(values.notify === true));
+      url.searchParams.set("fields", "id");
+      const body = {
+        type: values.type,
+        role: values.role,
+        ...(values.emailAddress === undefined ? {} : { emailAddress: values.emailAddress }),
+        ...(values.domain === undefined ? {} : { domain: values.domain }),
+      };
+      const commitSignal = await this.#beginInvocationCommit(context);
+      const result = await this.#apiJson(url, access.value, {
+        method: "POST",
+        body,
+        signal: commitSignal,
+      });
+      this.#assertInvocationCurrent(generation);
+      return {
+        status: "permission-created",
+        itemId: values.itemId,
+        permissionId: boundedString(result.id, 256, "Google Drive permission receipt"),
+      };
+    }
+
+    if (toolName === "googleworkspace.drive.permission.update") {
+      const values = await decodeDrivePermissionUpdateInput(input, { onExcessProperty: "error" });
+      const access = this.#requireAccess("drive.share");
+      const url = new URL(
+        `${DRIVE_API}/files/${encodeURIComponent(values.itemId)}/permissions/${encodeURIComponent(values.permissionId)}`,
+      );
+      url.searchParams.set("supportsAllDrives", "true");
+      url.searchParams.set("fields", "id");
+      const commitSignal = await this.#beginInvocationCommit(context);
+      const result = await this.#apiJson(url, access.value, {
+        method: "PATCH",
+        body: { role: values.role },
+        signal: commitSignal,
+      });
+      this.#assertInvocationCurrent(generation);
+      return {
+        status: "permission-updated",
+        itemId: values.itemId,
+        permissionId: boundedString(result.id, 256, "Google Drive permission receipt"),
+      };
+    }
+
+    if (toolName === "googleworkspace.drive.permission.delete") {
+      const values = await decodeDrivePermissionDeleteInput(input, { onExcessProperty: "error" });
+      const access = this.#requireAccess("drive.share");
+      const url = new URL(
+        `${DRIVE_API}/files/${encodeURIComponent(values.itemId)}/permissions/${encodeURIComponent(values.permissionId)}`,
+      );
+      url.searchParams.set("supportsAllDrives", "true");
+      const commitSignal = await this.#beginInvocationCommit(context);
+      await this.#apiJson(url, access.value, { method: "DELETE", signal: commitSignal });
+      this.#assertInvocationCurrent(generation);
+      return {
+        status: "permission-deleted",
+        itemId: values.itemId,
+        permissionId: values.permissionId,
+      };
     }
 
     if (toolName === "googleworkspace.mail.search") {
