@@ -10754,18 +10754,31 @@ var NodePosition = ArraySchema(PositionCoordinate).check(
 );
 var NodeCredentials = Record(
   BoundedText,
-  Struct({ id: optionalKey2(BoundedId), name: BoundedText })
-);
+  Struct({
+    id: optionalKey2(BoundedId.annotate({ description: "Credential ID." })),
+    name: BoundedText.annotate({ description: "Credential name." })
+  })
+).annotate({
+  description: 'Credentials keyed by credential type, for example {"httpBasicAuth": {"id": "...", "name": "..."}}.'
+});
 var NewNode = Struct({
-  id: optionalKey2(BoundedId),
+  id: optionalKey2(BoundedId.annotate({ description: "Optional node ID." })),
   name: BoundedText.annotate({ description: "Unique node name." }),
   type: BoundedText.annotate({ description: 'Node type, for example "n8n-nodes-base.set".' }),
-  typeVersion: Finite.check(isBetween({ minimum: 0, maximum: 1e4 })),
-  parameters: optionalKey2(JsonObject),
+  typeVersion: Finite.check(isBetween({ minimum: 0, maximum: 1e4 })).annotate({
+    description: "Node type version; get_node_types lists the available versions."
+  }),
+  parameters: optionalKey2(JsonObject.annotate({ description: "Node parameters." })),
   position: optionalKey2(NodePosition.annotate({ description: "Canvas [x, y]." })),
   credentials: optionalKey2(NodeCredentials),
-  disabled: optionalKey2(Boolean3),
-  notes: optionalKey2(String4.check(isMaxLength(16384)))
+  disabled: optionalKey2(
+    Boolean3.annotate({ description: "Add the node in a disabled state." })
+  ),
+  notes: optionalKey2(
+    String4.check(isMaxLength(16384)).annotate({
+      description: "Notes shown with the node on the canvas."
+    })
+  )
 });
 var ConnectionFields = {
   source: BoundedText.annotate({ description: "For connection ops; source node name." }),
@@ -10790,13 +10803,29 @@ var UpdateSettings = Struct({
       description: 'Node error behavior. "continueErrorOutput" appends an error output after the regular outputs; wire it with addConnection using that sourceIndex.'
     })
   ),
-  retryOnFail: optionalKey2(Boolean3),
-  maxTries: optionalKey2(Int.check(isBetween({ minimum: 2, maximum: 5 }))),
-  waitBetweenTries: optionalKey2(
-    Int.check(isBetween({ minimum: 0, maximum: 5e3 }))
+  retryOnFail: optionalKey2(
+    Boolean3.annotate({ description: "Node settings: retry the node when it fails." })
   ),
-  alwaysOutputData: optionalKey2(Boolean3),
-  executeOnce: optionalKey2(Boolean3),
+  maxTries: optionalKey2(
+    Int.check(isBetween({ minimum: 2, maximum: 5 })).annotate({
+      description: "Node settings: attempts when retryOnFail is on."
+    })
+  ),
+  waitBetweenTries: optionalKey2(
+    Int.check(isBetween({ minimum: 0, maximum: 5e3 })).annotate({
+      description: "Node settings: milliseconds to wait between retries."
+    })
+  ),
+  alwaysOutputData: optionalKey2(
+    Boolean3.annotate({
+      description: "Node settings: output an empty item when the node returns no data."
+    })
+  ),
+  executeOnce: optionalKey2(
+    Boolean3.annotate({
+      description: "Node settings: run the node once, using only the first input item."
+    })
+  ),
   errorWorkflow: optionalKey2(
     BoundedId.annotate({
       description: 'Workflow settings: ID of a separate workflow, containing an Error Trigger node, that runs when this workflow fails in production. Pass "DEFAULT" to clear it.'
@@ -10807,22 +10836,40 @@ var UpdateSettings = Struct({
       description: 'Workflow settings: IANA timezone for Schedule Triggers and date operations, for example "America/Los_Angeles". Pass "DEFAULT" to inherit the instance timezone.'
     })
   ),
-  executionOrder: optionalKey2(Literals(["v0", "v1"])),
+  executionOrder: optionalKey2(
+    Literals(["v0", "v1"]).annotate({
+      description: 'Workflow settings: node execution order. "v1" is the default; "v0" is legacy.'
+    })
+  ),
   saveExecutionProgress: optionalKey2(
-    Union2([Boolean3, Literal2("DEFAULT")])
+    Union2([Boolean3, Literal2("DEFAULT")]).annotate({
+      description: "Workflow settings: save execution data after each node finishes."
+    })
   ),
   saveManualExecutions: optionalKey2(
-    Union2([Boolean3, Literal2("DEFAULT")])
+    Union2([Boolean3, Literal2("DEFAULT")]).annotate({
+      description: "Workflow settings: whether manual (test) executions are saved."
+    })
   ),
-  saveDataErrorExecution: optionalKey2(Literals(["DEFAULT", "all", "none"])),
-  saveDataSuccessExecution: optionalKey2(Literals(["DEFAULT", "all", "none"])),
+  saveDataErrorExecution: optionalKey2(
+    Literals(["DEFAULT", "all", "none"]).annotate({
+      description: "Workflow settings: whether to store execution data for failed runs."
+    })
+  ),
+  saveDataSuccessExecution: optionalKey2(
+    Literals(["DEFAULT", "all", "none"]).annotate({
+      description: "Workflow settings: whether to store execution data for successful runs."
+    })
+  ),
   executionTimeout: optionalKey2(
     Int.check(isBetween({ minimum: -1, maximum: 31536e3 })).annotate({
       description: "Workflow settings: maximum run time in seconds, or -1 for no timeout."
     })
   ),
   timeSavedPerExecution: optionalKey2(
-    Int.check(isBetween({ minimum: 0, maximum: 1e6 }))
+    Int.check(isBetween({ minimum: 0, maximum: 1e6 })).annotate({
+      description: "Workflow settings: estimated minutes saved per execution, for insights."
+    })
   ),
   callerPolicy: optionalKey2(
     Literals(["any", "none", "workflowsFromAList", "workflowsFromSameOwner"]).annotate({
@@ -10926,10 +10973,14 @@ var UpdateOperation = Struct({
   nodeGroups: optionalKey2(
     ArraySchema(
       Struct({
-        id: optionalKey2(BoundedId),
-        name: BoundedText,
-        nodeNames: ArraySchema(BoundedText).check(isMaxLength(250)),
-        description: optionalKey2(String4.check(isMaxLength(1e3)))
+        id: optionalKey2(BoundedId.annotate({ description: "Group ID." })),
+        name: BoundedText.annotate({ description: "Group name." }),
+        nodeNames: ArraySchema(BoundedText).check(isMaxLength(250)).annotate({ description: "Member node names." }),
+        description: optionalKey2(
+          String4.check(isMaxLength(1e3)).annotate({
+            description: "Group description."
+          })
+        )
       })
     ).check(isMaxLength(100)).annotate({
       description: "For setNodeGroups: replaces all node groups; pass [] to clear. Members are node names."

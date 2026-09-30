@@ -384,18 +384,32 @@ const NodePosition = Schema.Array(PositionCoordinate).check(
 );
 const NodeCredentials = Schema.Record(
   BoundedText,
-  Schema.Struct({ id: Schema.optionalKey(BoundedId), name: BoundedText }),
-);
+  Schema.Struct({
+    id: Schema.optionalKey(BoundedId.annotate({ description: "Credential ID." })),
+    name: BoundedText.annotate({ description: "Credential name." }),
+  }),
+).annotate({
+  description:
+    'Credentials keyed by credential type, for example {"httpBasicAuth": {"id": "...", "name": "..."}}.',
+});
 const NewNode = Schema.Struct({
-  id: Schema.optionalKey(BoundedId),
+  id: Schema.optionalKey(BoundedId.annotate({ description: "Optional node ID." })),
   name: BoundedText.annotate({ description: "Unique node name." }),
   type: BoundedText.annotate({ description: 'Node type, for example "n8n-nodes-base.set".' }),
-  typeVersion: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 10_000 })),
-  parameters: Schema.optionalKey(JsonObject),
+  typeVersion: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 10_000 })).annotate({
+    description: "Node type version; get_node_types lists the available versions.",
+  }),
+  parameters: Schema.optionalKey(JsonObject.annotate({ description: "Node parameters." })),
   position: Schema.optionalKey(NodePosition.annotate({ description: "Canvas [x, y]." })),
   credentials: Schema.optionalKey(NodeCredentials),
-  disabled: Schema.optionalKey(Schema.Boolean),
-  notes: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(16_384))),
+  disabled: Schema.optionalKey(
+    Schema.Boolean.annotate({ description: "Add the node in a disabled state." }),
+  ),
+  notes: Schema.optionalKey(
+    Schema.String.check(Schema.isMaxLength(16_384)).annotate({
+      description: "Notes shown with the node on the canvas.",
+    }),
+  ),
 });
 const ConnectionFields = {
   source: BoundedText.annotate({ description: "For connection ops; source node name." }),
@@ -422,13 +436,29 @@ const UpdateSettings = Schema.Struct({
         'Node error behavior. "continueErrorOutput" appends an error output after the regular outputs; wire it with addConnection using that sourceIndex.',
     }),
   ),
-  retryOnFail: Schema.optionalKey(Schema.Boolean),
-  maxTries: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 2, maximum: 5 }))),
-  waitBetweenTries: Schema.optionalKey(
-    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 5_000 })),
+  retryOnFail: Schema.optionalKey(
+    Schema.Boolean.annotate({ description: "Node settings: retry the node when it fails." }),
   ),
-  alwaysOutputData: Schema.optionalKey(Schema.Boolean),
-  executeOnce: Schema.optionalKey(Schema.Boolean),
+  maxTries: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 2, maximum: 5 })).annotate({
+      description: "Node settings: attempts when retryOnFail is on.",
+    }),
+  ),
+  waitBetweenTries: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 5_000 })).annotate({
+      description: "Node settings: milliseconds to wait between retries.",
+    }),
+  ),
+  alwaysOutputData: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description: "Node settings: output an empty item when the node returns no data.",
+    }),
+  ),
+  executeOnce: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description: "Node settings: run the node once, using only the first input item.",
+    }),
+  ),
   errorWorkflow: Schema.optionalKey(
     BoundedId.annotate({
       description:
@@ -441,22 +471,40 @@ const UpdateSettings = Schema.Struct({
         'Workflow settings: IANA timezone for Schedule Triggers and date operations, for example "America/Los_Angeles". Pass "DEFAULT" to inherit the instance timezone.',
     }),
   ),
-  executionOrder: Schema.optionalKey(Schema.Literals(["v0", "v1"])),
+  executionOrder: Schema.optionalKey(
+    Schema.Literals(["v0", "v1"]).annotate({
+      description: 'Workflow settings: node execution order. "v1" is the default; "v0" is legacy.',
+    }),
+  ),
   saveExecutionProgress: Schema.optionalKey(
-    Schema.Union([Schema.Boolean, Schema.Literal("DEFAULT")]),
+    Schema.Union([Schema.Boolean, Schema.Literal("DEFAULT")]).annotate({
+      description: "Workflow settings: save execution data after each node finishes.",
+    }),
   ),
   saveManualExecutions: Schema.optionalKey(
-    Schema.Union([Schema.Boolean, Schema.Literal("DEFAULT")]),
+    Schema.Union([Schema.Boolean, Schema.Literal("DEFAULT")]).annotate({
+      description: "Workflow settings: whether manual (test) executions are saved.",
+    }),
   ),
-  saveDataErrorExecution: Schema.optionalKey(Schema.Literals(["DEFAULT", "all", "none"])),
-  saveDataSuccessExecution: Schema.optionalKey(Schema.Literals(["DEFAULT", "all", "none"])),
+  saveDataErrorExecution: Schema.optionalKey(
+    Schema.Literals(["DEFAULT", "all", "none"]).annotate({
+      description: "Workflow settings: whether to store execution data for failed runs.",
+    }),
+  ),
+  saveDataSuccessExecution: Schema.optionalKey(
+    Schema.Literals(["DEFAULT", "all", "none"]).annotate({
+      description: "Workflow settings: whether to store execution data for successful runs.",
+    }),
+  ),
   executionTimeout: Schema.optionalKey(
     Schema.Int.check(Schema.isBetween({ minimum: -1, maximum: 31_536_000 })).annotate({
       description: "Workflow settings: maximum run time in seconds, or -1 for no timeout.",
     }),
   ),
   timeSavedPerExecution: Schema.optionalKey(
-    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000 })),
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000 })).annotate({
+      description: "Workflow settings: estimated minutes saved per execution, for insights.",
+    }),
   ),
   callerPolicy: Schema.optionalKey(
     Schema.Literals(["any", "none", "workflowsFromAList", "workflowsFromSameOwner"]).annotate({
@@ -566,10 +614,16 @@ const UpdateOperation = Schema.Struct({
   nodeGroups: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({
-        id: Schema.optionalKey(BoundedId),
-        name: BoundedText,
-        nodeNames: Schema.Array(BoundedText).check(Schema.isMaxLength(250)),
-        description: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(1_000))),
+        id: Schema.optionalKey(BoundedId.annotate({ description: "Group ID." })),
+        name: BoundedText.annotate({ description: "Group name." }),
+        nodeNames: Schema.Array(BoundedText)
+          .check(Schema.isMaxLength(250))
+          .annotate({ description: "Member node names." }),
+        description: Schema.optionalKey(
+          Schema.String.check(Schema.isMaxLength(1_000)).annotate({
+            description: "Group description.",
+          }),
+        ),
       }),
     )
       .check(Schema.isMaxLength(100))

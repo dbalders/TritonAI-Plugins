@@ -62,7 +62,8 @@ names. Each operation has a `type` and only the fields documented for that type;
   changes; connection operations use `source` and `target` node names.
 - Keep each call to one logical change so a failure is easy to read. If one operation fails,
   nothing in that call is saved, except invalid node-group operations, which are skipped and
-  reported in `skippedOperations`.
+  reported in `skippedOperations`. n8n also removes an existing group that an edit leaves invalid
+  and reports it in `removedGroups`. Check both before you report the edit as complete.
 - If the call is rejected as invalid input, nothing was sent to n8n: read the error, fix the
   input, and retry. Do not report the tool as unavailable because of an input error.
 - If the result says the operation may have completed, do not resend it. Read
