@@ -1605,9 +1605,14 @@ export class N8nProvider implements IntegrationProvider {
     return value === null ? null : parseCredential(value, this.#server.toString());
   }
 
-  async #writeCredential(credential: Credential, signal: AbortSignal): Promise<void> {
+  async #writeCredential(
+    credential: Credential,
+    signal: AbortSignal,
+    onPersisted?: () => void,
+  ): Promise<void> {
     signal.throwIfAborted();
     await this.#secrets.set(N8N_SECRET_SUFFIX, JSON.stringify(credential));
+    onPersisted?.();
     signal.throwIfAborted();
   }
 
@@ -2380,6 +2385,7 @@ export class N8nProvider implements IntegrationProvider {
       let admitted = false;
       let responseSettled = false;
       let credentialIssued = false;
+      let credentialPersisted = false;
       try {
         const commitSignal = await this.#beginCommit(context);
         admitted = true;
@@ -2404,6 +2410,20 @@ export class N8nProvider implements IntegrationProvider {
         );
         responseSettled = true;
         if (!response.ok) {
+          // invalid_grant means the stored refresh token is gone for good: already spent,
+          // revoked, or cleared wholesale when the instance upgraded. Nothing remains to
+          // revoke, so drop the dead credential here and let the user reconnect in one
+          // step instead of stranding them behind a manual disconnect.
+          if (response.status === 400 && json.error === "invalid_grant") {
+            await this.#secrets.remove(N8N_SECRET_SUFFIX);
+            this.#accessToken = null;
+            this.#credentialRevision += 1;
+            this.#sessionId = null;
+            this.#sessionVerified = false;
+            this.#availableTools = new Set();
+            // A known reset must settle admission successfully so Harness permits reconnect.
+            return;
+          }
           throw new IntegrationProviderPublicError(
             "n8n access could not be refreshed. Disconnect and reconnect.",
           );
@@ -2424,14 +2444,24 @@ export class N8nProvider implements IntegrationProvider {
         if (generation !== this.#generation || revision !== this.#credentialRevision) {
           throw new Error("n8n connection changed while refreshing.");
         }
-        this.#accessToken = parsed.access;
-        this.#sessionId = null;
-        this.#sessionVerified = false;
-        this.#availableTools = new Set();
+        // n8n rotates refresh tokens and deletes the spent one in the same transaction, so
+        // the replacement is the only way back into this grant. Persist it before the MCP
+        // session round-trip, which fails routinely on a waking laptop or a restarting
+        // instance and would otherwise strand a grant n8n has already moved past.
+        await this.#writeCredential(parsed.credential, commitSignal, () => {
+          credentialPersisted = true;
+          this.#credentialRevision += 1;
+          this.#accessToken = parsed.access;
+          this.#sessionId = null;
+          this.#sessionVerified = false;
+          this.#availableTools = new Set();
+        });
         await this.#initializeSession(parsed.access, commitSignal);
-        await this.#writeCredential(parsed.credential, commitSignal);
-        this.#credentialRevision += 1;
       } catch (error) {
+        // Harness faults every rejected admitted operation. Settle a durable rotation even
+        // when session setup fails; invoke reports the missing session, and the next prepare
+        // retries setup before admission using the saved access token.
+        if (credentialPersisted) return;
         if (admitted && (!responseSettled || credentialIssued)) {
           this.#uncertainCredentialState = true;
           throw new ExternalCommitOutcomeUnknownError(
