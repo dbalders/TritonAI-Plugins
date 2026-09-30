@@ -5,7 +5,7 @@
   "id": "microsoft-365",
   "name": "Microsoft 365",
   "description": "Read mail, calendars, and chats, and opt in to narrowly scoped Microsoft Graph writes.",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "provider": "microsoft-graph",
   "capabilities": [
     {
@@ -34,7 +34,7 @@
     },
     {
       "id": "calendar.write",
-      "displayName": "Create and edit events",
+      "displayName": "Create and edit calendar events",
       "description": "Create or edit calendar events. Cannot delete events or respond to invitations.",
       "access": "opt-in"
     },

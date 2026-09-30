@@ -5,7 +5,7 @@
   "id": "google-workspace",
   "name": "Google Workspace",
   "description": "Use UC San Diego Google Drive, Gmail, and Calendar through fixed, bounded tools.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "provider": "google-workspace",
   "capabilities": [
     {
@@ -40,8 +40,8 @@
     },
     {
       "id": "calendar.write",
-      "displayName": "Create and edit events",
-      "description": "Create or narrowly edit events without sending invitations. Cannot delete, respond to invitations, change ownership, or manage calendar access.",
+      "displayName": "Create and edit calendar events",
+      "description": "Create or narrowly edit calendar events without sending invitations. Cannot delete, respond to invitations, change ownership, or manage calendar access.",
       "access": "opt-in"
     }
   ],
