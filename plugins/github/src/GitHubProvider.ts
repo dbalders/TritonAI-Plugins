@@ -59,10 +59,12 @@ const Repo = Schema.String.check(
   Schema.isMaxLength(100),
   Schema.isPattern(/^(?!\.{1,2}$)[A-Za-z0-9_.-]+$/u),
 ).annotate({ description: "Exact GitHub repository name." });
-const PositiveId = Schema.Int.check(
+const RunId = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
-);
-const IssueNumber = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }));
+).annotate({ description: "GitHub Actions workflow run ID." });
+const IssueNumber = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }),
+).annotate({ description: "Issue or pull request number." });
 const Limit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })).annotate({
   description: "Page size from 1 through 50.",
 });
@@ -98,14 +100,24 @@ const Query = Schema.String.check(
   Schema.isMaxLength(256),
   Schema.isPattern(/^(?!\s*$)[^:\p{Cc}]+$/u),
 ).annotate({ description: "Bounded free-text search terms; qualifiers are not accepted." });
-const Title = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
-const Body = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_BODY_CHARS));
-const OptionalBody = Schema.String.check(Schema.isMaxLength(MAX_BODY_CHARS));
+const Title = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)).annotate({
+  description: "Title, up to 256 characters.",
+});
+const Body = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(MAX_BODY_CHARS),
+).annotate({ description: "Markdown text." });
+const OptionalBody = Schema.String.check(Schema.isMaxLength(MAX_BODY_CHARS)).annotate({
+  description: "Markdown description.",
+});
 const CommitMessage = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(MAX_COMMIT_MESSAGE_CHARS),
-);
-const FileContent = Schema.String.check(Schema.isMaxLength(MAX_FILE_BYTES));
+).annotate({ description: "Commit message." });
+const FileContent = Schema.String.check(Schema.isMaxLength(MAX_FILE_BYTES)).annotate({
+  description:
+    "Complete new file content as plain UTF-8 text, not base64; replaces the whole file.",
+});
 const GitObjectSha = Schema.String.check(
   Schema.isMinLength(40),
   Schema.isMaxLength(40),
@@ -117,8 +129,12 @@ const Label = Schema.String.check(
   Schema.isPattern(/^[^,\p{Cc}]+$/u),
 ).annotate({ description: "Exact label name; commas are not accepted." });
 const Login = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100));
-const Labels = Schema.Array(Label).check(Schema.isMaxLength(20));
-const Assignees = Schema.Array(Login).check(Schema.isMaxLength(10));
+const Labels = Schema.Array(Label).check(Schema.isMaxLength(20)).annotate({
+  description: "Exact label names (0-20).",
+});
+const Assignees = Schema.Array(Login).check(Schema.isMaxLength(10)).annotate({
+  description: "GitHub logins to assign (0-10).",
+});
 
 const ownerRepo = { owner: Owner, repo: Repo } as const;
 const pagination = { limit: Schema.optionalKey(Limit), page: Schema.optionalKey(Page) } as const;
@@ -144,7 +160,11 @@ const ContentsPutInput = Schema.Struct({
 const CodeSearchInput = Schema.Struct({ ...ownerRepo, query: Query, ...pagination });
 const IssuesListInput = Schema.Struct({
   ...ownerRepo,
-  state: Schema.optionalKey(Schema.Literals(["open", "closed", "all"])),
+  state: Schema.optionalKey(
+    Schema.Literals(["open", "closed", "all"]).annotate({
+      description: 'State to list; defaults to "open".',
+    }),
+  ),
   labels: Schema.optionalKey(Labels),
   ...pagination,
 });
@@ -163,14 +183,20 @@ const IssueUpdateInput = Schema.Struct({
   number: IssueNumber,
   title: Schema.optionalKey(Title),
   body: Schema.optionalKey(OptionalBody),
-  state: Schema.optionalKey(Schema.Literals(["open", "closed"])),
+  state: Schema.optionalKey(
+    Schema.Literals(["open", "closed"]).annotate({ description: "New issue state." }),
+  ),
   labels: Schema.optionalKey(Labels),
   assignees: Schema.optionalKey(Assignees),
 });
 const CommentCreateInput = Schema.Struct({ ...ownerRepo, number: IssueNumber, body: Body });
 const PullsListInput = Schema.Struct({
   ...ownerRepo,
-  state: Schema.optionalKey(Schema.Literals(["open", "closed", "all"])),
+  state: Schema.optionalKey(
+    Schema.Literals(["open", "closed", "all"]).annotate({
+      description: 'State to list; defaults to "open".',
+    }),
+  ),
   base: Schema.optionalKey(Ref),
   head: Schema.optionalKey(Ref),
   ...pagination,
@@ -181,12 +207,16 @@ const PullCreateInput = Schema.Struct({
   body: Schema.optionalKey(OptionalBody),
   head: PullHead,
   base: Ref,
-  draft: Schema.optionalKey(Schema.Boolean),
+  draft: Schema.optionalKey(
+    Schema.Boolean.annotate({ description: "Open the pull request as a draft." }),
+  ),
 });
 const ReviewCreateInput = Schema.Struct({
   ...ownerRepo,
   number: IssueNumber,
-  event: Schema.Literals(["APPROVE", "REQUEST_CHANGES", "COMMENT"]),
+  event: Schema.Literals(["APPROVE", "REQUEST_CHANGES", "COMMENT"]).annotate({
+    description: "Review verdict.",
+  }),
   body: Body,
 });
 const ActionsRunsListInput = Schema.Struct({
@@ -208,12 +238,12 @@ const ActionsRunsListInput = Schema.Struct({
       "requested",
       "waiting",
       "pending",
-    ]),
+    ]).annotate({ description: "Run status or conclusion to filter by." }),
   ),
   ...pagination,
 });
-const RunInput = Schema.Struct({ ...ownerRepo, runId: PositiveId });
-const JobsInput = Schema.Struct({ ...ownerRepo, runId: PositiveId, ...pagination });
+const RunInput = Schema.Struct({ ...ownerRepo, runId: RunId });
+const JobsInput = Schema.Struct({ ...ownerRepo, runId: RunId, ...pagination });
 const CommitInput = Schema.Struct({ ...ownerRepo, ref: ShaOrRef, ...pagination });
 const CommitStatusInput = Schema.Struct({ ...ownerRepo, ref: ShaOrRef });
 
@@ -685,10 +715,11 @@ export class GitHubProvider implements IntegrationProvider {
       });
       return { response, json: await readJson(response, maximumBytes) };
     } catch (error) {
-      if (init.signal?.aborted) throw new Error("GitHub request was cancelled.", { cause: error });
+      if (init.signal?.aborted)
+        throw new IntegrationProviderPublicError("GitHub request was cancelled.");
       if (controller.signal.aborted)
         throw new Error("GitHub provider was closed.", { cause: error });
-      if (timeout.aborted) throw new Error("GitHub request timed out.", { cause: error });
+      if (timeout.aborted) throw new IntegrationProviderPublicError("GitHub request timed out.");
       throw error;
     } finally {
       this.#controllers.delete(controller);
@@ -1154,7 +1185,8 @@ export class GitHubProvider implements IntegrationProvider {
   ): Promise<unknown> {
     if (this.#closed || this.#disconnecting || this.#uncertainCredentialState)
       throw new Error("GitHub is unavailable.");
-    if (context?.signal.aborted) throw new Error("GitHub request was cancelled.");
+    if (context?.signal.aborted)
+      throw new IntegrationProviderPublicError("GitHub request was cancelled.");
     const isIssueWrite =
       toolName.startsWith("github.issues.") &&
       ["github.issues.create", "github.issues.update", "github.issues.comment.create"].includes(

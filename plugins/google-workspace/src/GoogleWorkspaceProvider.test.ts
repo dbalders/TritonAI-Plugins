@@ -297,6 +297,44 @@ describe("GoogleWorkspaceProvider authorization", () => {
     ).rejects.toBeDefined();
   });
 
+  it("describes every tool input field for the agent", () => {
+    type JsonSchemaNode = Record<string, unknown>;
+    // Effect places a checked field's description inside its allOf refinements.
+    const described = (schema: JsonSchemaNode) =>
+      "description" in schema ||
+      ((schema.allOf ?? []) as ReadonlyArray<JsonSchemaNode>).some(
+        (member) => "description" in member,
+      );
+    const missing: Array<string> = [];
+    for (const tool of GOOGLE_WORKSPACE_TOOLS) {
+      const document = Schema.toJsonSchemaDocument(tool.input);
+      const definitions = (document.definitions ?? {}) as Record<string, JsonSchemaNode>;
+      const visit = (value: JsonSchemaNode, path: string) => {
+        const schema =
+          typeof value.$ref === "string"
+            ? { ...definitions[value.$ref.split("/").pop()!], ...value }
+            : value;
+        for (const [key, child] of Object.entries(
+          (schema.properties ?? {}) as Record<string, JsonSchemaNode>,
+        )) {
+          const childPath = `${path}.${key}`;
+          if (!described(child)) missing.push(childPath);
+          visit(child, childPath);
+        }
+        if (schema.items && typeof schema.items === "object") {
+          visit(schema.items as JsonSchemaNode, `${path}[]`);
+        }
+        for (const member of [
+          ...((schema.anyOf ?? []) as ReadonlyArray<JsonSchemaNode>),
+          ...((schema.allOf ?? []) as ReadonlyArray<JsonSchemaNode>),
+        ]) {
+          visit(member, path);
+        }
+      };
+      visit(document.schema as JsonSchemaNode, tool.name);
+    }
+    expect(missing).toEqual([]);
+  });
   it("starts a system-browser loopback flow with state, nonce, and PKCE without exposing credentials", async () => {
     const fixture = oauthFixture();
     try {
@@ -1852,7 +1890,10 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
       await timeoutFixture.complete(["identity.read", "mail.read"]);
       await expect(
         timeoutFixture.provider.invoke("googleworkspace.mail.labels.list", {}, invocation()),
-      ).rejects.toThrow(/timed out/u);
+      ).rejects.toMatchObject({
+        _tag: "IntegrationProviderPublicError",
+        message: "Google Workspace request timed out.",
+      });
     } finally {
       await timeoutFixture.provider.close();
     }
@@ -1867,7 +1908,10 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
         { signal: controller.signal },
       );
       controller.abort();
-      await expect(pending).rejects.toThrow(/cancelled/u);
+      await expect(pending).rejects.toMatchObject({
+        _tag: "IntegrationProviderPublicError",
+        message: "Google Workspace request was cancelled.",
+      });
     } finally {
       await abortFixture.provider.close();
     }

@@ -315,7 +315,9 @@ const GmailSearchInput = Schema.Struct({
     before: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/u)).annotate({
         description: "Exclusive sent date in YYYY-MM-DD form.",
     })),
-    hasAttachment: Schema.optionalKey(Schema.Boolean),
+    hasAttachment: Schema.optionalKey(Schema.Boolean.annotate({
+        description: "true for messages with attachments, false for messages without; omit for either.",
+    })),
     labelIds: Schema.optionalKey(Schema.Array(BoundedResourceId).check(Schema.isMaxLength(10)).annotate({
         description: "Exact Gmail label identifiers (0-10).",
     })),
@@ -1527,7 +1529,7 @@ export class GoogleWorkspaceProvider {
         }
         catch (error) {
             if (init.signal?.aborted) {
-                throw new Error("Google Workspace request was cancelled.", { cause: error });
+                throw new IntegrationProviderPublicError("Google Workspace request was cancelled.");
             }
             if (controller.signal.aborted) {
                 throw new Error("Google Workspace provider was closed.", { cause: error });
@@ -2318,7 +2320,7 @@ export class GoogleWorkspaceProvider {
     }
     async invoke(toolName, input, context) {
         if (context?.signal.aborted)
-            throw new Error("Google Workspace invocation was cancelled.");
+            throw new IntegrationProviderPublicError("Google Workspace invocation was cancelled.");
         if (WRITE_TOOLS.has(toolName) && context?.writeApproved !== true) {
             throw new IntegrationProviderPublicError("This Google Workspace write requires task access approval.");
         }

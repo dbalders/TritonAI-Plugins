@@ -1058,6 +1058,45 @@ describe("MicrosoftGraphProvider tools", () => {
     }
   });
 
+  it("describes every tool input field for the agent", () => {
+    type JsonSchemaNode = Record<string, unknown>;
+    // Effect places a checked field's description inside its allOf refinements.
+    const described = (schema: JsonSchemaNode) =>
+      "description" in schema ||
+      ((schema.allOf ?? []) as ReadonlyArray<JsonSchemaNode>).some(
+        (member) => "description" in member,
+      );
+    const missing: Array<string> = [];
+    for (const tool of MICROSOFT_GRAPH_TOOLS) {
+      const document = Schema.toJsonSchemaDocument(tool.input);
+      const definitions = (document.definitions ?? {}) as Record<string, JsonSchemaNode>;
+      const visit = (value: JsonSchemaNode, path: string) => {
+        const schema =
+          typeof value.$ref === "string"
+            ? { ...definitions[value.$ref.split("/").pop()!], ...value }
+            : value;
+        for (const [key, child] of Object.entries(
+          (schema.properties ?? {}) as Record<string, JsonSchemaNode>,
+        )) {
+          const childPath = `${path}.${key}`;
+          if (!described(child)) missing.push(childPath);
+          visit(child, childPath);
+        }
+        if (schema.items && typeof schema.items === "object") {
+          visit(schema.items as JsonSchemaNode, `${path}[]`);
+        }
+        for (const member of [
+          ...((schema.anyOf ?? []) as ReadonlyArray<JsonSchemaNode>),
+          ...((schema.allOf ?? []) as ReadonlyArray<JsonSchemaNode>),
+        ]) {
+          visit(member, path);
+        }
+      };
+      visit(document.schema as JsonSchemaNode, tool.name);
+    }
+    expect(missing).toEqual([]);
+  });
+
   it("projects mail discovery and exact bodies without retaining Graph fields", async () => {
     const secrets = memorySecrets();
     const calls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
@@ -2685,7 +2724,7 @@ describe("MicrosoftGraphProvider tools", () => {
       const url = String(input);
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
       if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
-      if (url.includes("/me/messages?")) {
+      if (url.includes("/me/mailFolders/inbox/messages?")) {
         return jsonResponse({
           value: [
             {
@@ -2996,8 +3035,42 @@ describe("MicrosoftGraphProvider tools", () => {
     const controller = new AbortController();
     const cancelled = graph.invoke("microsoft365.mail.search", {}, { signal: controller.signal });
     controller.abort();
-    await expect(cancelled).rejects.toThrow(/cancelled/u);
-    await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(/timed out/u);
+    // Public errors reach the agent; anything else is reported as a generic tool failure.
+    await expect(cancelled).rejects.toMatchObject({
+      _tag: "IntegrationProviderPublicError",
+      message: "Microsoft request was cancelled.",
+    });
+    await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toMatchObject({
+      _tag: "IntegrationProviderPublicError",
+      message: "Microsoft request timed out.",
+    });
+  });
+
+  it("lists the newest Inbox messages when mail search has no query", async () => {
+    const secrets = memorySecrets();
+    const calls: string[] = [];
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.Read"));
+      calls.push(decodeURIComponent(url));
+      return jsonResponse({ value: [] });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph);
+    await graph.invoke("microsoft365.mail.search", { limit: 3 });
+    await graph.invoke("microsoft365.mail.search", { query: "  " });
+    await graph.invoke("microsoft365.mail.search", { query: "budget" });
+    expect(calls).toHaveLength(3);
+    for (const url of calls.slice(0, 2)) {
+      expect(
+        url.startsWith("https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?"),
+      ).toBe(true);
+      expect(url).toContain("$orderby=receivedDateTime+desc");
+      expect(url).not.toContain("$search");
+    }
+    expect(calls[2]?.startsWith("https://graph.microsoft.com/v1.0/me/messages?")).toBe(true);
+    expect(calls[2]).toContain('$search="budget"');
   });
 
   it("makes close idempotent and aborts in-flight work without deleting credentials", async () => {

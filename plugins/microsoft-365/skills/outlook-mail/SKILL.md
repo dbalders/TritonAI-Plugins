@@ -7,7 +7,8 @@ description: Search or organize Outlook mail, or create an unsent draft through 
 
 Use the narrow mail tool that matches the request:
 
-- Use `microsoft365.mail.search` to identify messages from bounded metadata and previews.
+- Use `microsoft365.mail.search` to identify messages from bounded metadata and previews. Omit
+  `query` to list the newest Inbox messages, for example when the user asks for their latest email.
 - Use `microsoft365.mail.get` with an exact message ID when the projected message body or other
   projected message fields are needed.
 - Use `microsoft365.mail.folders.list` to resolve an exact existing destination folder.

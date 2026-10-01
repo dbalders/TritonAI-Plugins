@@ -9,7 +9,7 @@ export interface MicrosoftGraphConfiguration {
 }
 export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly name: "microsoft365.mail.search";
-    readonly description: "Search Microsoft 365 mail through a fixed bounded projection; every non-null preview is marked previewIsPartial.";
+    readonly description: "Search Microsoft 365 mail, or list the newest Inbox messages when query is omitted, through a fixed bounded projection; every non-null preview is marked previewIsPartial.";
     readonly input: Schema.Struct<{
         readonly query: Schema.optionalKey<Schema.String>;
         readonly limit: Schema.optionalKey<Schema.Int>;
@@ -314,7 +314,7 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
     readonly id = "microsoft-graph";
     readonly tools: readonly [{
         readonly name: "microsoft365.mail.search";
-        readonly description: "Search Microsoft 365 mail through a fixed bounded projection; every non-null preview is marked previewIsPartial.";
+        readonly description: "Search Microsoft 365 mail, or list the newest Inbox messages when query is omitted, through a fixed bounded projection; every non-null preview is marked previewIsPartial.";
         readonly input: Schema.Struct<{
             readonly query: Schema.optionalKey<Schema.String>;
             readonly limit: Schema.optionalKey<Schema.Int>;
