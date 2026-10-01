@@ -669,6 +669,7 @@ describe("N8nProvider", () => {
           content: [{ type: "text", text: "Node 'Count 1-10' not found" }],
         }),
       /Node 'Count 1-10' not found/u,
+      true,
     ],
     [
       "structured error",
@@ -678,6 +679,7 @@ describe("N8nProvider", () => {
           structuredContent: { status: "error", error: "Node 'Count 1-10' not found" },
         }),
       /Node 'Count 1-10' not found/u,
+      true,
     ],
     [
       "JSON-RPC invalid params error",
@@ -688,25 +690,29 @@ describe("N8nProvider", () => {
           error: { code: -32_602, message: "operations.0.oldName is required" },
         }),
       /operations\.0\.oldName is required/u,
+      false,
     ],
     [
       "HTTP 400",
       (_request: Record<string, unknown>) => json({ error: "bad request" }, 400),
       /HTTP 400/u,
+      false,
     ],
     [
       "HTTP 403",
       (_request: Record<string, unknown>) => json({ error: "forbidden" }, 403),
       /denied this operation/u,
+      false,
     ],
     [
       "HTTP 429",
       (_request: Record<string, unknown>) => json({ error: "slow down" }, 429),
       /rate limiting/u,
+      false,
     ],
   ])(
     "returns a %s from an admitted write without faulting the provider",
-    async (_label, response, message) => {
+    async (_label, response, message, executionNote) => {
       const secrets = memorySecrets();
       const mock = oauthMcpFetch();
       let failWrite = false;
@@ -726,7 +732,12 @@ describe("N8nProvider", () => {
         provider.invoke("n8n.archive_workflow", { workflowId: "wf" }, invocation(true, events)),
       ).resolves.toMatchObject({
         isError: true,
-        content: [{ type: "text", text: expect.stringMatching(message) }],
+        content: [
+          { type: "text", text: expect.stringMatching(message) },
+          ...(executionNote
+            ? [{ type: "text", text: expect.stringMatching(/Check the current state/u) }]
+            : []),
+        ],
       });
       expect(events).toEqual(["beginCommit"]);
       await expect(provider.status()).resolves.toMatchObject({ state: "connected" });

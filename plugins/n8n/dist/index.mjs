@@ -11805,6 +11805,7 @@ var RemoteRejection = class extends ConfirmedRemoteFailure {
 };
 var PRE_DISPATCH_JSON_RPC_ERRORS = /* @__PURE__ */ new Set([-32700, -32600, -32601, -32602]);
 var MAX_REJECTION_DETAIL_CHARS = 2e3;
+var TOOL_ERROR_AFTER_WRITE_NOTE = "n8n reported that this operation failed. A failed update_workflow call saves nothing, but other writes, such as running a workflow or agent, may have taken effect before failing. Check the current state before you retry.";
 function rejectedToolResult(message) {
   return { isError: true, content: [{ type: "text", text: message }] };
 }
@@ -12940,7 +12941,13 @@ var N8nProvider = class {
       const structured = result2.structuredContent;
       const structuredError = structured !== null && typeof structured === "object" && !Array.isArray(structured) && (structured.status === "error" || typeof structured.error === "string");
       if (result2.isError === true || structuredError) {
-        return { ...result2, isError: true };
+        if (reviewed.upstreamReadOnly) return { ...result2, isError: true };
+        const content = Array.isArray(result2.content) ? result2.content : [];
+        return {
+          ...result2,
+          isError: true,
+          content: [...content, { type: "text", text: TOOL_ERROR_AFTER_WRITE_NOTE }]
+        };
       }
       if (generation !== this.#generation || this.#closed || this.#disconnecting) {
         throw new Error("n8n access changed during the tool call.");

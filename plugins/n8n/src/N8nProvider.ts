@@ -1762,6 +1762,10 @@ class RemoteRejection extends ConfirmedRemoteFailure {}
 // the tool runs. Server and internal errors may follow a partial write, so they stay ambiguous.
 const PRE_DISPATCH_JSON_RPC_ERRORS = new Set([-32_700, -32_600, -32_601, -32_602]);
 const MAX_REJECTION_DETAIL_CHARS = 2_000;
+const TOOL_ERROR_AFTER_WRITE_NOTE =
+  "n8n reported that this operation failed. A failed update_workflow call saves nothing, but other " +
+  "writes, such as running a workflow or agent, may have taken effect before failing. Check the " +
+  "current state before you retry.";
 
 function rejectedToolResult(message: string): JsonObject {
   return { isError: true, content: [{ type: "text", text: message }] };
@@ -3154,8 +3158,9 @@ export class N8nProvider implements IntegrationProvider {
         );
       }
       // A tool-level error is n8n's own answer, so hand it to the agent as the result instead of
-      // throwing. The agent can then correct its input, and a write n8n refused does not leave the
-      // integration faulted.
+      // throwing. The agent can then correct its input, and a failed write does not leave the
+      // integration faulted. n8n raises these during execution, so a write that runs a workflow
+      // or agent may have had effects first; the added note keeps the agent from blindly resending.
       const structured = result.structuredContent;
       const structuredError =
         structured !== null &&
@@ -3164,7 +3169,13 @@ export class N8nProvider implements IntegrationProvider {
         ((structured as Record<string, unknown>).status === "error" ||
           typeof (structured as Record<string, unknown>).error === "string");
       if (result.isError === true || structuredError) {
-        return { ...result, isError: true } as JsonValue;
+        if (reviewed.upstreamReadOnly) return { ...result, isError: true } as JsonValue;
+        const content = Array.isArray(result.content) ? result.content : [];
+        return {
+          ...result,
+          isError: true,
+          content: [...content, { type: "text", text: TOOL_ERROR_AFTER_WRITE_NOTE }],
+        } as JsonValue;
       }
       if (generation !== this.#generation || this.#closed || this.#disconnecting) {
         throw new Error("n8n access changed during the tool call.");
