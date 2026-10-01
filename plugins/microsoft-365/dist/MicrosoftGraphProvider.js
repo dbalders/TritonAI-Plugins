@@ -1254,6 +1254,8 @@ export class MicrosoftGraphProvider {
     #closed = false;
     #disconnecting = false;
     #uncertainCredentialState = false;
+    // Microsoft rejected the stored grant; only a new sign-in recovers it.
+    #signInExpired = false;
     #credentialMutation = Promise.resolve();
     constructor(secrets, configuration, fetchImplementation = globalThis.fetch, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
         this.#secrets = secrets;
@@ -1397,6 +1399,14 @@ export class MicrosoftGraphProvider {
                     accountLabel: null,
                     grantedCapabilities: [],
                     message: null,
+                };
+            }
+            if (this.#signInExpired) {
+                return {
+                    state: "error",
+                    accountLabel: null,
+                    grantedCapabilities: [],
+                    message: "The Microsoft sign-in expired. Disconnect and reconnect Microsoft 365.",
                 };
             }
             return {
@@ -1570,6 +1580,7 @@ export class MicrosoftGraphProvider {
                 }
                 await this.#writeCredential(credential, commitSignal);
                 this.#credentialRevision += 1;
+                this.#signInExpired = false;
                 this.#generation += 1;
                 this.#pending.clear();
                 this.#accessToken = {
@@ -1610,23 +1621,29 @@ export class MicrosoftGraphProvider {
             const credential = await this.#readCredential(context?.signal);
             if (!credential)
                 return;
-            let admitted = false;
-            try {
-                const commitSignal = await this.#beginCommit(context);
-                admitted = true;
-                const { response, json } = await this.#postForm("token", {
-                    client_id: this.#clientId,
-                    grant_type: "refresh_token",
-                    [REFRESH_TOKEN_FIELD]: credential.refreshToken,
-                    scope: [OFFLINE_SCOPE, ...credential.grantedScopes].join(" "),
-                }, commitSignal);
-                if (!response.ok) {
-                    throw new IntegrationProviderPublicError("Microsoft access could not be refreshed. Disconnect and reconnect.");
+            // Microsoft does not revoke a refresh token when it issues a replacement, so redeeming one
+            // changes nothing the stored grant depends on. Only the local write needs commit
+            // admission: Harness faults a provider whose admitted operation rejects, and a failed
+            // request here must leave the connection usable for the next preparation to retry.
+            const { response, json } = await this.#postForm("token", {
+                client_id: this.#clientId,
+                grant_type: "refresh_token",
+                [REFRESH_TOKEN_FIELD]: credential.refreshToken,
+                scope: [OFFLINE_SCOPE, ...credential.grantedScopes].join(" "),
+            }, context?.signal);
+            if (!response.ok) {
+                if (json.error === "invalid_grant" || json.error === "interaction_required") {
+                    this.#signInExpired = true;
+                    throw new IntegrationProviderPublicError("The Microsoft sign-in expired. Disconnect and reconnect Microsoft 365.");
                 }
-                const accessToken = boundedString(json.access_token, MAX_TOKEN_CHARS);
-                const rotatedValue = boundedString(json[REFRESH_TOKEN_FIELD] ?? credential.refreshToken, MAX_TOKEN_CHARS);
-                const grantedScopes = canonicalScopes(json.scope, credential.grantedScopes);
-                const expiresInSeconds = boundedInteger(json.expires_in, 60, 86_400);
+                throw new IntegrationProviderPublicError("Microsoft access could not be refreshed. Try again in a moment.");
+            }
+            const accessToken = boundedString(json.access_token, MAX_TOKEN_CHARS);
+            const rotatedValue = boundedString(json[REFRESH_TOKEN_FIELD] ?? credential.refreshToken, MAX_TOKEN_CHARS);
+            const grantedScopes = canonicalScopes(json.scope, credential.grantedScopes);
+            const expiresInSeconds = boundedInteger(json.expires_in, 60, 86_400);
+            const commitSignal = await this.#beginCommit(context);
+            try {
                 await this.#writeCredential({
                     version: 2,
                     [refreshValueField]: rotatedValue,
@@ -1634,19 +1651,23 @@ export class MicrosoftGraphProvider {
                     grantedCapabilities: credential.grantedCapabilities,
                     updatedAt: new Date().toISOString(),
                 }, commitSignal);
-                this.#credentialRevision += 1;
-                this.#accessToken = {
-                    value: accessToken,
-                    expiresAt: Date.now() + expiresInSeconds * 1_000,
-                    grantedScopes,
-                    grantedCapabilities: credential.grantedCapabilities,
-                };
             }
             catch (error) {
-                if (admitted)
+                // The stored grant still works whether or not this write landed. Only a write cut short
+                // by revocation or shutdown leaves the credential in doubt.
+                if (commitSignal.aborted) {
                     this.#uncertainCredentialState = true;
-                throw error;
+                    throw error;
+                }
             }
+            this.#credentialRevision += 1;
+            this.#signInExpired = false;
+            this.#accessToken = {
+                value: accessToken,
+                expiresAt: Date.now() + expiresInSeconds * 1_000,
+                grantedScopes,
+                grantedCapabilities: credential.grantedCapabilities,
+            };
         });
     }
     disconnect(context) {
@@ -1664,6 +1685,7 @@ export class MicrosoftGraphProvider {
                 });
                 this.#credentialRevision += 1;
                 this.#uncertainCredentialState = false;
+                this.#signInExpired = false;
             }
             catch (error) {
                 if (admitted)
@@ -1709,23 +1731,27 @@ export class MicrosoftGraphProvider {
             }
         });
         if (!response.ok) {
+            // Each write sends one mutating request, after only reads, so a client-error response
+            // anywhere in a write means Microsoft refused it and nothing changed. 408 is a timeout
+            // whose outcome is unknown.
+            const refused = (message) => new IntegrationProviderPublicError(message, { unchanged: true });
             if (response.status === 401) {
-                throw new IntegrationProviderPublicError("The Microsoft 365 session expired. Refresh access and try again.");
+                throw refused("The Microsoft 365 session expired. Refresh access and try again.");
             }
             if (response.status === 403) {
-                throw new IntegrationProviderPublicError("Microsoft 365 denied this request. Check the enabled access and reconnect if needed.");
+                throw refused("Microsoft 365 denied this request. Check the enabled access and reconnect if needed.");
             }
             if (response.status === 404) {
-                throw new IntegrationProviderPublicError("The requested Microsoft 365 item was not found.");
+                throw refused("The requested Microsoft 365 item was not found.");
             }
             if (response.status === 409) {
-                throw new IntegrationProviderPublicError("Microsoft 365 could not complete the request because the item changed or conflicts with current state.");
+                throw refused("Microsoft 365 could not complete the request because the item changed or conflicts with current state.");
             }
             if (response.status === 429) {
-                throw new IntegrationProviderPublicError("Microsoft 365 is temporarily rate limiting requests. Try again later.");
+                throw refused("Microsoft 365 is temporarily rate limiting requests. Try again later.");
             }
-            if (response.status >= 400 && response.status < 500) {
-                throw new IntegrationProviderPublicError("Microsoft 365 could not accept this request.");
+            if (response.status >= 400 && response.status < 500 && response.status !== 408) {
+                throw refused("Microsoft 365 could not accept this request.");
             }
             throw new Error(`Microsoft Graph request failed with HTTP ${response.status}.`);
         }
@@ -1751,7 +1777,7 @@ export class MicrosoftGraphProvider {
         return context.beginCommit();
     }
     async #assertMailFolderOutsideDeletionHierarchy(folderId, accessToken, generation, signal) {
-        const deletionFolderError = () => new IntegrationProviderPublicError("Microsoft 365 mail organization cannot use a deletion folder.");
+        const deletionFolderError = () => new IntegrationProviderPublicError("Microsoft 365 mail organization cannot use a deletion folder.", { unchanged: true });
         const initialFolderId = folderId.trim();
         if (DELETION_MOVE_DESTINATIONS.has(initialFolderId.toLowerCase())) {
             throw deletionFolderError();
@@ -1770,7 +1796,7 @@ export class MicrosoftGraphProvider {
             if (deletionFolderIds.has(currentFolderId))
                 throw deletionFolderError();
             if (visitedFolderIds.has(currentFolderId)) {
-                throw new IntegrationProviderPublicError("Microsoft 365 could not safely verify the mail folder hierarchy.");
+                throw new IntegrationProviderPublicError("Microsoft 365 could not safely verify the mail folder hierarchy.", { unchanged: true });
             }
             visitedFolderIds.add(currentFolderId);
             const folder = await this.#graph(`/me/mailFolders/${encodeURIComponent(currentFolderId)}?${selectAncestry.toString()}`, accessToken, { signal });
@@ -1780,7 +1806,7 @@ export class MicrosoftGraphProvider {
                 throw deletionFolderError();
             if (resolvedFolderId !== currentFolderId) {
                 if (visitedFolderIds.has(resolvedFolderId)) {
-                    throw new IntegrationProviderPublicError("Microsoft 365 could not safely verify the mail folder hierarchy.");
+                    throw new IntegrationProviderPublicError("Microsoft 365 could not safely verify the mail folder hierarchy.", { unchanged: true });
                 }
                 visitedFolderIds.add(resolvedFolderId);
             }
@@ -1788,7 +1814,7 @@ export class MicrosoftGraphProvider {
                 return;
             currentFolderId = boundedString(folder.parentFolderId, 512);
         }
-        throw new IntegrationProviderPublicError("Microsoft 365 could not safely verify the mail folder hierarchy.");
+        throw new IntegrationProviderPublicError("Microsoft 365 could not safely verify the mail folder hierarchy.", { unchanged: true });
     }
     async invoke(toolName, input, context) {
         if (this.#closed || this.#disconnecting || this.#uncertainCredentialState) {

@@ -48,10 +48,17 @@ export interface IntegrationProviderStatus {
 
 export class IntegrationProviderPublicError extends Error {
   readonly _tag = "IntegrationProviderPublicError";
+  /**
+   * The external service definitively refused the operation, so nothing changed. Harness settles
+   * an admitted commit rejected this way instead of faulting the provider; older Harness builds
+   * ignore it.
+   */
+  readonly unchanged: boolean;
 
-  constructor(message: string) {
+  constructor(message: string, options?: { readonly unchanged?: boolean }) {
     super(message.trim() || "Integration provider operation failed.");
     this.name = "IntegrationProviderPublicError";
+    this.unchanged = options?.unchanged === true;
   }
 }
 

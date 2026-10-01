@@ -34,6 +34,7 @@ interface SecretOptions {
 
 interface ControlledSecretOptions {
   readonly failSetAfterWriteCall?: number;
+  readonly beforeSetFailure?: () => void;
   readonly pauseGetCall?: number;
   readonly getPaused?: () => void;
   readonly getGate?: Promise<void>;
@@ -85,6 +86,7 @@ function controlledSecrets(options: ControlledSecretOptions = {}) {
         setCalls += 1;
         values.set(name, Uint8Array.from(bytes));
         if (setCalls === options.failSetAfterWriteCall) {
+          options.beforeSetFailure?.();
           throw new Error("fixture uncertain set");
         }
       }),
@@ -690,10 +692,92 @@ describe("MicrosoftGraphProvider contract", () => {
     await graph.prepare(context);
     await graph.prepare(context);
     const persisted = new TextDecoder().decode(secrets.values.get(MICROSOFT_GRAPH_SECRET_SUFFIX));
-    expect(events).toEqual(["beginCommit", "token"]);
+    expect(events).toEqual(["token", "beginCommit"]);
     expect(persisted).toContain(value("refresh-rotated"));
     expect(persisted).not.toContain(value("access-rotated"));
   });
+
+  it.each([
+    ["a network failure", () => Promise.reject(new TypeError("fetch failed"))],
+    [
+      "a server error",
+      () => Promise.resolve(jsonResponse({ error: "temporarily_unavailable" }, 503)),
+    ],
+    [
+      "a non-JSON gateway error",
+      () =>
+        Promise.resolve(
+          new Response("bad gateway", { status: 502, headers: { "content-type": "text/html" } }),
+        ),
+    ],
+  ] as const)("keeps the connection after a refresh fails with %s", async (_label, failure) => {
+    const secrets = memorySecrets();
+    secrets.values.set(MICROSOFT_GRAPH_SECRET_SUFFIX, storedCredential());
+    const stored = secrets.values.get(MICROSOFT_GRAPH_SECRET_SUFFIX);
+    let tokenCalls = 0;
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/token")) {
+        tokenCalls += 1;
+        return tokenCalls === 1 ? failure() : jsonResponse(tokenBody("offline_access Mail.Read"));
+      }
+      return jsonResponse({ value: [] });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    const events: string[] = [];
+
+    await expect(graph.prepare(lifecycle(events))).rejects.toThrow();
+    // Harness faults a provider whose admitted operation rejects, so a failed request must
+    // never have asked for commit admission.
+    expect(events).toEqual([]);
+    expect(secrets.values.get(MICROSOFT_GRAPH_SECRET_SUFFIX)).toEqual(stored);
+    await expect(graph.status()).resolves.toMatchObject({ state: "connected" });
+
+    await graph.prepare(lifecycle());
+    await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toEqual({
+      messages: [],
+      hasMore: false,
+    });
+  });
+
+  it("keeps using a refreshed token when saving the rotated credential fails", async () => {
+    const secrets = memorySecrets({ failSet: true });
+    secrets.values.set(MICROSOFT_GRAPH_SECRET_SUFFIX, storedCredential());
+    const fetchImplementation = (async (input: RequestInfo | URL) =>
+      String(input).endsWith("/token")
+        ? jsonResponse(tokenBody("offline_access Mail.Read", "rotated"))
+        : jsonResponse({ value: [] })) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+
+    await graph.prepare(lifecycle());
+    await expect(graph.status()).resolves.toMatchObject({ state: "connected" });
+    await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toEqual({
+      messages: [],
+      hasMore: false,
+    });
+  });
+
+  it.each(["invalid_grant", "interaction_required"])(
+    "reports an expired sign-in when Microsoft answers %s until reconnect",
+    async (error) => {
+      const secrets = memorySecrets();
+      secrets.values.set(MICROSOFT_GRAPH_SECRET_SUFFIX, storedCredential());
+      const fetchImplementation = (async () =>
+        jsonResponse({ error }, 400)) as unknown as typeof fetch;
+      const graph = provider(secrets.service, fetchImplementation);
+      const events: string[] = [];
+
+      await expect(graph.prepare(lifecycle(events))).rejects.toThrow(/sign-in expired/u);
+      expect(events).toEqual([]);
+      await expect(graph.status()).resolves.toMatchObject({
+        state: "error",
+        grantedCapabilities: [],
+        message: expect.stringMatching(/sign-in expired/u),
+      });
+
+      await graph.disconnect(lifecycle());
+      await expect(graph.status()).resolves.toMatchObject({ state: "not_connected" });
+    },
+  );
 
   it("preserves an incremental-consent flow during routine token refresh", async () => {
     const secrets = memorySecrets();
@@ -842,9 +926,13 @@ describe("MicrosoftGraphProvider contract", () => {
     await expect(replacement).rejects.toThrow(/superseded/u);
   });
 
-  it("rejects a queued poll commit after refresh makes credentials uncertain", async () => {
+  it("rejects a queued poll commit after a revoked refresh makes credentials uncertain", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
-    const secrets = controlledSecrets({ failSetAfterWriteCall: 2 });
+    const refreshCommit = new AbortController();
+    const secrets = controlledSecrets({
+      failSetAfterWriteCall: 2,
+      beforeSetFailure: () => refreshCommit.abort(),
+    });
     let tokenCalls = 0;
     let releaseRefresh!: () => void;
     let markRefreshStarted!: () => void;
@@ -878,7 +966,10 @@ describe("MicrosoftGraphProvider contract", () => {
       vi.advanceTimersByTime(3_600_000);
       const incremental = await graph.connect(["calendar.read"], lifecycle());
 
-      const preparing = graph.prepare(lifecycle());
+      const preparing = graph.prepare({
+        signal: new AbortController().signal,
+        beginCommit: async () => refreshCommit.signal,
+      });
       await refreshStarted;
       const polling = graph.poll(incremental.flowId, lifecycle());
       await pollTokenReturned;
@@ -1022,6 +1113,35 @@ describe("MicrosoftGraphProvider tools", () => {
     await authorize(graph);
 
     await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(message);
+  });
+
+  it.each([
+    [409, true],
+    [400, true],
+    [429, true],
+    [408, false],
+    [503, false],
+  ])("marks a write refused with HTTP %i as unchanged: %s", async (status, unchanged) => {
+    const secrets = memorySecrets();
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) {
+        return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      }
+      return jsonResponse({ error: { code: "fixture" } }, status);
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.organize"]);
+
+    const failure = await graph
+      .invoke("microsoft365.mail.folder.create", { displayName: "Projects" }, invocation())
+      .then(
+        () => expect.unreachable("a refused write must reject"),
+        (error: unknown) => error,
+      );
+    // Harness settles an admitted write only when the provider proves nothing changed.
+    expect((failure as { readonly unchanged?: boolean }).unchanged === true).toBe(unchanged);
   });
 
   it("does not revoke an in-flight read during routine access-token refresh", async () => {

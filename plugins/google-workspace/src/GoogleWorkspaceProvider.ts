@@ -1867,6 +1867,8 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
   #closed = false;
   #disconnecting = false;
   #uncertainCredentialState = false;
+  // Google rejected the stored grant; only a new sign-in recovers it.
+  #signInExpired = false;
   #credentialMutation: Promise<void> = Promise.resolve();
 
   constructor(
@@ -2326,6 +2328,14 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
           message: null,
         };
       }
+      if (this.#signInExpired) {
+        return {
+          state: "error",
+          accountLabel: credential.email,
+          grantedCapabilities: [],
+          message: "The Google sign-in expired. Disconnect and reconnect Google Workspace.",
+        };
+      }
       return {
         state: "connected",
         accountLabel: credential.email,
@@ -2625,6 +2635,7 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
         }
         await this.#writeCredential(credential, commitSignal);
         this.#credentialRevision += 1;
+        this.#signInExpired = false;
         this.#generation += 1;
         this.#accessToken = {
           value: accessToken,
@@ -2668,70 +2679,77 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
       const revision = this.#credentialRevision;
       const credential = await this.#readCredential(context?.signal);
       if (!credential) return;
-      let admitted = false;
-      let responseSettled = false;
-      let accessIssued = false;
-      try {
-        const commitSignal = await this.#beginCommit(context);
-        admitted = true;
-        const { response, json } = await this.#requestJson(
-          TOKEN_ENDPOINT,
-          {
-            method: "POST",
-            headers: { "content-type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-              client_id: this.#clientId,
-              client_secret: this.#clientSecret,
-              grant_type: "refresh_token",
-              refresh_token: credential.refreshToken,
-            }),
-            signal: commitSignal,
-          },
-          IDENTITY_RESPONSE_BYTES,
-        );
-        responseSettled = true;
-        if (!response.ok) {
+      // Google does not revoke a refresh token by redeeming it, so the request changes nothing
+      // the stored grant depends on. Only the local write needs commit admission: Harness
+      // faults a provider whose admitted operation rejects, and a failed request here must
+      // leave the connection usable for the next preparation to retry.
+      const { response, json } = await this.#requestJson(
+        TOKEN_ENDPOINT,
+        {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            client_id: this.#clientId,
+            client_secret: this.#clientSecret,
+            grant_type: "refresh_token",
+            refresh_token: credential.refreshToken,
+          }),
+          signal: context?.signal ?? null,
+        },
+        IDENTITY_RESPONSE_BYTES,
+      );
+      if (!response.ok) {
+        if (json.error === "invalid_grant") {
+          this.#signInExpired = true;
           throw new IntegrationProviderPublicError(
-            "Google Workspace access could not be refreshed. Disconnect and reconnect.",
+            "The Google sign-in expired. Disconnect and reconnect Google Workspace.",
           );
         }
-        accessIssued = true;
-        const accessToken = boundedString(json.access_token, MAX_TOKEN_CHARS);
-        const expiresIn = boundedInteger(json.expires_in, 60, 86_400);
-        const grantedScopes = canonicalGrantedScopes(json.scope, credential.grantedScopes);
-        const refreshToken =
-          json.refresh_token === undefined
-            ? credential.refreshToken
-            : boundedString(json.refresh_token, MAX_TOKEN_CHARS);
-        if (
-          this.#closed ||
-          this.#disconnecting ||
-          generation !== this.#generation ||
-          revision !== this.#credentialRevision
-        ) {
-          throw new Error("Google connection changed while access was refreshing.");
-        }
-        const updated: Credential = {
-          ...credential,
-          refreshToken,
-          grantedScopes,
-          updatedAt: new Date().toISOString(),
-        };
-        await this.#writeCredential(updated, commitSignal);
-        this.#credentialRevision += 1;
-        this.#accessToken = {
-          value: accessToken,
-          expiresAt: Date.now() + expiresIn * 1_000,
-          grantedScopes,
-          subject: credential.subject,
-          email: credential.email,
-        };
-      } catch (error) {
-        if (admitted && (!responseSettled || accessIssued)) {
-          this.#uncertainCredentialState = true;
-        }
-        throw error;
+        throw new IntegrationProviderPublicError(
+          "Google Workspace access could not be refreshed. Try again in a moment.",
+        );
       }
+      const accessToken = boundedString(json.access_token, MAX_TOKEN_CHARS);
+      const expiresIn = boundedInteger(json.expires_in, 60, 86_400);
+      const grantedScopes = canonicalGrantedScopes(json.scope, credential.grantedScopes);
+      const refreshToken =
+        json.refresh_token === undefined
+          ? credential.refreshToken
+          : boundedString(json.refresh_token, MAX_TOKEN_CHARS);
+      if (
+        this.#closed ||
+        this.#disconnecting ||
+        generation !== this.#generation ||
+        revision !== this.#credentialRevision
+      ) {
+        throw new Error("Google connection changed while access was refreshing.");
+      }
+      const updated: Credential = {
+        ...credential,
+        refreshToken,
+        grantedScopes,
+        updatedAt: new Date().toISOString(),
+      };
+      const commitSignal = await this.#beginCommit(context);
+      try {
+        await this.#writeCredential(updated, commitSignal);
+      } catch (error) {
+        // The stored grant still works whether or not this write landed. Only a write cut short
+        // by revocation or shutdown leaves the credential in doubt.
+        if (commitSignal.aborted) {
+          this.#uncertainCredentialState = true;
+          throw error;
+        }
+      }
+      this.#credentialRevision += 1;
+      this.#signInExpired = false;
+      this.#accessToken = {
+        value: accessToken,
+        expiresAt: Date.now() + expiresIn * 1_000,
+        grantedScopes,
+        subject: credential.subject,
+        email: credential.email,
+      };
     });
   }
 
@@ -2753,6 +2771,7 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
         });
         this.#credentialRevision += 1;
         this.#uncertainCredentialState = false;
+        this.#signInExpired = false;
       } catch (error) {
         if (admitted) this.#uncertainCredentialState = true;
         throw error;

@@ -131,6 +131,8 @@ interface OAuthFixtureOptions {
   readonly claims?: Readonly<Record<string, unknown>>;
   readonly signingKey?: NodeCrypto.KeyObject;
   readonly refreshOverrides?: Readonly<Record<string, unknown>>;
+  /** Replaces the refresh response for the given 1-based refresh attempt. */
+  readonly refreshFailure?: (attempt: number) => Promise<Response> | undefined;
   readonly revokeStatus?: number;
   readonly api?: (url: string, init?: RequestInit) => Promise<Response> | Response;
   readonly requestTimeoutMs?: number;
@@ -162,6 +164,8 @@ function oauthFixture(options: OAuthFixtureOptions = {}) {
       const form = new URLSearchParams(String(init?.body));
       if (form.get("grant_type") === "refresh_token") {
         refreshCount += 1;
+        const failure = options.refreshFailure?.(refreshCount);
+        if (failure) return failure;
         return jsonResponse({
           access_token: `fixture-access-refresh-${refreshCount}`,
           expires_in: 3_600,
@@ -785,6 +789,93 @@ describe("GoogleWorkspaceProvider authorization", () => {
         code: "late-code",
       });
       await expect(globalThis.fetch(callback)).rejects.toBeDefined();
+    } finally {
+      vi.useRealTimers();
+      await fixture.provider.close();
+    }
+  });
+
+  it.each([
+    ["a network failure", () => Promise.reject(new TypeError("fetch failed"))],
+    [
+      "a server error",
+      () => Promise.resolve(jsonResponse({ error: "temporarily_unavailable" }, 503)),
+    ],
+    [
+      "a non-JSON gateway error",
+      () =>
+        Promise.resolve(
+          new Response("bad gateway", { status: 502, headers: { "content-type": "text/html" } }),
+        ),
+    ],
+  ] as const)("keeps the connection after a refresh fails with %s", async (_label, failure) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const fixture = oauthFixture({
+      refreshFailure: (attempt) => (attempt === 1 ? failure() : undefined),
+    });
+    try {
+      await fixture.complete(["identity.read", "mail.read"]);
+      const stored = fixture.secrets.values.get(GOOGLE_WORKSPACE_SECRET_SUFFIX);
+      vi.setSystemTime(Date.now() + 3_700_000);
+      const events: string[] = [];
+
+      await expect(fixture.provider.prepare(lifecycle(events))).rejects.toThrow();
+      // Harness faults a provider whose admitted operation rejects, so a failed request must
+      // never have asked for commit admission.
+      expect(events).toEqual([]);
+      expect(fixture.secrets.values.get(GOOGLE_WORKSPACE_SECRET_SUFFIX)).toEqual(stored);
+      await expect(fixture.provider.status()).resolves.toMatchObject({ state: "connected" });
+
+      await fixture.provider.prepare(lifecycle());
+      await expect(
+        fixture.provider.invoke("googleworkspace.identity.get", {}, invocation()),
+      ).resolves.toMatchObject({ email: "fixture-user@ucsd.edu" });
+    } finally {
+      vi.useRealTimers();
+      await fixture.provider.close();
+    }
+  });
+
+  it("keeps using a refreshed token when saving the rotated credential fails", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const secretOptions: { failSet?: boolean } = {};
+    const fixture = oauthFixture({ secrets: memorySecrets(secretOptions) });
+    try {
+      await fixture.complete(["identity.read", "mail.read"]);
+      vi.setSystemTime(Date.now() + 3_700_000);
+      secretOptions.failSet = true;
+
+      await fixture.provider.prepare(lifecycle());
+      await expect(fixture.provider.status()).resolves.toMatchObject({ state: "connected" });
+      await expect(
+        fixture.provider.invoke("googleworkspace.identity.get", {}, invocation()),
+      ).resolves.toMatchObject({ email: "fixture-user@ucsd.edu" });
+    } finally {
+      vi.useRealTimers();
+      await fixture.provider.close();
+    }
+  });
+
+  it("reports an expired sign-in when Google answers invalid_grant until reconnect", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const fixture = oauthFixture({
+      refreshFailure: () => Promise.resolve(jsonResponse({ error: "invalid_grant" }, 400)),
+    });
+    try {
+      await fixture.complete(["identity.read", "mail.read"]);
+      vi.setSystemTime(Date.now() + 3_700_000);
+      const events: string[] = [];
+
+      await expect(fixture.provider.prepare(lifecycle(events))).rejects.toThrow(/sign-in expired/u);
+      expect(events).toEqual([]);
+      await expect(fixture.provider.status()).resolves.toMatchObject({
+        state: "error",
+        grantedCapabilities: [],
+        message: expect.stringMatching(/sign-in expired/u),
+      });
+
+      await fixture.provider.disconnect(lifecycle());
+      await expect(fixture.provider.status()).resolves.toMatchObject({ state: "not_connected" });
     } finally {
       vi.useRealTimers();
       await fixture.provider.close();
