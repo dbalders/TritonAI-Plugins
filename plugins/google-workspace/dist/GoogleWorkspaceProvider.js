@@ -1494,6 +1494,8 @@ export class GoogleWorkspaceProvider {
     #uncertainCredentialState = false;
     // Google rejected the stored grant; only a new sign-in recovers it.
     #signInExpired = false;
+    // The last refreshed credential could not be saved; the stored one still works.
+    #credentialSaveFailed = false;
     #credentialMutation = Promise.resolve();
     constructor(secrets, configuration, fetchImplementation = globalThis.fetch, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
         this.#secrets = secrets;
@@ -1880,7 +1882,9 @@ export class GoogleWorkspaceProvider {
                 state: "connected",
                 accountLabel: credential.email,
                 grantedCapabilities: capabilitiesFromScopes(credential.grantedScopes),
-                message: `Connected to the verified ${HOSTED_DOMAIN} hosted domain.`,
+                message: this.#credentialSaveFailed
+                    ? "Connected, but the refreshed Google sign-in could not be saved. It will be saved again on the next refresh."
+                    : `Connected to the verified ${HOSTED_DOMAIN} hosted domain.`,
             };
         }
         catch {
@@ -2116,6 +2120,7 @@ export class GoogleWorkspaceProvider {
                 await this.#writeCredential(credential, commitSignal);
                 this.#credentialRevision += 1;
                 this.#signInExpired = false;
+                this.#credentialSaveFailed = false;
                 this.#generation += 1;
                 this.#accessToken = {
                     value: accessToken,
@@ -2203,6 +2208,7 @@ export class GoogleWorkspaceProvider {
                 updatedAt: new Date().toISOString(),
             };
             const commitSignal = await this.#beginCommit(context);
+            let saved = true;
             try {
                 await this.#writeCredential(updated, commitSignal);
             }
@@ -2213,7 +2219,9 @@ export class GoogleWorkspaceProvider {
                     this.#uncertainCredentialState = true;
                     throw error;
                 }
+                saved = false;
             }
+            this.#credentialSaveFailed = !saved;
             this.#credentialRevision += 1;
             this.#signInExpired = false;
             this.#accessToken = {
@@ -2245,6 +2253,7 @@ export class GoogleWorkspaceProvider {
                 this.#credentialRevision += 1;
                 this.#uncertainCredentialState = false;
                 this.#signInExpired = false;
+                this.#credentialSaveFailed = false;
             }
             catch (error) {
                 if (admitted)

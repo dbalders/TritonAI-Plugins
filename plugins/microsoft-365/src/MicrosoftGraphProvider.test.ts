@@ -749,35 +749,61 @@ describe("MicrosoftGraphProvider contract", () => {
     const graph = provider(secrets.service, fetchImplementation);
 
     await graph.prepare(lifecycle());
-    await expect(graph.status()).resolves.toMatchObject({ state: "connected" });
+    await expect(graph.status()).resolves.toMatchObject({
+      state: "connected",
+      message: expect.stringMatching(/could not be saved/u),
+    });
     await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toEqual({
       messages: [],
       hasMore: false,
     });
   });
 
-  it.each(["invalid_grant", "interaction_required"])(
-    "reports an expired sign-in when Microsoft answers %s until reconnect",
-    async (error) => {
-      const secrets = memorySecrets();
-      secrets.values.set(MICROSOFT_GRAPH_SECRET_SUFFIX, storedCredential());
-      const fetchImplementation = (async () =>
-        jsonResponse({ error }, 400)) as unknown as typeof fetch;
-      const graph = provider(secrets.service, fetchImplementation);
-      const events: string[] = [];
+  it("reports an expired sign-in when Microsoft answers invalid_grant until reconnect", async () => {
+    const secrets = memorySecrets();
+    secrets.values.set(MICROSOFT_GRAPH_SECRET_SUFFIX, storedCredential());
+    const fetchImplementation = (async () =>
+      jsonResponse({ error: "invalid_grant" }, 400)) as unknown as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    const events: string[] = [];
 
-      await expect(graph.prepare(lifecycle(events))).rejects.toThrow(/sign-in expired/u);
-      expect(events).toEqual([]);
-      await expect(graph.status()).resolves.toMatchObject({
-        state: "error",
-        grantedCapabilities: [],
-        message: expect.stringMatching(/sign-in expired/u),
-      });
+    await expect(graph.prepare(lifecycle(events))).rejects.toThrow(/sign-in expired/u);
+    expect(events).toEqual([]);
+    await expect(graph.status()).resolves.toMatchObject({
+      state: "error",
+      grantedCapabilities: [],
+      message: expect.stringMatching(/sign-in expired/u),
+    });
 
-      await graph.disconnect(lifecycle());
-      await expect(graph.status()).resolves.toMatchObject({ state: "not_connected" });
-    },
-  );
+    await graph.disconnect(lifecycle());
+    await expect(graph.status()).resolves.toMatchObject({ state: "not_connected" });
+  });
+
+  it("keeps the connection when conditional access requires interaction", async () => {
+    const secrets = memorySecrets();
+    secrets.values.set(MICROSOFT_GRAPH_SECRET_SUFFIX, storedCredential());
+    let tokenCalls = 0;
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/token")) {
+        tokenCalls += 1;
+        return tokenCalls === 1
+          ? jsonResponse({ error: "interaction_required" }, 400)
+          : jsonResponse(tokenBody("offline_access Mail.Read"));
+      }
+      return jsonResponse({ value: [] });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    const events: string[] = [];
+
+    await expect(graph.prepare(lifecycle(events))).rejects.toThrow(/access condition/u);
+    expect(events).toEqual([]);
+    await expect(graph.status()).resolves.toMatchObject({ state: "connected" });
+    await graph.prepare(lifecycle());
+    await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toEqual({
+      messages: [],
+      hasMore: false,
+    });
+  });
 
   it("preserves an incremental-consent flow during routine token refresh", async () => {
     const secrets = memorySecrets();
@@ -1085,7 +1111,7 @@ describe("MicrosoftGraphProvider tools", () => {
     const graph = provider(secrets.service, fetchImplementation);
     await authorize(graph);
 
-    await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(/empty response/u);
+    await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(/session expired/u);
     await graph.prepare(lifecycle());
     await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toEqual({
       messages: [],
@@ -1113,6 +1139,54 @@ describe("MicrosoftGraphProvider tools", () => {
     await authorize(graph);
 
     await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(message);
+  });
+
+  it("marks a write refused with a non-JSON body as unchanged", async () => {
+    const secrets = memorySecrets();
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      return new Response("<html>Access denied by proxy</html>", {
+        status: 403,
+        headers: { "content-type": "text/html" },
+      });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.organize"]);
+
+    await expect(
+      graph.invoke("microsoft365.mail.folder.create", { displayName: "Projects" }, invocation()),
+    ).rejects.toMatchObject({ unchanged: true, message: expect.stringMatching(/denied/u) });
+  });
+
+  it("marks a move whose destination check is refused as unchanged without moving", async () => {
+    const secrets = memorySecrets();
+    const requests: string[] = [];
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      requests.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`);
+      if (
+        url.includes("/mailFolders/deleteditems?") ||
+        url.includes("/mailFolders/recoverableitemsdeletions?")
+      ) {
+        return jsonResponse({ id: "opaque-deletion-id" });
+      }
+      return jsonResponse({ error: { code: "ErrorItemNotFound" } }, 404);
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.organize"]);
+
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.message.move",
+        { messageId: "message-1", destinationFolderId: "missing-folder" },
+        invocation(),
+      ),
+    ).rejects.toMatchObject({ unchanged: true });
+    expect(requests.some((request) => request.startsWith("POST "))).toBe(false);
   });
 
   it.each([

@@ -846,7 +846,10 @@ describe("GoogleWorkspaceProvider authorization", () => {
       secretOptions.failSet = true;
 
       await fixture.provider.prepare(lifecycle());
-      await expect(fixture.provider.status()).resolves.toMatchObject({ state: "connected" });
+      await expect(fixture.provider.status()).resolves.toMatchObject({
+        state: "connected",
+        message: expect.stringMatching(/could not be saved/u),
+      });
       await expect(
         fixture.provider.invoke("googleworkspace.identity.get", {}, invocation()),
       ).resolves.toMatchObject({ email: "fixture-user@ucsd.edu" });

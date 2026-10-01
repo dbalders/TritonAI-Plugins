@@ -1236,6 +1236,31 @@ function eventBody(values) {
         ...(values.attendees === undefined ? {} : { attendees: attendees(values.attendees) }),
     };
 }
+/**
+ * Each write sends one mutating request, after only reads, so a client-error response anywhere in
+ * a write means Microsoft refused it and nothing changed. 408 is a timeout whose outcome is unknown.
+ */
+function graphRefusal(status) {
+    const refused = (message) => new IntegrationProviderPublicError(message, { unchanged: true });
+    if (status === 401) {
+        return refused("The Microsoft 365 session expired. Refresh access and try again.");
+    }
+    if (status === 403) {
+        return refused("Microsoft 365 denied this request. Check the enabled access and reconnect if needed.");
+    }
+    if (status === 404)
+        return refused("The requested Microsoft 365 item was not found.");
+    if (status === 409) {
+        return refused("Microsoft 365 could not complete the request because the item changed or conflicts with current state.");
+    }
+    if (status === 429) {
+        return refused("Microsoft 365 is temporarily rate limiting requests. Try again later.");
+    }
+    if (status >= 400 && status < 500 && status !== 408) {
+        return refused("Microsoft 365 could not accept this request.");
+    }
+    return null;
+}
 export class MicrosoftGraphProvider {
     id = MICROSOFT_GRAPH_PROVIDER_ID;
     tools = MICROSOFT_GRAPH_TOOLS;
@@ -1256,6 +1281,8 @@ export class MicrosoftGraphProvider {
     #uncertainCredentialState = false;
     // Microsoft rejected the stored grant; only a new sign-in recovers it.
     #signInExpired = false;
+    // The last refreshed credential could not be saved; the stored one still works.
+    #credentialSaveFailed = false;
     #credentialMutation = Promise.resolve();
     constructor(secrets, configuration, fetchImplementation = globalThis.fetch, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
         this.#secrets = secrets;
@@ -1413,7 +1440,9 @@ export class MicrosoftGraphProvider {
                 state: "connected",
                 accountLabel: null,
                 grantedCapabilities: credential.grantedCapabilities,
-                message: "Connected with delegated access for the selected capabilities.",
+                message: this.#credentialSaveFailed
+                    ? "Connected, but the refreshed Microsoft sign-in could not be saved. It will be saved again on the next refresh."
+                    : "Connected with delegated access for the selected capabilities.",
             };
         }
         catch {
@@ -1581,6 +1610,7 @@ export class MicrosoftGraphProvider {
                 await this.#writeCredential(credential, commitSignal);
                 this.#credentialRevision += 1;
                 this.#signInExpired = false;
+                this.#credentialSaveFailed = false;
                 this.#generation += 1;
                 this.#pending.clear();
                 this.#accessToken = {
@@ -1632,9 +1662,14 @@ export class MicrosoftGraphProvider {
                 scope: [OFFLINE_SCOPE, ...credential.grantedScopes].join(" "),
             }, context?.signal);
             if (!response.ok) {
-                if (json.error === "invalid_grant" || json.error === "interaction_required") {
+                if (json.error === "invalid_grant") {
                     this.#signInExpired = true;
                     throw new IntegrationProviderPublicError("The Microsoft sign-in expired. Disconnect and reconnect Microsoft 365.");
+                }
+                // Conditional access, such as a sign-in required off the campus network, often clears
+                // on its own, so this is not treated as an expired sign-in.
+                if (json.error === "interaction_required") {
+                    throw new IntegrationProviderPublicError("Microsoft requires an extra sign-in step or access condition, such as the campus VPN. Try again, or disconnect and reconnect Microsoft 365.");
                 }
                 throw new IntegrationProviderPublicError("Microsoft access could not be refreshed. Try again in a moment.");
             }
@@ -1643,6 +1678,7 @@ export class MicrosoftGraphProvider {
             const grantedScopes = canonicalScopes(json.scope, credential.grantedScopes);
             const expiresInSeconds = boundedInteger(json.expires_in, 60, 86_400);
             const commitSignal = await this.#beginCommit(context);
+            let saved = true;
             try {
                 await this.#writeCredential({
                     version: 2,
@@ -1659,7 +1695,9 @@ export class MicrosoftGraphProvider {
                     this.#uncertainCredentialState = true;
                     throw error;
                 }
+                saved = false;
             }
+            this.#credentialSaveFailed = !saved;
             this.#credentialRevision += 1;
             this.#signInExpired = false;
             this.#accessToken = {
@@ -1686,6 +1724,7 @@ export class MicrosoftGraphProvider {
                 this.#credentialRevision += 1;
                 this.#uncertainCredentialState = false;
                 this.#signInExpired = false;
+                this.#credentialSaveFailed = false;
             }
             catch (error) {
                 if (admitted)
@@ -1719,41 +1758,33 @@ export class MicrosoftGraphProvider {
         if (options.preferPlainTextBody === true) {
             headers.prefer = 'outlook.body-content-type="text"';
         }
-        const { response, json } = await this.#request(`${GRAPH_API_ROOT}${path}`, {
-            method: options.method ?? "GET",
-            headers,
-            ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
-            ...(options.upload === undefined ? {} : { body: options.upload.bytes }),
-            signal: options.signal ?? null,
-        }, options.maximumResponseBytes ?? GRAPH_RESPONSE_BYTES, (received) => {
-            if (received.status === 401 && this.#accessToken?.value === accessToken) {
-                this.#accessToken = null;
-            }
-        });
+        let refusal = null;
+        let request;
+        try {
+            request = await this.#request(`${GRAPH_API_ROOT}${path}`, {
+                method: options.method ?? "GET",
+                headers,
+                ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+                ...(options.upload === undefined ? {} : { body: options.upload.bytes }),
+                signal: options.signal ?? null,
+            }, options.maximumResponseBytes ?? GRAPH_RESPONSE_BYTES, (received) => {
+                if (received.status === 401 && this.#accessToken?.value === accessToken) {
+                    this.#accessToken = null;
+                }
+                refusal = graphRefusal(received.status);
+            });
+        }
+        catch (error) {
+            // A refusal is decided by its status; proxies and throttling often send an HTML or empty
+            // body that would otherwise hide it behind a parse failure.
+            if (refusal)
+                throw refusal;
+            throw error;
+        }
+        const { response, json } = request;
         if (!response.ok) {
-            // Each write sends one mutating request, after only reads, so a client-error response
-            // anywhere in a write means Microsoft refused it and nothing changed. 408 is a timeout
-            // whose outcome is unknown.
-            const refused = (message) => new IntegrationProviderPublicError(message, { unchanged: true });
-            if (response.status === 401) {
-                throw refused("The Microsoft 365 session expired. Refresh access and try again.");
-            }
-            if (response.status === 403) {
-                throw refused("Microsoft 365 denied this request. Check the enabled access and reconnect if needed.");
-            }
-            if (response.status === 404) {
-                throw refused("The requested Microsoft 365 item was not found.");
-            }
-            if (response.status === 409) {
-                throw refused("Microsoft 365 could not complete the request because the item changed or conflicts with current state.");
-            }
-            if (response.status === 429) {
-                throw refused("Microsoft 365 is temporarily rate limiting requests. Try again later.");
-            }
-            if (response.status >= 400 && response.status < 500 && response.status !== 408) {
-                throw refused("Microsoft 365 could not accept this request.");
-            }
-            throw new Error(`Microsoft Graph request failed with HTTP ${response.status}.`);
+            throw (graphRefusal(response.status) ??
+                new Error(`Microsoft Graph request failed with HTTP ${response.status}.`));
         }
         return json;
     }

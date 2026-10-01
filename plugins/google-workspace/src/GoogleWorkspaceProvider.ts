@@ -1869,6 +1869,8 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
   #uncertainCredentialState = false;
   // Google rejected the stored grant; only a new sign-in recovers it.
   #signInExpired = false;
+  // The last refreshed credential could not be saved; the stored one still works.
+  #credentialSaveFailed = false;
   #credentialMutation: Promise<void> = Promise.resolve();
 
   constructor(
@@ -2340,7 +2342,9 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
         state: "connected",
         accountLabel: credential.email,
         grantedCapabilities: capabilitiesFromScopes(credential.grantedScopes),
-        message: `Connected to the verified ${HOSTED_DOMAIN} hosted domain.`,
+        message: this.#credentialSaveFailed
+          ? "Connected, but the refreshed Google sign-in could not be saved. It will be saved again on the next refresh."
+          : `Connected to the verified ${HOSTED_DOMAIN} hosted domain.`,
       };
     } catch {
       return {
@@ -2636,6 +2640,7 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
         await this.#writeCredential(credential, commitSignal);
         this.#credentialRevision += 1;
         this.#signInExpired = false;
+        this.#credentialSaveFailed = false;
         this.#generation += 1;
         this.#accessToken = {
           value: accessToken,
@@ -2731,6 +2736,7 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
         updatedAt: new Date().toISOString(),
       };
       const commitSignal = await this.#beginCommit(context);
+      let saved = true;
       try {
         await this.#writeCredential(updated, commitSignal);
       } catch (error) {
@@ -2740,7 +2746,9 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
           this.#uncertainCredentialState = true;
           throw error;
         }
+        saved = false;
       }
+      this.#credentialSaveFailed = !saved;
       this.#credentialRevision += 1;
       this.#signInExpired = false;
       this.#accessToken = {
@@ -2772,6 +2780,7 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
         this.#credentialRevision += 1;
         this.#uncertainCredentialState = false;
         this.#signInExpired = false;
+        this.#credentialSaveFailed = false;
       } catch (error) {
         if (admitted) this.#uncertainCredentialState = true;
         throw error;
