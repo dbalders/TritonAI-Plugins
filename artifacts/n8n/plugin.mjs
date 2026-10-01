@@ -11801,6 +11801,14 @@ var SessionInvalidError = class extends Error {
 };
 var ConfirmedRemoteFailure = class extends IntegrationProviderPublicError {
 };
+var RemoteRejection = class extends ConfirmedRemoteFailure {
+};
+var PRE_DISPATCH_JSON_RPC_ERRORS = /* @__PURE__ */ new Set([-32700, -32600, -32601, -32602]);
+var MAX_REJECTION_DETAIL_CHARS = 2e3;
+var TOOL_ERROR_AFTER_WRITE_NOTE = "n8n reported that this operation failed. A failed update_workflow call saves nothing, but other writes, such as running a workflow or agent, may have taken effect before failing. Check the current state before you retry.";
+function rejectedToolResult(message) {
+  return { isError: true, content: [{ type: "text", text: message }] };
+}
 var N8nProvider = class {
   id = N8N_PROVIDER_ID;
   tools = N8N_TOOLS;
@@ -12226,7 +12234,7 @@ var N8nProvider = class {
       this.#sessionVerified = false;
       this.#availableTools = /* @__PURE__ */ new Set();
       this.#pausedTools = [];
-      throw new ConfirmedRemoteFailure("n8n authorization expired. Reconnect if refresh fails.");
+      throw new RemoteRejection("n8n authorization expired. Reconnect if refresh fails.");
     }
     if (response.status === 404 && this.#sessionId) {
       this.#sessionId = null;
@@ -12235,10 +12243,15 @@ var N8nProvider = class {
     }
     if (!response.ok) {
       if (response.status === 429) {
-        throw new ConfirmedRemoteFailure("n8n is rate limiting MCP requests. Try again later.");
+        throw new RemoteRejection("n8n is rate limiting MCP requests. Try again later.");
       }
       if (response.status === 403) {
-        throw new ConfirmedRemoteFailure("n8n denied this operation for the connected user.");
+        throw new RemoteRejection("n8n denied this operation for the connected user.");
+      }
+      if (response.status >= 400 && response.status < 500 && response.status !== 408) {
+        throw new RemoteRejection(
+          `n8n MCP rejected the ${method} request (HTTP ${response.status}).`
+        );
       }
       throw new ConfirmedRemoteFailure(
         `n8n MCP ${method} failed (HTTP ${response.status}). Reconnect and try again.`
@@ -12261,6 +12274,10 @@ var N8nProvider = class {
     if (raw.error !== void 0) {
       const error = asRecord(raw.error, "n8n MCP JSON-RPC error");
       if (!Number.isInteger(error.code)) throw new Error("n8n MCP returned an invalid error.");
+      if (PRE_DISPATCH_JSON_RPC_ERRORS.has(error.code)) {
+        const detail = typeof error.message === "string" && error.message.length > 0 ? `: ${error.message.slice(0, MAX_REJECTION_DETAIL_CHARS)}` : ".";
+        throw new RemoteRejection(`n8n MCP rejected the request${detail}`);
+      }
       throw new ConfirmedRemoteFailure("n8n MCP rejected the request.");
     }
     if (!("result" in raw)) throw new Error("n8n MCP response omitted its result.");
@@ -12903,6 +12920,11 @@ var N8nProvider = class {
     })();
     if (!signal) throw new Error("n8n invocation requires a cancellation signal.");
     const timeout2 = reviewed.upstreamName === "test_workflow" ? TEST_REQUEST_TIMEOUT_MS : this.#requestTimeoutMs;
+    const assertAccessCurrent = () => {
+      if (generation !== this.#generation || this.#closed || this.#disconnecting) {
+        throw new Error("n8n access changed during the tool call.");
+      }
+    };
     const call = async () => {
       assertAvailable();
       const result2 = asRecord(
@@ -12921,36 +12943,54 @@ var N8nProvider = class {
           "n8n requested an interactive MCP response that TritonAI Harness does not support."
         );
       }
-      if (result2.isError === true) {
-        throw new ConfirmedRemoteFailure("n8n reported that the tool operation failed.");
-      }
+      assertAccessCurrent();
       const structured = result2.structuredContent;
-      if (structured && typeof structured === "object" && !Array.isArray(structured)) {
-        const record2 = structured;
-        if (record2.status === "error" || typeof record2.error === "string") {
-          throw new ConfirmedRemoteFailure("n8n reported that the tool operation failed.");
-        }
-      }
-      if (generation !== this.#generation || this.#closed || this.#disconnecting) {
-        throw new Error("n8n access changed during the tool call.");
+      const structuredError = structured !== null && typeof structured === "object" && !Array.isArray(structured) && (structured.status === "error" || typeof structured.error === "string");
+      if (result2.isError === true || structuredError) {
+        if (reviewed.upstreamReadOnly) return { ...result2, isError: true };
+        const content = Array.isArray(result2.content) ? result2.content : [];
+        return {
+          ...result2,
+          isError: true,
+          content: [...content, { type: "text", text: TOOL_ERROR_AFTER_WRITE_NOTE }]
+        };
       }
       return result2;
     };
+    let failure;
     try {
       return await call();
     } catch (error) {
-      if (error instanceof SessionInvalidError && reviewed.upstreamReadOnly) {
+      failure = error;
+    }
+    if (failure instanceof SessionInvalidError) {
+      try {
         await this.#initializeSession(access, signal);
-        return call();
-      }
-      if (!reviewed.upstreamReadOnly && admitted) {
-        this.#uncertainCredentialState = true;
-        throw new ExternalCommitOutcomeUnknownError(
-          "The n8n operation may have completed. Verify its result before retrying."
+        assertAvailable();
+      } catch (error) {
+        if (!admitted) throw error;
+        assertAccessCurrent();
+        return rejectedToolResult(
+          error instanceof IntegrationProviderPublicError ? error.message : "n8n MCP session expired and could not be restored. Try again."
         );
       }
-      throw error;
+      try {
+        return await call();
+      } catch (error) {
+        failure = error;
+      }
     }
+    if (failure instanceof RemoteRejection || failure instanceof SessionInvalidError) {
+      assertAccessCurrent();
+      return rejectedToolResult(failure.message);
+    }
+    if (!reviewed.upstreamReadOnly && admitted) {
+      this.#uncertainCredentialState = true;
+      throw new ExternalCommitOutcomeUnknownError(
+        "The n8n operation may have completed. Verify its result before retrying."
+      );
+    }
+    throw failure;
   }
   async close() {
     if (this.#closed) return;

@@ -615,11 +615,11 @@ describe("N8nProvider", () => {
 
   it.each([
     [
-      "non-success HTTP",
+      "server error HTTP",
       (_request: Record<string, unknown>) => json({ error: "fixture remote failure" }, 503),
     ],
     [
-      "JSON-RPC error",
+      "JSON-RPC server error",
       (request: Record<string, unknown>) =>
         json({
           jsonrpc: "2.0",
@@ -628,11 +628,12 @@ describe("N8nProvider", () => {
         }),
     ],
     [
-      "tool-level error",
+      "JSON-RPC internal error",
       (request: Record<string, unknown>) =>
-        mcpResponse(request, {
-          isError: true,
-          content: [{ type: "text", text: "fixture remote failure" }],
+        json({
+          jsonrpc: "2.0",
+          id: request.id,
+          error: { code: -32_603, message: "fixture remote failure" },
         }),
     ],
   ])("treats an admitted write followed by a %s as outcome-unknown", async (_label, response) => {
@@ -656,6 +657,186 @@ describe("N8nProvider", () => {
       retryable: false,
     });
     await expect(provider.status()).resolves.toMatchObject({ state: "error" });
+    await provider.close();
+  });
+
+  it.each([
+    [
+      "tool-level error",
+      (request: Record<string, unknown>) =>
+        mcpResponse(request, {
+          isError: true,
+          content: [{ type: "text", text: "Node 'Count 1-10' not found" }],
+        }),
+      /Node 'Count 1-10' not found/u,
+      true,
+    ],
+    [
+      "structured error",
+      (request: Record<string, unknown>) =>
+        mcpResponse(request, {
+          content: [{ type: "text", text: "Node 'Count 1-10' not found" }],
+          structuredContent: { status: "error", error: "Node 'Count 1-10' not found" },
+        }),
+      /Node 'Count 1-10' not found/u,
+      true,
+    ],
+    [
+      "JSON-RPC invalid params error",
+      (request: Record<string, unknown>) =>
+        json({
+          jsonrpc: "2.0",
+          id: request.id,
+          error: { code: -32_602, message: "operations.0.oldName is required" },
+        }),
+      /operations\.0\.oldName is required/u,
+      false,
+    ],
+    [
+      "HTTP 400",
+      (_request: Record<string, unknown>) => json({ error: "bad request" }, 400),
+      /HTTP 400/u,
+      false,
+    ],
+    [
+      "HTTP 403",
+      (_request: Record<string, unknown>) => json({ error: "forbidden" }, 403),
+      /denied this operation/u,
+      false,
+    ],
+    [
+      "HTTP 429",
+      (_request: Record<string, unknown>) => json({ error: "slow down" }, 429),
+      /rate limiting/u,
+      false,
+    ],
+  ])(
+    "returns a %s from an admitted write without faulting the provider",
+    async (_label, response, message, executionNote) => {
+      const secrets = memorySecrets();
+      const mock = oauthMcpFetch();
+      let failWrite = false;
+      const fetchImplementation = vi.fn(
+        async (input: string | URL | Request, init?: RequestInit) => {
+          const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+          if (failWrite && body?.method === "tools/call") return response(body);
+          return mock.fetchImplementation(input, init);
+        },
+      ) as unknown as typeof fetch;
+      const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
+      await authorize(provider, mock.requests);
+
+      failWrite = true;
+      const events: string[] = [];
+      await expect(
+        provider.invoke("n8n.archive_workflow", { workflowId: "wf" }, invocation(true, events)),
+      ).resolves.toMatchObject({
+        isError: true,
+        content: [
+          { type: "text", text: expect.stringMatching(message) },
+          ...(executionNote
+            ? [{ type: "text", text: expect.stringMatching(/Check the current state/u) }]
+            : []),
+        ],
+      });
+      expect(events).toEqual(["beginCommit"]);
+      await expect(provider.status()).resolves.toMatchObject({ state: "connected" });
+
+      failWrite = false;
+      await expect(
+        provider.invoke("n8n.archive_workflow", { workflowId: "wf" }, invocation(true)),
+      ).resolves.toMatchObject({ content: [{ type: "text", text: "ok" }] });
+      await provider.close();
+    },
+  );
+
+  it("does not return a tool error after access changed during the call", async () => {
+    const mock = oauthMcpFetch();
+    let provider: N8nProvider | undefined;
+    let closeDuringCall = false;
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+      if (closeDuringCall && body?.method === "tools/call") {
+        closeDuringCall = false;
+        void provider?.close();
+        return mcpResponse(body, {
+          isError: true,
+          content: [{ type: "text", text: "late remote detail" }],
+        });
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    provider = new N8nProvider(memorySecrets().service, { serverUrl: SERVER }, fetchImplementation);
+    await authorize(provider, mock.requests);
+    closeDuringCall = true;
+    await expect(
+      provider.invoke("n8n.search_projects", { limit: 1 }, invocation(false)),
+    ).rejects.toThrow();
+  });
+
+  it("does not return a rejection after access changed during the call", async () => {
+    const mock = oauthMcpFetch();
+    let provider: N8nProvider | undefined;
+    let closeDuringCall = false;
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+      if (closeDuringCall && body?.method === "tools/call") {
+        closeDuringCall = false;
+        void provider?.close();
+        return json({
+          jsonrpc: "2.0",
+          id: body.id,
+          error: { code: -32_602, message: "late remote detail" },
+        });
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    provider = new N8nProvider(memorySecrets().service, { serverUrl: SERVER }, fetchImplementation);
+    await authorize(provider, mock.requests);
+    closeDuringCall = true;
+    await expect(
+      provider.invoke("n8n.search_projects", { limit: 1 }, invocation(false)),
+    ).rejects.toThrow();
+  });
+
+  it("resends an admitted write once when n8n reports the MCP session expired", async () => {
+    const mock = oauthMcpFetch();
+    let expireNextCall = false;
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (expireNextCall && String(input) === SERVER && body.includes('"tools/call"')) {
+        expireNextCall = false;
+        return new Response("", { status: 404 });
+      }
+      const response = await mock.fetchImplementation(input, init);
+      if (String(input) !== SERVER) return response;
+      const headers = new Headers(response.headers);
+      headers.set("mcp-session-id", "session-fixture");
+      return new Response(await response.text(), { status: response.status, headers });
+    }) as unknown as typeof fetch;
+    const provider = new N8nProvider(
+      memorySecrets().service,
+      { serverUrl: SERVER },
+      fetchImplementation,
+    );
+    await authorize(provider, mock.requests);
+    const before = mock.requests.length;
+    expireNextCall = true;
+    const events: string[] = [];
+    await expect(
+      provider.invoke("n8n.archive_workflow", { workflowId: "wf" }, invocation(true, events)),
+    ).resolves.toMatchObject({ content: [{ type: "text", text: "ok" }] });
+    expect(events).toEqual(["beginCommit"]);
+    expect(
+      mock.requests
+        .slice(before)
+        .filter(
+          ({ body }) =>
+            body?.method === "tools/call" &&
+            (body.params as { name?: string } | undefined)?.name === "archive_workflow",
+        ),
+    ).toHaveLength(1);
+    await expect(provider.status()).resolves.toMatchObject({ state: "connected" });
     await provider.close();
   });
 
@@ -1016,7 +1197,7 @@ describe("N8nProvider", () => {
     await provider.close();
   });
 
-  it("rotates refresh tokens, recovers a new MCP session, and rejects remote tool errors", async () => {
+  it("rotates refresh tokens, recovers a new MCP session, and returns remote tool errors", async () => {
     const secrets = memorySecrets();
     const first = oauthMcpFetch();
     const connected = new N8nProvider(
@@ -1039,9 +1220,11 @@ describe("N8nProvider", () => {
       new TextDecoder().decode(secrets.values.get(N8N_SECRET_SUFFIX)),
     ) as Record<string, unknown>;
     expect(stored.refreshToken).toBe("refresh-rotated");
-    await expect(restored.invoke("n8n.search_projects", {}, invocation(false))).rejects.toThrow(
-      "n8n reported that the tool operation failed.",
-    );
+    await expect(restored.invoke("n8n.search_projects", {}, invocation(false))).resolves.toEqual({
+      isError: true,
+      content: [{ type: "text", text: "sensitive remote detail" }],
+      resultType: "complete",
+    });
     await restored.disconnect(lifecycle());
     expect(secrets.values.has(N8N_SECRET_SUFFIX)).toBe(false);
     await restored.close();
