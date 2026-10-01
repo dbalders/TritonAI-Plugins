@@ -3157,6 +3157,9 @@ export class N8nProvider implements IntegrationProvider {
           "n8n requested an interactive MCP response that TritonAI Harness does not support.",
         );
       }
+      if (generation !== this.#generation || this.#closed || this.#disconnecting) {
+        throw new Error("n8n access changed during the tool call.");
+      }
       // A tool-level error is n8n's own answer, so hand it to the agent as the result instead of
       // throwing. The agent can then correct its input, and a failed write does not leave the
       // integration faulted. n8n raises these during execution, so a write that runs a workflow
@@ -3176,9 +3179,6 @@ export class N8nProvider implements IntegrationProvider {
           isError: true,
           content: [...content, { type: "text", text: TOOL_ERROR_AFTER_WRITE_NOTE }],
         } as JsonValue;
-      }
-      if (generation !== this.#generation || this.#closed || this.#disconnecting) {
-        throw new Error("n8n access changed during the tool call.");
       }
       return result as JsonValue;
     };

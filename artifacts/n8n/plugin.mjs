@@ -12938,6 +12938,9 @@ var N8nProvider = class {
           "n8n requested an interactive MCP response that TritonAI Harness does not support."
         );
       }
+      if (generation !== this.#generation || this.#closed || this.#disconnecting) {
+        throw new Error("n8n access changed during the tool call.");
+      }
       const structured = result2.structuredContent;
       const structuredError = structured !== null && typeof structured === "object" && !Array.isArray(structured) && (structured.status === "error" || typeof structured.error === "string");
       if (result2.isError === true || structuredError) {
@@ -12948,9 +12951,6 @@ var N8nProvider = class {
           isError: true,
           content: [...content, { type: "text", text: TOOL_ERROR_AFTER_WRITE_NOTE }]
         };
-      }
-      if (generation !== this.#generation || this.#closed || this.#disconnecting) {
-        throw new Error("n8n access changed during the tool call.");
       }
       return result2;
     };
