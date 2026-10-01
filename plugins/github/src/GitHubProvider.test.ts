@@ -158,6 +158,45 @@ describe("GitHubProvider OAuth product", () => {
     expect(secrets.values.size).toBe(0);
   });
 
+  it("describes every tool input field for the agent", () => {
+    type JsonSchemaNode = Record<string, unknown>;
+    // Effect places a checked field's description inside its allOf refinements.
+    const described = (schema: JsonSchemaNode) =>
+      "description" in schema ||
+      ((schema.allOf ?? []) as ReadonlyArray<JsonSchemaNode>).some(
+        (member) => "description" in member,
+      );
+    const missing: Array<string> = [];
+    for (const tool of GITHUB_TOOLS) {
+      const document = Schema.toJsonSchemaDocument(tool.input);
+      const definitions = (document.definitions ?? {}) as Record<string, JsonSchemaNode>;
+      const visit = (value: JsonSchemaNode, path: string) => {
+        const schema =
+          typeof value.$ref === "string"
+            ? { ...definitions[value.$ref.split("/").pop()!], ...value }
+            : value;
+        for (const [key, child] of Object.entries(
+          (schema.properties ?? {}) as Record<string, JsonSchemaNode>,
+        )) {
+          const childPath = `${path}.${key}`;
+          if (!described(child)) missing.push(childPath);
+          visit(child, childPath);
+        }
+        if (schema.items && typeof schema.items === "object") {
+          visit(schema.items as JsonSchemaNode, `${path}[]`);
+        }
+        for (const member of [
+          ...((schema.anyOf ?? []) as ReadonlyArray<JsonSchemaNode>),
+          ...((schema.allOf ?? []) as ReadonlyArray<JsonSchemaNode>),
+        ]) {
+          visit(member, path);
+        }
+      };
+      visit(document.schema as JsonSchemaNode, tool.name);
+    }
+    expect(missing).toEqual([]);
+  });
+
   it("handles pending, slow-down, denial, and expiry without storing credentials", async () => {
     const secrets = memorySecrets();
     const mock = sequence([
@@ -713,5 +752,40 @@ describe("GitHubProvider OAuth product", () => {
     await github.close();
     await expect(pending).rejects.toThrow(/closed/u);
     expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it("reports request cancellation and timeout as public errors", async () => {
+    const secrets = memorySecrets();
+    const connection = [json(deviceBody()), json(tokenBody()), json(userBody())];
+    const fetchImplementation = vi.fn(
+      async (_input: string | URL | Request, init?: RequestInit) => {
+        const response = connection.shift();
+        if (response) return response;
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal as AbortSignal;
+          if (signal.aborted) return reject(new Error("aborted"));
+          signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      },
+    ) as unknown as typeof fetch;
+    const github = provider(secrets.service, fetchImplementation, 20);
+    await authorize(github);
+    const context = invocation();
+    const controller = new AbortController();
+    const cancelled = github.invoke(
+      "github.identity.get",
+      {},
+      { ...context, signal: controller.signal },
+    );
+    controller.abort();
+    // Public errors reach the agent; anything else is reported as a generic tool failure.
+    await expect(cancelled).rejects.toMatchObject({
+      _tag: "IntegrationProviderPublicError",
+      message: "GitHub request was cancelled.",
+    });
+    await expect(github.invoke("github.identity.get", {}, invocation())).rejects.toMatchObject({
+      _tag: "IntegrationProviderPublicError",
+      message: "GitHub request timed out.",
+    });
   });
 });

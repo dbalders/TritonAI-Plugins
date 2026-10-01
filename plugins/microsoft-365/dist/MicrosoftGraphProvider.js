@@ -67,7 +67,7 @@ const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/
 const ENTRA_IDENTIFIER = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const MailSearchInput = Schema.Struct({
     query: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(200)).annotate({
-        description: "Optional mail search text (maximum 200 characters).",
+        description: "Mail search text (maximum 200 characters). Omit to list the newest Inbox messages.",
     })),
     limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 25 })).annotate({
         description: "Maximum number of messages (1-25).",
@@ -312,7 +312,7 @@ const decodeFilesRenameInput = Schema.decodeUnknownPromise(FilesRenameInput);
 export const MICROSOFT_GRAPH_TOOLS = [
     {
         name: "microsoft365.mail.search",
-        description: "Search Microsoft 365 mail through a fixed bounded projection; every non-null preview is marked previewIsPartial.",
+        description: "Search Microsoft 365 mail, or list the newest Inbox messages when query is omitted, through a fixed bounded projection; every non-null preview is marked previewIsPartial.",
         input: MailSearchInput,
         readOnly: true,
         destructive: false,
@@ -1292,11 +1292,11 @@ export class MicrosoftGraphProvider {
         }
         catch (error) {
             if (init.signal?.aborted)
-                throw new Error("Microsoft request was cancelled.", { cause: error });
+                throw new IntegrationProviderPublicError("Microsoft request was cancelled.");
             if (controller.signal.aborted)
                 throw new Error("Microsoft provider was closed.", { cause: error });
             if (timeoutSignal.aborted)
-                throw new Error("Microsoft request timed out.", { cause: error });
+                throw new IntegrationProviderPublicError("Microsoft request timed out.");
             throw error;
         }
         finally {
@@ -1795,7 +1795,7 @@ export class MicrosoftGraphProvider {
             throw new Error("Microsoft 365 is unavailable.");
         }
         if (context?.signal.aborted)
-            throw new Error("Microsoft request was cancelled.");
+            throw new IntegrationProviderPublicError("Microsoft request was cancelled.");
         const access = this.#accessToken;
         if (!access || access.expiresAt - ACCESS_TOKEN_SKEW_MS <= Date.now()) {
             throw new IntegrationProviderPublicError("The Microsoft 365 session needs a safe refresh. Disconnect and reconnect.");
@@ -1813,12 +1813,15 @@ export class MicrosoftGraphProvider {
                 $select: "id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments",
                 $top: String(limit),
             });
+            // Without search text, list the Inbox: ordering every message in the mailbox can outlast the
+            // request timeout on large mailboxes.
             if (query) {
                 params.set("$search", '"' + query.replaceAll('"', " ").replaceAll("\\", " ") + '"');
             }
             else
                 params.set("$orderby", "receivedDateTime desc");
-            const result = await this.#graph(`/me/messages?${params.toString()}`, access.value, {
+            const path = query ? "/me/messages" : "/me/mailFolders/inbox/messages";
+            const result = await this.#graph(`${path}?${params.toString()}`, access.value, {
                 signal: context?.signal,
             });
             this.#assertInvocationCurrent(generation);
