@@ -1755,6 +1755,17 @@ export function validateToolInventory(value: unknown): ToolInventory {
 
 class SessionInvalidError extends Error {}
 class ConfirmedRemoteFailure extends IntegrationProviderPublicError {}
+// n8n refused the request before running it, so a write was not applied.
+class RemoteRejection extends ConfirmedRemoteFailure {}
+
+// JSON-RPC parse, invalid request, method not found, and invalid params errors are raised before
+// the tool runs. Server and internal errors may follow a partial write, so they stay ambiguous.
+const PRE_DISPATCH_JSON_RPC_ERRORS = new Set([-32_700, -32_600, -32_601, -32_602]);
+const MAX_REJECTION_DETAIL_CHARS = 2_000;
+
+function rejectedToolResult(message: string): JsonObject {
+  return { isError: true, content: [{ type: "text", text: message }] };
+}
 
 export class N8nProvider implements IntegrationProvider {
   readonly id = N8N_PROVIDER_ID;
@@ -2298,7 +2309,7 @@ export class N8nProvider implements IntegrationProvider {
       this.#sessionVerified = false;
       this.#availableTools = new Set();
       this.#pausedTools = [];
-      throw new ConfirmedRemoteFailure("n8n authorization expired. Reconnect if refresh fails.");
+      throw new RemoteRejection("n8n authorization expired. Reconnect if refresh fails.");
     }
     if (response.status === 404 && this.#sessionId) {
       this.#sessionId = null;
@@ -2307,10 +2318,15 @@ export class N8nProvider implements IntegrationProvider {
     }
     if (!response.ok) {
       if (response.status === 429) {
-        throw new ConfirmedRemoteFailure("n8n is rate limiting MCP requests. Try again later.");
+        throw new RemoteRejection("n8n is rate limiting MCP requests. Try again later.");
       }
       if (response.status === 403) {
-        throw new ConfirmedRemoteFailure("n8n denied this operation for the connected user.");
+        throw new RemoteRejection("n8n denied this operation for the connected user.");
+      }
+      if (response.status >= 400 && response.status < 500 && response.status !== 408) {
+        throw new RemoteRejection(
+          `n8n MCP rejected the ${method} request (HTTP ${response.status}).`,
+        );
       }
       throw new ConfirmedRemoteFailure(
         `n8n MCP ${method} failed (HTTP ${response.status}). Reconnect and try again.`,
@@ -2337,6 +2353,13 @@ export class N8nProvider implements IntegrationProvider {
     if (raw.error !== undefined) {
       const error = asRecord(raw.error, "n8n MCP JSON-RPC error");
       if (!Number.isInteger(error.code)) throw new Error("n8n MCP returned an invalid error.");
+      if (PRE_DISPATCH_JSON_RPC_ERRORS.has(error.code as number)) {
+        const detail =
+          typeof error.message === "string" && error.message.length > 0
+            ? `: ${error.message.slice(0, MAX_REJECTION_DETAIL_CHARS)}`
+            : ".";
+        throw new RemoteRejection(`n8n MCP rejected the request${detail}`);
+      }
       throw new ConfirmedRemoteFailure("n8n MCP rejected the request.");
     }
     if (!("result" in raw)) throw new Error("n8n MCP response omitted its result.");
@@ -3130,36 +3153,59 @@ export class N8nProvider implements IntegrationProvider {
           "n8n requested an interactive MCP response that TritonAI Harness does not support.",
         );
       }
-      if (result.isError === true) {
-        throw new ConfirmedRemoteFailure("n8n reported that the tool operation failed.");
-      }
+      // A tool-level error is n8n's own answer, so hand it to the agent as the result instead of
+      // throwing. The agent can then correct its input, and a write n8n refused does not leave the
+      // integration faulted.
       const structured = result.structuredContent;
-      if (structured && typeof structured === "object" && !Array.isArray(structured)) {
-        const record = structured as Record<string, unknown>;
-        if (record.status === "error" || typeof record.error === "string") {
-          throw new ConfirmedRemoteFailure("n8n reported that the tool operation failed.");
-        }
+      const structuredError =
+        structured !== null &&
+        typeof structured === "object" &&
+        !Array.isArray(structured) &&
+        ((structured as Record<string, unknown>).status === "error" ||
+          typeof (structured as Record<string, unknown>).error === "string");
+      if (result.isError === true || structuredError) {
+        return { ...result, isError: true } as JsonValue;
       }
       if (generation !== this.#generation || this.#closed || this.#disconnecting) {
         throw new Error("n8n access changed during the tool call.");
       }
       return result as JsonValue;
     };
+    let failure: unknown;
     try {
       return await call();
     } catch (error) {
-      if (error instanceof SessionInvalidError && reviewed.upstreamReadOnly) {
+      failure = error;
+    }
+    // A 404 for a known session means n8n never dispatched the call, so even a write can resend.
+    if (failure instanceof SessionInvalidError) {
+      try {
         await this.#initializeSession(access, signal);
-        return call();
-      }
-      if (!reviewed.upstreamReadOnly && admitted) {
-        this.#uncertainCredentialState = true;
-        throw new ExternalCommitOutcomeUnknownError(
-          "The n8n operation may have completed. Verify its result before retrying.",
+        assertAvailable();
+      } catch (error) {
+        if (!admitted) throw error;
+        return rejectedToolResult(
+          error instanceof IntegrationProviderPublicError
+            ? error.message
+            : "n8n MCP session expired and could not be restored. Try again.",
         );
       }
-      throw error;
+      try {
+        return await call();
+      } catch (error) {
+        failure = error;
+      }
     }
+    if (failure instanceof RemoteRejection || failure instanceof SessionInvalidError) {
+      return rejectedToolResult(failure.message);
+    }
+    if (!reviewed.upstreamReadOnly && admitted) {
+      this.#uncertainCredentialState = true;
+      throw new ExternalCommitOutcomeUnknownError(
+        "The n8n operation may have completed. Verify its result before retrying.",
+      );
+    }
+    throw failure;
   }
 
   async close(): Promise<void> {
