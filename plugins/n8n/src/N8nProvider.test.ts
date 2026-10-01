@@ -774,6 +774,31 @@ describe("N8nProvider", () => {
     ).rejects.toThrow();
   });
 
+  it("does not return a rejection after access changed during the call", async () => {
+    const mock = oauthMcpFetch();
+    let provider: N8nProvider | undefined;
+    let closeDuringCall = false;
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+      if (closeDuringCall && body?.method === "tools/call") {
+        closeDuringCall = false;
+        void provider?.close();
+        return json({
+          jsonrpc: "2.0",
+          id: body.id,
+          error: { code: -32_602, message: "late remote detail" },
+        });
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    provider = new N8nProvider(memorySecrets().service, { serverUrl: SERVER }, fetchImplementation);
+    await authorize(provider, mock.requests);
+    closeDuringCall = true;
+    await expect(
+      provider.invoke("n8n.search_projects", { limit: 1 }, invocation(false)),
+    ).rejects.toThrow();
+  });
+
   it("resends an admitted write once when n8n reports the MCP session expired", async () => {
     const mock = oauthMcpFetch();
     let expireNextCall = false;

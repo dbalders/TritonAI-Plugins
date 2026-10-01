@@ -12920,6 +12920,11 @@ var N8nProvider = class {
     })();
     if (!signal) throw new Error("n8n invocation requires a cancellation signal.");
     const timeout2 = reviewed.upstreamName === "test_workflow" ? TEST_REQUEST_TIMEOUT_MS : this.#requestTimeoutMs;
+    const assertAccessCurrent = () => {
+      if (generation !== this.#generation || this.#closed || this.#disconnecting) {
+        throw new Error("n8n access changed during the tool call.");
+      }
+    };
     const call = async () => {
       assertAvailable();
       const result2 = asRecord(
@@ -12938,9 +12943,7 @@ var N8nProvider = class {
           "n8n requested an interactive MCP response that TritonAI Harness does not support."
         );
       }
-      if (generation !== this.#generation || this.#closed || this.#disconnecting) {
-        throw new Error("n8n access changed during the tool call.");
-      }
+      assertAccessCurrent();
       const structured = result2.structuredContent;
       const structuredError = structured !== null && typeof structured === "object" && !Array.isArray(structured) && (structured.status === "error" || typeof structured.error === "string");
       if (result2.isError === true || structuredError) {
@@ -12966,6 +12969,7 @@ var N8nProvider = class {
         assertAvailable();
       } catch (error) {
         if (!admitted) throw error;
+        assertAccessCurrent();
         return rejectedToolResult(
           error instanceof IntegrationProviderPublicError ? error.message : "n8n MCP session expired and could not be restored. Try again."
         );
@@ -12977,6 +12981,7 @@ var N8nProvider = class {
       }
     }
     if (failure instanceof RemoteRejection || failure instanceof SessionInvalidError) {
+      assertAccessCurrent();
       return rejectedToolResult(failure.message);
     }
     if (!reviewed.upstreamReadOnly && admitted) {

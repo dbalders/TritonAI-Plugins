@@ -3137,6 +3137,11 @@ export class N8nProvider implements IntegrationProvider {
     if (!signal) throw new Error("n8n invocation requires a cancellation signal.");
     const timeout =
       reviewed.upstreamName === "test_workflow" ? TEST_REQUEST_TIMEOUT_MS : this.#requestTimeoutMs;
+    const assertAccessCurrent = () => {
+      if (generation !== this.#generation || this.#closed || this.#disconnecting) {
+        throw new Error("n8n access changed during the tool call.");
+      }
+    };
     const call = async () => {
       // Re-checked on every attempt: a recovered session re-verifies the catalog and may have
       // paused or dropped this tool.
@@ -3157,9 +3162,7 @@ export class N8nProvider implements IntegrationProvider {
           "n8n requested an interactive MCP response that TritonAI Harness does not support.",
         );
       }
-      if (generation !== this.#generation || this.#closed || this.#disconnecting) {
-        throw new Error("n8n access changed during the tool call.");
-      }
+      assertAccessCurrent();
       // A tool-level error is n8n's own answer, so hand it to the agent as the result instead of
       // throwing. The agent can then correct its input, and a failed write does not leave the
       // integration faulted. n8n raises these during execution, so a write that runs a workflow
@@ -3195,6 +3198,7 @@ export class N8nProvider implements IntegrationProvider {
         assertAvailable();
       } catch (error) {
         if (!admitted) throw error;
+        assertAccessCurrent();
         return rejectedToolResult(
           error instanceof IntegrationProviderPublicError
             ? error.message
@@ -3208,6 +3212,7 @@ export class N8nProvider implements IntegrationProvider {
       }
     }
     if (failure instanceof RemoteRejection || failure instanceof SessionInvalidError) {
+      assertAccessCurrent();
       return rejectedToolResult(failure.message);
     }
     if (!reviewed.upstreamReadOnly && admitted) {
