@@ -131,6 +131,8 @@ interface OAuthFixtureOptions {
   readonly claims?: Readonly<Record<string, unknown>>;
   readonly signingKey?: NodeCrypto.KeyObject;
   readonly refreshOverrides?: Readonly<Record<string, unknown>>;
+  /** Replaces the refresh response for the given 1-based refresh attempt. */
+  readonly refreshFailure?: (attempt: number) => Promise<Response> | undefined;
   readonly revokeStatus?: number;
   readonly api?: (url: string, init?: RequestInit) => Promise<Response> | Response;
   readonly requestTimeoutMs?: number;
@@ -143,6 +145,7 @@ function oauthFixture(options: OAuthFixtureOptions = {}) {
   let nonce = "";
   let scopes = "";
   let refreshCount = 0;
+  let omitAuthorizationRefreshToken = false;
   const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     calls.push({ url, init });
@@ -162,6 +165,8 @@ function oauthFixture(options: OAuthFixtureOptions = {}) {
       const form = new URLSearchParams(String(init?.body));
       if (form.get("grant_type") === "refresh_token") {
         refreshCount += 1;
+        const failure = options.refreshFailure?.(refreshCount);
+        if (failure) return failure;
         return jsonResponse({
           access_token: `fixture-access-refresh-${refreshCount}`,
           expires_in: 3_600,
@@ -174,7 +179,7 @@ function oauthFixture(options: OAuthFixtureOptions = {}) {
       return jsonResponse(
         {
           access_token: "fixture-access-initial",
-          refresh_token: "fixture-refresh-initial",
+          ...(omitAuthorizationRefreshToken ? {} : { refresh_token: "fixture-refresh-initial" }),
           expires_in: 3_600,
           scope: scopes,
           id_token: signIdToken(nonce, options.claims, options.signingKey),
@@ -224,7 +229,11 @@ function oauthFixture(options: OAuthFixtureOptions = {}) {
     return { ...started, result };
   }
 
-  return { provider, secrets, calls, begin, complete };
+  const omitRefreshTokenOnAuthorization = () => {
+    omitAuthorizationRefreshToken = true;
+  };
+
+  return { provider, secrets, calls, begin, complete, omitRefreshTokenOnAuthorization };
 }
 
 function callbackUrl(authorizationUrl: URL, values: Record<string, string>): URL {
@@ -823,6 +832,113 @@ describe("GoogleWorkspaceProvider authorization", () => {
         code: "late-code",
       });
       await expect(globalThis.fetch(callback)).rejects.toBeDefined();
+    } finally {
+      vi.useRealTimers();
+      await fixture.provider.close();
+    }
+  });
+
+  it.each([
+    ["a network failure", () => Promise.reject(new TypeError("fetch failed"))],
+    [
+      "a server error",
+      () => Promise.resolve(jsonResponse({ error: "temporarily_unavailable" }, 503)),
+    ],
+    [
+      "a non-JSON gateway error",
+      () =>
+        Promise.resolve(
+          new Response("bad gateway", { status: 502, headers: { "content-type": "text/html" } }),
+        ),
+    ],
+  ] as const)("keeps the connection after a refresh fails with %s", async (_label, failure) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const fixture = oauthFixture({
+      refreshFailure: (attempt) => (attempt === 1 ? failure() : undefined),
+    });
+    try {
+      await fixture.complete(["identity.read", "mail.read"]);
+      const stored = fixture.secrets.values.get(GOOGLE_WORKSPACE_SECRET_SUFFIX);
+      vi.setSystemTime(Date.now() + 3_700_000);
+      const events: string[] = [];
+
+      await expect(fixture.provider.prepare(lifecycle(events))).rejects.toThrow();
+      // Harness faults a provider whose admitted operation rejects, so a failed request must
+      // never have asked for commit admission.
+      expect(events).toEqual([]);
+      expect(fixture.secrets.values.get(GOOGLE_WORKSPACE_SECRET_SUFFIX)).toEqual(stored);
+      await expect(fixture.provider.status()).resolves.toMatchObject({ state: "connected" });
+
+      await fixture.provider.prepare(lifecycle());
+      await expect(
+        fixture.provider.invoke("googleworkspace.identity.get", {}, invocation()),
+      ).resolves.toMatchObject({ email: "fixture-user@ucsd.edu" });
+    } finally {
+      vi.useRealTimers();
+      await fixture.provider.close();
+    }
+  });
+
+  it("keeps using a refreshed token when saving the rotated credential fails", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const secretOptions: { failSet?: boolean } = {};
+    const fixture = oauthFixture({ secrets: memorySecrets(secretOptions) });
+    try {
+      await fixture.complete(["identity.read", "mail.read"]);
+      vi.setSystemTime(Date.now() + 3_700_000);
+      secretOptions.failSet = true;
+
+      await fixture.provider.prepare(lifecycle());
+      await expect(fixture.provider.status()).resolves.toMatchObject({
+        state: "connected",
+        message: expect.stringMatching(/could not be saved/u),
+      });
+      await expect(
+        fixture.provider.invoke("googleworkspace.identity.get", {}, invocation()),
+      ).resolves.toMatchObject({ email: "fixture-user@ucsd.edu" });
+    } finally {
+      vi.useRealTimers();
+      await fixture.provider.close();
+    }
+  });
+
+  it("reports an expired sign-in when Google answers invalid_grant until reconnect", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const fixture = oauthFixture({
+      refreshFailure: () => Promise.resolve(jsonResponse({ error: "invalid_grant" }, 400)),
+    });
+    try {
+      await fixture.complete(["identity.read", "mail.read"]);
+      vi.setSystemTime(Date.now() + 3_700_000);
+      const events: string[] = [];
+
+      await expect(fixture.provider.prepare(lifecycle(events))).rejects.toThrow(/sign-in expired/u);
+      expect(events).toEqual([]);
+      await expect(fixture.provider.status()).resolves.toMatchObject({
+        state: "error",
+        grantedCapabilities: [],
+        message: expect.stringMatching(/sign-in expired/u),
+      });
+      // Reconnecting must start a fresh sign-in even though the scopes are still on record.
+      await expect(
+        fixture.provider.connect(["identity.read", "mail.read"], lifecycle()),
+      ).resolves.toMatchObject({ kind: "authorization_url" });
+      // A sign-in that returns no new refresh token cannot fall back to the rejected one.
+      fixture.omitRefreshTokenOnAuthorization();
+      const retry = await fixture.begin(["identity.read", "mail.read"]);
+      await globalThis.fetch(
+        callbackUrl(retry.authorizationUrl, {
+          state: retry.authorizationUrl.searchParams.get("state")!,
+          code: "fixture-code",
+        }),
+      );
+      await expect(fixture.provider.poll(retry.flow.flowId, lifecycle())).resolves.toMatchObject({
+        state: "failed",
+      });
+      await expect(fixture.provider.status()).resolves.toMatchObject({ state: "error" });
+
+      await fixture.provider.disconnect(lifecycle());
+      await expect(fixture.provider.status()).resolves.toMatchObject({ state: "not_connected" });
     } finally {
       vi.useRealTimers();
       await fixture.provider.close();

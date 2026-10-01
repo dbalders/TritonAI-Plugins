@@ -34,6 +34,7 @@ interface SecretOptions {
 
 interface ControlledSecretOptions {
   readonly failSetAfterWriteCall?: number;
+  readonly beforeSetFailure?: () => void;
   readonly pauseGetCall?: number;
   readonly getPaused?: () => void;
   readonly getGate?: Promise<void>;
@@ -85,6 +86,7 @@ function controlledSecrets(options: ControlledSecretOptions = {}) {
         setCalls += 1;
         values.set(name, Uint8Array.from(bytes));
         if (setCalls === options.failSetAfterWriteCall) {
+          options.beforeSetFailure?.();
           throw new Error("fixture uncertain set");
         }
       }),
@@ -690,9 +692,117 @@ describe("MicrosoftGraphProvider contract", () => {
     await graph.prepare(context);
     await graph.prepare(context);
     const persisted = new TextDecoder().decode(secrets.values.get(MICROSOFT_GRAPH_SECRET_SUFFIX));
-    expect(events).toEqual(["beginCommit", "token"]);
+    expect(events).toEqual(["token", "beginCommit"]);
     expect(persisted).toContain(value("refresh-rotated"));
     expect(persisted).not.toContain(value("access-rotated"));
+  });
+
+  it.each([
+    ["a network failure", () => Promise.reject(new TypeError("fetch failed"))],
+    [
+      "a server error",
+      () => Promise.resolve(jsonResponse({ error: "temporarily_unavailable" }, 503)),
+    ],
+    [
+      "a non-JSON gateway error",
+      () =>
+        Promise.resolve(
+          new Response("bad gateway", { status: 502, headers: { "content-type": "text/html" } }),
+        ),
+    ],
+  ] as const)("keeps the connection after a refresh fails with %s", async (_label, failure) => {
+    const secrets = memorySecrets();
+    secrets.values.set(MICROSOFT_GRAPH_SECRET_SUFFIX, storedCredential());
+    const stored = secrets.values.get(MICROSOFT_GRAPH_SECRET_SUFFIX);
+    let tokenCalls = 0;
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/token")) {
+        tokenCalls += 1;
+        return tokenCalls === 1 ? failure() : jsonResponse(tokenBody("offline_access Mail.Read"));
+      }
+      return jsonResponse({ value: [] });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    const events: string[] = [];
+
+    await expect(graph.prepare(lifecycle(events))).rejects.toThrow();
+    // Harness faults a provider whose admitted operation rejects, so a failed request must
+    // never have asked for commit admission.
+    expect(events).toEqual([]);
+    expect(secrets.values.get(MICROSOFT_GRAPH_SECRET_SUFFIX)).toEqual(stored);
+    await expect(graph.status()).resolves.toMatchObject({ state: "connected" });
+
+    await graph.prepare(lifecycle());
+    await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toEqual({
+      messages: [],
+      hasMore: false,
+    });
+  });
+
+  it("keeps using a refreshed token when saving the rotated credential fails", async () => {
+    const secrets = memorySecrets({ failSet: true });
+    secrets.values.set(MICROSOFT_GRAPH_SECRET_SUFFIX, storedCredential());
+    const fetchImplementation = (async (input: RequestInfo | URL) =>
+      String(input).endsWith("/token")
+        ? jsonResponse(tokenBody("offline_access Mail.Read", "rotated"))
+        : jsonResponse({ value: [] })) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+
+    await graph.prepare(lifecycle());
+    await expect(graph.status()).resolves.toMatchObject({
+      state: "connected",
+      message: expect.stringMatching(/could not be saved/u),
+    });
+    await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toEqual({
+      messages: [],
+      hasMore: false,
+    });
+  });
+
+  it("reports an expired sign-in when Microsoft answers invalid_grant until reconnect", async () => {
+    const secrets = memorySecrets();
+    secrets.values.set(MICROSOFT_GRAPH_SECRET_SUFFIX, storedCredential());
+    const fetchImplementation = (async () =>
+      jsonResponse({ error: "invalid_grant" }, 400)) as unknown as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    const events: string[] = [];
+
+    await expect(graph.prepare(lifecycle(events))).rejects.toThrow(/sign-in expired/u);
+    expect(events).toEqual([]);
+    await expect(graph.status()).resolves.toMatchObject({
+      state: "error",
+      grantedCapabilities: [],
+      message: expect.stringMatching(/sign-in expired/u),
+    });
+
+    await graph.disconnect(lifecycle());
+    await expect(graph.status()).resolves.toMatchObject({ state: "not_connected" });
+  });
+
+  it("keeps the connection when conditional access requires interaction", async () => {
+    const secrets = memorySecrets();
+    secrets.values.set(MICROSOFT_GRAPH_SECRET_SUFFIX, storedCredential());
+    let tokenCalls = 0;
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/token")) {
+        tokenCalls += 1;
+        return tokenCalls === 1
+          ? jsonResponse({ error: "interaction_required" }, 400)
+          : jsonResponse(tokenBody("offline_access Mail.Read"));
+      }
+      return jsonResponse({ value: [] });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    const events: string[] = [];
+
+    await expect(graph.prepare(lifecycle(events))).rejects.toThrow(/access condition/u);
+    expect(events).toEqual([]);
+    await expect(graph.status()).resolves.toMatchObject({ state: "connected" });
+    await graph.prepare(lifecycle());
+    await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toEqual({
+      messages: [],
+      hasMore: false,
+    });
   });
 
   it("preserves an incremental-consent flow during routine token refresh", async () => {
@@ -842,9 +952,13 @@ describe("MicrosoftGraphProvider contract", () => {
     await expect(replacement).rejects.toThrow(/superseded/u);
   });
 
-  it("rejects a queued poll commit after refresh makes credentials uncertain", async () => {
+  it("rejects a queued poll commit after a revoked refresh makes credentials uncertain", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
-    const secrets = controlledSecrets({ failSetAfterWriteCall: 2 });
+    const refreshCommit = new AbortController();
+    const secrets = controlledSecrets({
+      failSetAfterWriteCall: 2,
+      beforeSetFailure: () => refreshCommit.abort(),
+    });
     let tokenCalls = 0;
     let releaseRefresh!: () => void;
     let markRefreshStarted!: () => void;
@@ -878,7 +992,10 @@ describe("MicrosoftGraphProvider contract", () => {
       vi.advanceTimersByTime(3_600_000);
       const incremental = await graph.connect(["calendar.read"], lifecycle());
 
-      const preparing = graph.prepare(lifecycle());
+      const preparing = graph.prepare({
+        signal: new AbortController().signal,
+        beginCommit: async () => refreshCommit.signal,
+      });
       await refreshStarted;
       const polling = graph.poll(incremental.flowId, lifecycle());
       await pollTokenReturned;
@@ -994,7 +1111,7 @@ describe("MicrosoftGraphProvider tools", () => {
     const graph = provider(secrets.service, fetchImplementation);
     await authorize(graph);
 
-    await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(/empty response/u);
+    await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(/session expired/u);
     await graph.prepare(lifecycle());
     await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toEqual({
       messages: [],
@@ -1022,6 +1139,116 @@ describe("MicrosoftGraphProvider tools", () => {
     await authorize(graph);
 
     await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(message);
+  });
+
+  it("marks a write refused with a non-JSON body as unchanged", async () => {
+    const secrets = memorySecrets();
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      return new Response("<html>Access denied by proxy</html>", {
+        status: 403,
+        headers: { "content-type": "text/html" },
+      });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.organize"]);
+
+    await expect(
+      graph.invoke("microsoft365.mail.folder.create", { displayName: "Projects" }, invocation()),
+    ).rejects.toMatchObject({ unchanged: true, message: expect.stringMatching(/denied/u) });
+  });
+
+  it("reports a write cancelled after Microsoft refused it as cancelled and unchanged", async () => {
+    const secrets = memorySecrets();
+    const commit = new AbortController();
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      const body = new ReadableStream<Uint8Array>({
+        start(stream) {
+          init?.signal?.addEventListener("abort", () =>
+            stream.error(new DOMException("aborted", "AbortError")),
+          );
+        },
+      });
+      queueMicrotask(() => commit.abort());
+      return new Response(body, { status: 409, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.organize"]);
+
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.folder.create",
+        { displayName: "Projects" },
+        {
+          signal: new AbortController().signal,
+          writeApproved: true,
+          beginCommit: async () => commit.signal,
+        },
+      ),
+    ).rejects.toMatchObject({ unchanged: true, message: expect.stringMatching(/cancelled/u) });
+  });
+
+  it("marks a move whose destination check is refused as unchanged without moving", async () => {
+    const secrets = memorySecrets();
+    const requests: string[] = [];
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      requests.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`);
+      if (
+        url.includes("/mailFolders/deleteditems?") ||
+        url.includes("/mailFolders/recoverableitemsdeletions?")
+      ) {
+        return jsonResponse({ id: "opaque-deletion-id" });
+      }
+      return jsonResponse({ error: { code: "ErrorItemNotFound" } }, 404);
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.organize"]);
+
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.message.move",
+        { messageId: "message-1", destinationFolderId: "missing-folder" },
+        invocation(),
+      ),
+    ).rejects.toMatchObject({ unchanged: true });
+    expect(requests.some((request) => request.startsWith("POST "))).toBe(false);
+  });
+
+  it.each([
+    [409, true],
+    [400, true],
+    [429, true],
+    [408, false],
+    [503, false],
+  ])("marks a write refused with HTTP %i as unchanged: %s", async (status, unchanged) => {
+    const secrets = memorySecrets();
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) {
+        return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      }
+      return jsonResponse({ error: { code: "fixture" } }, status);
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.organize"]);
+
+    const failure = await graph
+      .invoke("microsoft365.mail.folder.create", { displayName: "Projects" }, invocation())
+      .then(
+        () => expect.unreachable("a refused write must reject"),
+        (error: unknown) => error,
+      );
+    // Harness settles an admitted write only when the provider proves nothing changed.
+    expect((failure as { readonly unchanged?: boolean }).unchanged === true).toBe(unchanged);
   });
 
   it("does not revoke an in-flight read during routine access-token refresh", async () => {
