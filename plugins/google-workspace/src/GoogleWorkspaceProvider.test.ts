@@ -145,6 +145,7 @@ function oauthFixture(options: OAuthFixtureOptions = {}) {
   let nonce = "";
   let scopes = "";
   let refreshCount = 0;
+  let omitAuthorizationRefreshToken = false;
   const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     calls.push({ url, init });
@@ -178,7 +179,7 @@ function oauthFixture(options: OAuthFixtureOptions = {}) {
       return jsonResponse(
         {
           access_token: "fixture-access-initial",
-          refresh_token: "fixture-refresh-initial",
+          ...(omitAuthorizationRefreshToken ? {} : { refresh_token: "fixture-refresh-initial" }),
           expires_in: 3_600,
           scope: scopes,
           id_token: signIdToken(nonce, options.claims, options.signingKey),
@@ -228,7 +229,11 @@ function oauthFixture(options: OAuthFixtureOptions = {}) {
     return { ...started, result };
   }
 
-  return { provider, secrets, calls, begin, complete };
+  const omitRefreshTokenOnAuthorization = () => {
+    omitAuthorizationRefreshToken = true;
+  };
+
+  return { provider, secrets, calls, begin, complete, omitRefreshTokenOnAuthorization };
 }
 
 function callbackUrl(authorizationUrl: URL, values: Record<string, string>): URL {
@@ -880,6 +885,19 @@ describe("GoogleWorkspaceProvider authorization", () => {
       await expect(
         fixture.provider.connect(["identity.read", "mail.read"], lifecycle()),
       ).resolves.toMatchObject({ kind: "authorization_url" });
+      // A sign-in that returns no new refresh token cannot fall back to the rejected one.
+      fixture.omitRefreshTokenOnAuthorization();
+      const retry = await fixture.begin(["identity.read", "mail.read"]);
+      await globalThis.fetch(
+        callbackUrl(retry.authorizationUrl, {
+          state: retry.authorizationUrl.searchParams.get("state")!,
+          code: "fixture-code",
+        }),
+      );
+      await expect(fixture.provider.poll(retry.flow.flowId, lifecycle())).resolves.toMatchObject({
+        state: "failed",
+      });
+      await expect(fixture.provider.status()).resolves.toMatchObject({ state: "error" });
 
       await fixture.provider.disconnect(lifecycle());
       await expect(fixture.provider.status()).resolves.toMatchObject({ state: "not_connected" });

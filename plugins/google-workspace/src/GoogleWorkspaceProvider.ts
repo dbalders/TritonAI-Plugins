@@ -2605,9 +2605,10 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
         ) {
           throw new Error("Google account changed during incremental authorization.");
         }
+        // Google already rejected an expired sign-in's stored token, so only a new one recovers it.
         const refreshToken =
           json.refresh_token === undefined
-            ? flow.existingCredential?.subject === identity.subject
+            ? !this.#signInExpired && flow.existingCredential?.subject === identity.subject
               ? flow.existingCredential.refreshToken
               : null
             : boundedString(json.refresh_token, MAX_TOKEN_CHARS);
