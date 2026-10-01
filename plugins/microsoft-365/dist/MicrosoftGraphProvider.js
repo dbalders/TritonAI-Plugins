@@ -1777,8 +1777,12 @@ export class MicrosoftGraphProvider {
         catch (error) {
             // A refusal is decided by its status; proxies and throttling often send an HTML or empty
             // body that would otherwise hide it behind a parse failure.
-            if (refusal)
-                throw refusal;
+            if (refusal) {
+                // Microsoft had already refused the request, so nothing changed either way.
+                throw options.signal?.aborted
+                    ? new IntegrationProviderPublicError("The Microsoft 365 request was cancelled after Microsoft refused it; nothing changed.", { unchanged: true })
+                    : refusal;
+            }
             throw error;
         }
         const { response, json } = request;

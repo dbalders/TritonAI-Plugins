@@ -2395,7 +2395,12 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
     }
     const requestedScopes = requestedScopesForCapabilities(capabilities, existing);
     await this.#clearPendingFlows();
-    if (existing && requestedScopes.every((scope) => existing.grantedScopes.includes(scope))) {
+    // An expired sign-in still has its scopes on record but needs a fresh authorization.
+    if (
+      existing &&
+      !this.#signInExpired &&
+      requestedScopes.every((scope) => existing.grantedScopes.includes(scope))
+    ) {
       return {
         kind: "connected",
         flowId: NodeCrypto.randomUUID(),

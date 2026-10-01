@@ -1160,6 +1160,39 @@ describe("MicrosoftGraphProvider tools", () => {
     ).rejects.toMatchObject({ unchanged: true, message: expect.stringMatching(/denied/u) });
   });
 
+  it("reports a write cancelled after Microsoft refused it as cancelled and unchanged", async () => {
+    const secrets = memorySecrets();
+    const commit = new AbortController();
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      const body = new ReadableStream<Uint8Array>({
+        start(stream) {
+          init?.signal?.addEventListener("abort", () =>
+            stream.error(new DOMException("aborted", "AbortError")),
+          );
+        },
+      });
+      queueMicrotask(() => commit.abort());
+      return new Response(body, { status: 409, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.organize"]);
+
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.folder.create",
+        { displayName: "Projects" },
+        {
+          signal: new AbortController().signal,
+          writeApproved: true,
+          beginCommit: async () => commit.signal,
+        },
+      ),
+    ).rejects.toMatchObject({ unchanged: true, message: expect.stringMatching(/cancelled/u) });
+  });
+
   it("marks a move whose destination check is refused as unchanged without moving", async () => {
     const secrets = memorySecrets();
     const requests: string[] = [];

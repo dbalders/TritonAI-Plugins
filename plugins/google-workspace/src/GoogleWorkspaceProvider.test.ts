@@ -876,6 +876,10 @@ describe("GoogleWorkspaceProvider authorization", () => {
         grantedCapabilities: [],
         message: expect.stringMatching(/sign-in expired/u),
       });
+      // Reconnecting must start a fresh sign-in even though the scopes are still on record.
+      await expect(
+        fixture.provider.connect(["identity.read", "mail.read"], lifecycle()),
+      ).resolves.toMatchObject({ kind: "authorization_url" });
 
       await fixture.provider.disconnect(lifecycle());
       await expect(fixture.provider.status()).resolves.toMatchObject({ state: "not_connected" });
