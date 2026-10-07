@@ -3839,6 +3839,7 @@ var RemoteMcpProvider = class {
           TOKEN_RESPONSE_BYTES
         );
         responseSettled = true;
+        this.#renewalDeferred = false;
         if (!response.ok) {
           if (response.status === 400 && json.error === "invalid_grant") {
             await this.#secrets.remove(OAUTH_SECRET_SUFFIX);

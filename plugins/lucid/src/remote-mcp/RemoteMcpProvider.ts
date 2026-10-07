@@ -1926,6 +1926,8 @@ export class RemoteMcpProvider {
           TOKEN_RESPONSE_BYTES,
         );
         responseSettled = true;
+        // A settled answer replaces any earlier outage; only the transient branch below sets it.
+        this.#renewalDeferred = false;
         if (!response.ok) {
           // invalid_grant means the refresh token is gone for good: spent, revoked, or expired.
           // Nothing remains to revoke, so drop it and let the user reconnect in one step.

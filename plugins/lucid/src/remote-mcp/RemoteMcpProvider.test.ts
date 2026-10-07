@@ -668,6 +668,26 @@ describe("RemoteMcpProvider", () => {
     ).resolves.toMatchObject({ content: [{ text: "ok" }] });
   });
 
+  it("drops the outage notice once a later refresh settles with a rejected grant", async () => {
+    const secrets = memorySecrets();
+    await authorize(new RemoteMcpProvider(POLICY, secrets.service, remote().fetchImplementation));
+    let mode: "outage" | "revoked" = "outage";
+    const outage = remote({ tokenGatewayError: { grant: "refresh_token", status: 503 } });
+    const revoked = remote({ refreshError: { status: 400, error: "invalid_grant" } });
+    const fetchImplementation = ((input: string | URL | Request, init?: RequestInit) =>
+      (mode === "outage" ? outage : revoked).fetchImplementation(input, init)) as typeof fetch;
+    const provider = new RemoteMcpProvider(POLICY, secrets.service, fetchImplementation);
+    await provider.prepare(lifecycle());
+    mode = "revoked";
+    await provider.prepare(lifecycle());
+    await expect(
+      provider.invoke("example.fetch", { documentId: "d" }, invocation(false)),
+    ).rejects.toThrow(/access is not prepared/u);
+    await expect(provider.status({ signal: new AbortController().signal })).resolves.toMatchObject({
+      state: "not_connected",
+    });
+  });
+
   it("fails a sign-in cleanly when the token endpoint returns a gateway error page", async () => {
     const provider = new RemoteMcpProvider(
       POLICY,
