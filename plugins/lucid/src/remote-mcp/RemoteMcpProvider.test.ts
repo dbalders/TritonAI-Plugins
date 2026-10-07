@@ -902,6 +902,43 @@ describe("RemoteMcpProvider", () => {
     ).resolves.toMatchObject({ content: [{ text: "streamed" }] });
   });
 
+  it("keeps refreshed access when a call made before the refresh is refused late", async () => {
+    const mock = remote();
+    let release: (response: Response) => void = () => undefined;
+    let held = false;
+    const fetchImplementation = (async (input: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (!held && body.includes('"tools/call"')) {
+        held = true;
+        return new Promise<Response>((resolve) => {
+          release = resolve;
+        });
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new RemoteMcpProvider(POLICY, memorySecrets().service, fetchImplementation);
+    await authorize(provider);
+    const stale = provider.invoke("example.fetch", { documentId: "d" }, invocation(false));
+    await vi.waitFor(() => expect(held).toBe(true));
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now + 3_600_000);
+    try {
+      await provider.prepare(lifecycle());
+    } finally {
+      clock.mockRestore();
+    }
+    release(json({ error: "invalid_token" }, 401));
+    await expect(stale).resolves.toMatchObject({
+      isError: true,
+      content: [{ text: /refreshed during this call/u }],
+    });
+    await expect(
+      provider.invoke("example.fetch", { documentId: "d" }, invocation(false)),
+    ).resolves.toMatchObject({ content: [{ text: "ok" }] });
+    const lastCall = mock.requests.filter(({ body }) => body?.method === "tools/call").at(-1)!;
+    expect(new Headers(lastCall.init?.headers).get("authorization")).toBe("Bearer access-2");
+  });
+
   it("refuses an oversize request locally without faulting an admitted write", async () => {
     const mock = remote();
     const provider = new RemoteMcpProvider(

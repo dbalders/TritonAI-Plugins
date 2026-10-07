@@ -229,6 +229,8 @@ class RemoteRejection extends ConfirmedRemoteFailure {}
 // A refusal of the request's shape or method rather than of the caller. During the handshake it
 // identifies a server on the other protocol revision.
 class ProtocolRejection extends RemoteRejection {}
+// The service rejected the access token before running the request.
+class AuthorizationExpired extends RemoteRejection {}
 // A revocation that failed after the grant was refreshed; the replacement token must stay queued.
 class RevocationIncomplete extends ConfirmedRemoteFailure {
   constructor(
@@ -1038,9 +1040,10 @@ export class RemoteMcpProvider {
     return headers;
   }
 
-  #acceptSessionId(response: Response): void {
+  #acceptSessionId(response: Response, access: AccessToken): void {
     const returned = response.headers.get("mcp-session-id");
-    if (returned === null) return;
+    // A response to a call made before a refresh replaced the session must not adopt its id.
+    if (returned === null || this.#accessToken !== access) return;
     if (
       returned.length === 0 ||
       returned.length > MAX_SESSION_ID_CHARS ||
@@ -1054,15 +1057,24 @@ export class RemoteMcpProvider {
     this.#sessionId = returned;
   }
 
-  #rejectHttpStatus(response: Response, method: string): never {
+  #rejectHttpStatus(response: Response, method: string, access: AccessToken): never {
+    // Only a response for the access token still in use may clear the shared session; a late
+    // answer to a call made before a refresh must not discard the refreshed access.
+    const current = this.#accessToken === access;
     if (response.status === 401) {
-      this.#accessToken = null;
-      this.#resetSession();
-      throw new RemoteRejection(`${this.#name} authorization expired. Reconnect if refresh fails.`);
+      if (current) {
+        this.#accessToken = null;
+        this.#resetSession();
+      }
+      throw new AuthorizationExpired(
+        `${this.#name} authorization expired. Reconnect if refresh fails.`,
+      );
     }
-    if (response.status === 404 && this.#sessionId) {
-      this.#sessionId = null;
-      this.#sessionVerified = false;
+    if (response.status === 404 && (this.#sessionId || !current)) {
+      if (current) {
+        this.#sessionId = null;
+        this.#sessionVerified = false;
+      }
       throw new SessionInvalidError(`${this.#name} MCP session expired.`);
     }
     if (response.status === 429) {
@@ -1119,8 +1131,8 @@ export class RemoteMcpProvider {
         (received.headers.get("content-type")?.toLowerCase() ?? "").includes("text/event-stream") &&
         eventStreamHasResponse(soFar, id),
     );
-    if (!response.ok) this.#rejectHttpStatus(response, method);
-    this.#acceptSessionId(response);
+    if (!response.ok) this.#rejectHttpStatus(response, method, access);
+    this.#acceptSessionId(response, access);
     const raw = parseMcpPayload(response, bytes, id, `${this.#name} MCP response`);
     if (raw.jsonrpc !== "2.0" || raw.id !== id) {
       throw new Error(`${this.#name} MCP returned a mismatched JSON-RPC response.`);
@@ -1154,8 +1166,8 @@ export class RemoteMcpProvider {
       },
       MCP_CONTROL_RESPONSE_BYTES,
     );
-    if (!response.ok) this.#rejectHttpStatus(response, method);
-    this.#acceptSessionId(response);
+    if (!response.ok) this.#rejectHttpStatus(response, method, access);
+    this.#acceptSessionId(response, access);
   }
 
   async #handshake(access: AccessToken, signal: AbortSignal): Promise<void> {
@@ -2201,6 +2213,17 @@ export class RemoteMcpProvider {
     }
     // A 404 for a known session means the service never dispatched the call, so even a write
     // can resend.
+    // Access was refreshed while this call was in flight. The service refused the stale call
+    // before running it, so report that instead of rebuilding the session on the old token.
+    if (
+      (failure instanceof SessionInvalidError || failure instanceof AuthorizationExpired) &&
+      this.#accessToken !== access
+    ) {
+      assertAccessCurrent();
+      return rejectedToolResult(
+        `${this.#name} access was refreshed during this call, which was not run. Try again.`,
+      );
+    }
     if (failure instanceof SessionInvalidError) {
       try {
         await this.#initializeSession(access, commitSignal);

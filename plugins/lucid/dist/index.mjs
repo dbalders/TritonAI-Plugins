@@ -2504,6 +2504,8 @@ var RemoteRejection = class extends ConfirmedRemoteFailure {
 };
 var ProtocolRejection = class extends RemoteRejection {
 };
+var AuthorizationExpired = class extends RemoteRejection {
+};
 var RevocationIncomplete = class extends ConfirmedRemoteFailure {
   constructor(message, replacement) {
     super(message);
@@ -3111,9 +3113,9 @@ var RemoteMcpProvider = class {
     if (this.#sessionId) headers["mcp-session-id"] = this.#sessionId;
     return headers;
   }
-  #acceptSessionId(response) {
+  #acceptSessionId(response, access) {
     const returned = response.headers.get("mcp-session-id");
-    if (returned === null) return;
+    if (returned === null || this.#accessToken !== access) return;
     if (returned.length === 0 || returned.length > MAX_SESSION_ID_CHARS || !/^[\x21-\x7E]+$/u.test(returned)) {
       throw new Error(`${this.#name} MCP returned an invalid session identifier.`);
     }
@@ -3122,15 +3124,22 @@ var RemoteMcpProvider = class {
     }
     this.#sessionId = returned;
   }
-  #rejectHttpStatus(response, method) {
+  #rejectHttpStatus(response, method, access) {
+    const current = this.#accessToken === access;
     if (response.status === 401) {
-      this.#accessToken = null;
-      this.#resetSession();
-      throw new RemoteRejection(`${this.#name} authorization expired. Reconnect if refresh fails.`);
+      if (current) {
+        this.#accessToken = null;
+        this.#resetSession();
+      }
+      throw new AuthorizationExpired(
+        `${this.#name} authorization expired. Reconnect if refresh fails.`
+      );
     }
-    if (response.status === 404 && this.#sessionId) {
-      this.#sessionId = null;
-      this.#sessionVerified = false;
+    if (response.status === 404 && (this.#sessionId || !current)) {
+      if (current) {
+        this.#sessionId = null;
+        this.#sessionVerified = false;
+      }
       throw new SessionInvalidError(`${this.#name} MCP session expired.`);
     }
     if (response.status === 429) {
@@ -3176,8 +3185,8 @@ var RemoteMcpProvider = class {
       timeoutMs,
       (received, soFar) => (received.headers.get("content-type")?.toLowerCase() ?? "").includes("text/event-stream") && eventStreamHasResponse(soFar, id)
     );
-    if (!response.ok) this.#rejectHttpStatus(response, method);
-    this.#acceptSessionId(response);
+    if (!response.ok) this.#rejectHttpStatus(response, method, access);
+    this.#acceptSessionId(response, access);
     const raw = parseMcpPayload(response, bytes, id, `${this.#name} MCP response`);
     if (raw.jsonrpc !== "2.0" || raw.id !== id) {
       throw new Error(`${this.#name} MCP returned a mismatched JSON-RPC response.`);
@@ -3207,8 +3216,8 @@ var RemoteMcpProvider = class {
       },
       MCP_CONTROL_RESPONSE_BYTES
     );
-    if (!response.ok) this.#rejectHttpStatus(response, method);
-    this.#acceptSessionId(response);
+    if (!response.ok) this.#rejectHttpStatus(response, method, access);
+    this.#acceptSessionId(response, access);
   }
   async #handshake(access, signal) {
     this.#protocol = null;
@@ -4071,6 +4080,12 @@ var RemoteMcpProvider = class {
       return await call();
     } catch (error) {
       failure = error;
+    }
+    if ((failure instanceof SessionInvalidError || failure instanceof AuthorizationExpired) && this.#accessToken !== access) {
+      assertAccessCurrent();
+      return rejectedToolResult(
+        `${this.#name} access was refreshed during this call, which was not run. Try again.`
+      );
     }
     if (failure instanceof SessionInvalidError) {
       try {
