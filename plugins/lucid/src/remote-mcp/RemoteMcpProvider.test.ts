@@ -137,6 +137,8 @@ interface FixtureOptions {
   readonly revocationNeedsBearer?: boolean;
   /** tools/call answers over an event stream that stays open after the response. */
   readonly openStream?: boolean;
+  /** Each initialize issues a new session id, and other requests must carry the current one. */
+  readonly rotateSessions?: boolean;
   /** The token endpoint answers with a gateway HTML error page. */
   readonly tokenGatewayError?: {
     readonly grant: "authorization_code" | "refresh_token";
@@ -163,6 +165,7 @@ function remote(options: FixtureOptions = {}) {
     form?: URLSearchParams;
   }> = [];
   let tokenSerial = 0;
+  let sessionSerial = 0;
   const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     const contentType = new Headers(init?.headers).get("content-type") ?? "";
@@ -241,9 +244,16 @@ function remote(options: FixtureOptions = {}) {
     }
     if (url === FULL || url === READONLY) {
       if (!body) throw new Error("missing MCP body");
+      if (options.rotateSessions) {
+        if (body.method === "initialize") sessionSerial += 1;
+        else if (new Headers(init?.headers).get("mcp-session-id") !== `session-${sessionSerial}`) {
+          return json({ error: "missing or stale session" }, 400);
+        }
+      }
+      const session = options.rotateSessions ? `session-${sessionSerial}` : "session-1";
       const respond = (result: unknown) => {
         const payload = { jsonrpc: "2.0", id: body.id, result };
-        if (!options.eventStream) return json(payload, 200, { "mcp-session-id": "session-1" });
+        if (!options.eventStream) return json(payload, 200, { "mcp-session-id": session });
         const progress = JSON.stringify({
           jsonrpc: "2.0",
           method: "notifications/progress",
@@ -1068,6 +1078,50 @@ describe("RemoteMcpProvider", () => {
       "refresh-1",
     );
     expect(secrets.values.has(OAUTH_SECRET_SUFFIX)).toBe(false);
+  });
+
+  it("does not let a late 404 for an expired session clear the session that replaced it", async () => {
+    const mock = remote({ rotateSessions: true });
+    let releaseSecond: (response: Response) => void = () => undefined;
+    let staleCalls = 0;
+    let initializes = 0;
+    const fetchImplementation = (async (input: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      const session = new Headers(init?.headers).get("mcp-session-id");
+      if (body.includes('"tools/call"') && session === "session-1") {
+        staleCalls += 1;
+        // The server expired session-1: answer the first call now and the second one late.
+        if (staleCalls === 1) return json({ error: "session not found" }, 404);
+        return new Promise<Response>((resolve) => {
+          releaseSecond = resolve;
+        });
+      }
+      if (body.includes('"initialize"')) {
+        initializes += 1;
+        const response = await mock.fetchImplementation(input, init);
+        // Deliver the second call's stale 404 once recovery holds the new session id.
+        if (initializes === 2) releaseSecond(json({ error: "session not found" }, 404));
+        return response;
+      }
+      if (body.includes('"notifications/initialized"') && initializes === 2) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new RemoteMcpProvider(POLICY, memorySecrets().service, fetchImplementation);
+    await authorize(provider);
+    const first = provider.invoke("example.fetch", { documentId: "a" }, invocation(false));
+    const second = provider.invoke("example.fetch", { documentId: "b" }, invocation(false));
+    await expect(first).resolves.toMatchObject({ content: [{ text: "ok" }] });
+    await expect(second).resolves.toMatchObject({ content: [{ text: "ok" }] });
+    expect(
+      mock.requests.filter(
+        ({ url, body, init }) =>
+          (url === FULL || url === READONLY) &&
+          body?.method !== "initialize" &&
+          !new Headers(init?.headers).get("mcp-session-id"),
+      ),
+    ).toEqual([]);
   });
 
   it("refuses an oversize request locally without faulting an admitted write", async () => {

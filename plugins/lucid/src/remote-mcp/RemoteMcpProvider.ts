@@ -1045,7 +1045,7 @@ export class RemoteMcpProvider {
     return headers;
   }
 
-  #acceptSessionId(response: Response, access: AccessToken): void {
+  #acceptSessionId(response: Response, access: AccessToken, sentSession: string | null): void {
     const returned = response.headers.get("mcp-session-id");
     // A response to a call made before a refresh replaced the session must not adopt its id.
     if (returned === null || this.#accessToken !== access) return;
@@ -1056,13 +1056,21 @@ export class RemoteMcpProvider {
     ) {
       throw new Error(`${this.#name} MCP returned an invalid session identifier.`);
     }
-    if (this.#sessionId !== null && this.#sessionId !== returned) {
+    // The session changed after this request was sent (another call re-established it); the
+    // late response must not overwrite the replacement.
+    if (this.#sessionId !== sentSession) return;
+    if (sentSession !== null && sentSession !== returned) {
       throw new Error(`${this.#name} MCP changed session identifiers unexpectedly.`);
     }
     this.#sessionId = returned;
   }
 
-  #rejectHttpStatus(response: Response, method: string, access: AccessToken): never {
+  #rejectHttpStatus(
+    response: Response,
+    method: string,
+    access: AccessToken,
+    sentSession: string | null,
+  ): never {
     // Only a response for the access token still in use may clear the shared session; a late
     // answer to a call made before a refresh must not discard the refreshed access.
     const current = this.#accessToken === access;
@@ -1075,8 +1083,10 @@ export class RemoteMcpProvider {
         `${this.#name} authorization expired. Reconnect if refresh fails.`,
       );
     }
-    if (response.status === 404 && (this.#sessionId || !current)) {
-      if (current) {
+    if (response.status === 404 && (sentSession !== null || !current)) {
+      // Only the session this request used is gone. A late 404 for a session another call has
+      // already replaced must not clear the replacement.
+      if (current && this.#sessionId === sentSession) {
         this.#sessionId = null;
         this.#sessionVerified = false;
       }
@@ -1127,6 +1137,7 @@ export class RemoteMcpProvider {
       // Refused locally before anything is sent, so even an admitted write did not happen.
       throw new RemoteRejection(`${this.#name} MCP request exceeded the allowed size.`);
     }
+    const sentSession = this.#sessionId;
     const { response, bytes } = await this.#request(
       this.#endpointUrl(access.endpoint),
       { method: "POST", headers: this.#mcpHeaders(access, method, params), body, signal },
@@ -1136,8 +1147,8 @@ export class RemoteMcpProvider {
         (received.headers.get("content-type")?.toLowerCase() ?? "").includes("text/event-stream") &&
         eventStreamHasResponse(soFar, id),
     );
-    if (!response.ok) this.#rejectHttpStatus(response, method, access);
-    this.#acceptSessionId(response, access);
+    if (!response.ok) this.#rejectHttpStatus(response, method, access, sentSession);
+    this.#acceptSessionId(response, access, sentSession);
     const raw = parseMcpPayload(response, bytes, id, `${this.#name} MCP response`);
     if (raw.jsonrpc !== "2.0" || raw.id !== id) {
       throw new Error(`${this.#name} MCP returned a mismatched JSON-RPC response.`);
@@ -1161,6 +1172,7 @@ export class RemoteMcpProvider {
   }
 
   async #mcpNotify(access: AccessToken, method: string, signal: AbortSignal): Promise<void> {
+    const sentSession = this.#sessionId;
     const { response } = await this.#request(
       this.#endpointUrl(access.endpoint),
       {
@@ -1171,8 +1183,8 @@ export class RemoteMcpProvider {
       },
       MCP_CONTROL_RESPONSE_BYTES,
     );
-    if (!response.ok) this.#rejectHttpStatus(response, method, access);
-    this.#acceptSessionId(response, access);
+    if (!response.ok) this.#rejectHttpStatus(response, method, access, sentSession);
+    this.#acceptSessionId(response, access, sentSession);
   }
 
   async #handshake(access: AccessToken, signal: AbortSignal): Promise<void> {

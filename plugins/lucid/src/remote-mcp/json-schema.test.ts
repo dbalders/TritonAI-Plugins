@@ -119,6 +119,9 @@ describe("compatibleUpstreamSchema", () => {
     expect(compatibleUpstreamSchema({ ...pinned, additionalProperties: false }, pinned)).toBe(
       false,
     );
+    expect(compatibleUpstreamSchema({ ...pinned, allOf: [{ required: ["mode"] }] }, pinned)).toBe(
+      false,
+    );
   });
 });
 

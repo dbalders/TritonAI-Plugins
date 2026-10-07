@@ -281,13 +281,23 @@ function compileSchema(root) {
 var STRUCTURAL_SCHEMA_KEYS = /* @__PURE__ */ new Set([
   "$ref",
   "additionalProperties",
+  "allOf",
   "anyOf",
   "default",
+  "dependentRequired",
+  "dependentSchemas",
+  "else",
   "enum",
+  "if",
   "items",
+  "not",
   "oneOf",
+  "patternProperties",
+  "prefixItems",
   "properties",
+  "propertyNames",
   "required",
+  "then",
   "type"
 ]);
 function schemaContract(value, root = value, activeReferences = /* @__PURE__ */ new Set()) {
@@ -3118,18 +3128,19 @@ var RemoteMcpProvider = class {
     if (this.#sessionId) headers["mcp-session-id"] = this.#sessionId;
     return headers;
   }
-  #acceptSessionId(response, access) {
+  #acceptSessionId(response, access, sentSession) {
     const returned = response.headers.get("mcp-session-id");
     if (returned === null || this.#accessToken !== access) return;
     if (returned.length === 0 || returned.length > MAX_SESSION_ID_CHARS || !/^[\x21-\x7E]+$/u.test(returned)) {
       throw new Error(`${this.#name} MCP returned an invalid session identifier.`);
     }
-    if (this.#sessionId !== null && this.#sessionId !== returned) {
+    if (this.#sessionId !== sentSession) return;
+    if (sentSession !== null && sentSession !== returned) {
       throw new Error(`${this.#name} MCP changed session identifiers unexpectedly.`);
     }
     this.#sessionId = returned;
   }
-  #rejectHttpStatus(response, method, access) {
+  #rejectHttpStatus(response, method, access, sentSession) {
     const current = this.#accessToken === access;
     if (response.status === 401) {
       if (current) {
@@ -3140,8 +3151,8 @@ var RemoteMcpProvider = class {
         `${this.#name} authorization expired. Reconnect if refresh fails.`
       );
     }
-    if (response.status === 404 && (this.#sessionId || !current)) {
-      if (current) {
+    if (response.status === 404 && (sentSession !== null || !current)) {
+      if (current && this.#sessionId === sentSession) {
         this.#sessionId = null;
         this.#sessionVerified = false;
       }
@@ -3183,6 +3194,7 @@ var RemoteMcpProvider = class {
     if (Buffer.byteLength(body) > MAX_INPUT_BYTES) {
       throw new RemoteRejection(`${this.#name} MCP request exceeded the allowed size.`);
     }
+    const sentSession = this.#sessionId;
     const { response, bytes } = await this.#request(
       this.#endpointUrl(access.endpoint),
       { method: "POST", headers: this.#mcpHeaders(access, method, params), body, signal },
@@ -3190,8 +3202,8 @@ var RemoteMcpProvider = class {
       timeoutMs,
       (received, soFar) => (received.headers.get("content-type")?.toLowerCase() ?? "").includes("text/event-stream") && eventStreamHasResponse(soFar, id)
     );
-    if (!response.ok) this.#rejectHttpStatus(response, method, access);
-    this.#acceptSessionId(response, access);
+    if (!response.ok) this.#rejectHttpStatus(response, method, access, sentSession);
+    this.#acceptSessionId(response, access, sentSession);
     const raw = parseMcpPayload(response, bytes, id, `${this.#name} MCP response`);
     if (raw.jsonrpc !== "2.0" || raw.id !== id) {
       throw new Error(`${this.#name} MCP returned a mismatched JSON-RPC response.`);
@@ -3211,6 +3223,7 @@ var RemoteMcpProvider = class {
     return raw.result;
   }
   async #mcpNotify(access, method, signal) {
+    const sentSession = this.#sessionId;
     const { response } = await this.#request(
       this.#endpointUrl(access.endpoint),
       {
@@ -3221,8 +3234,8 @@ var RemoteMcpProvider = class {
       },
       MCP_CONTROL_RESPONSE_BYTES
     );
-    if (!response.ok) this.#rejectHttpStatus(response, method, access);
-    this.#acceptSessionId(response, access);
+    if (!response.ok) this.#rejectHttpStatus(response, method, access, sentSession);
+    this.#acceptSessionId(response, access, sentSession);
   }
   async #handshake(access, signal) {
     this.#protocol = null;

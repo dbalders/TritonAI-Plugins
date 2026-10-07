@@ -325,13 +325,23 @@ export function compileSchema(root: JsonSchema): CompiledSchema {
 const STRUCTURAL_SCHEMA_KEYS = new Set([
   "$ref",
   "additionalProperties",
+  "allOf",
   "anyOf",
   "default",
+  "dependentRequired",
+  "dependentSchemas",
+  "else",
   "enum",
+  "if",
   "items",
+  "not",
   "oneOf",
+  "patternProperties",
+  "prefixItems",
   "properties",
+  "propertyNames",
   "required",
+  "then",
   "type",
 ]);
 
