@@ -3406,7 +3406,7 @@ var RemoteMcpProvider = class {
     } catch {
       throw new RevocationIncomplete(failed().message, replacement);
     }
-    if (response.status === 401) return;
+    if (response.status === 401 && !endpoint) return;
     if (!response.ok) throw new RevocationIncomplete(failed().message, replacement);
     if (current !== grant.refreshToken) {
       await this.#postRevocation(discovery, grant.refreshToken, grant.clientId, signal, access).then(() => void 0).catch(() => void 0);

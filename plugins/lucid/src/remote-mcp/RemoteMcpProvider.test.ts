@@ -946,6 +946,22 @@ describe("RemoteMcpProvider", () => {
       ]);
     });
 
+    it("keeps a full-server grant queued when its revocation is refused with 401", async () => {
+      const secrets = memorySecrets();
+      const provider = new RemoteMcpProvider(
+        BEARER_POLICY,
+        secrets.service,
+        remote({ revocationNeedsBearer: true, revokeStatus: 401 }).fetchImplementation,
+      );
+      await authorize(provider, ["read", "write"]);
+      await provider.disconnect(lifecycle());
+      const grants = JSON.parse(secrets.values.get(REVOCATION_SECRET_SUFFIX)!).grants;
+      expect(grants.map((grant: { refreshToken: string }) => grant.refreshToken)).toEqual([
+        "refresh-1",
+        "refresh-2",
+      ]);
+    });
+
     it("drops queued grants that are already invalid or that Lucid will not revoke", async () => {
       const secrets = memorySecrets();
       secrets.values.set(

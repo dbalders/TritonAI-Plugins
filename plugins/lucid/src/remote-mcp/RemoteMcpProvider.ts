@@ -1398,9 +1398,11 @@ export class RemoteMcpProvider {
     } catch {
       throw new RevocationIncomplete(failed().message, replacement);
     }
-    // A freshly issued access token is only refused when the service will not revoke this grant's
-    // endpoint, so retrying cannot help.
-    if (response.status === 401) return;
+    // Endpoints the service cannot revoke are skipped above. For a queued grant from an earlier
+    // version, whose endpoint is unknown, a 401 to its own fresh access token means the service
+    // will not revoke it, so retrying cannot help. For a known revocable endpoint a 401 is an
+    // authentication failure, not proof the grant is gone: keep it (and any replacement) queued.
+    if (response.status === 401 && !endpoint) return;
     if (!response.ok) throw new RevocationIncomplete(failed().message, replacement);
     if (current !== grant.refreshToken) {
       // The service may keep honoring a spent refresh token; revoke it as well, best effort.

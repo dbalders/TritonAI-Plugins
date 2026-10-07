@@ -29,11 +29,13 @@ async function getJson(url) {
 }
 
 function openBrowser(url) {
+  // On Windows, `cmd /c start` would treat each "&" in the URL as a command separator; the URL
+  // protocol handler receives the whole URL as one argument.
   const [command, args] =
     process.platform === "darwin"
       ? ["open", [url]]
       : process.platform === "win32"
-        ? ["cmd", ["/c", "start", "", url]]
+        ? ["rundll32", ["url.dll,FileProtocolHandler", url]]
         : ["xdg-open", [url]];
   spawn(command, args, { stdio: "ignore", detached: true }).unref();
 }
