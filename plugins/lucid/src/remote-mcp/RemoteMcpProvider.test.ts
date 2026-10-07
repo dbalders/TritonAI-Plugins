@@ -129,6 +129,7 @@ interface FixtureOptions {
   readonly refuseInitialize?: boolean;
   readonly refreshError?: { readonly status: number; readonly error: string };
   readonly omitExpiry?: boolean;
+  readonly expiresIn?: number;
   readonly registrationExtras?: Record<string, unknown>;
   readonly revokeStatus?: number;
   readonly advertiseIssuer?: boolean;
@@ -230,7 +231,7 @@ function remote(options: FixtureOptions = {}) {
         access_token: `access-${tokenSerial}`,
         refresh_token: `refresh-${tokenSerial}`,
         token_type: "bearer",
-        ...(options.omitExpiry ? {} : { expires_in: 3600 }),
+        ...(options.omitExpiry ? {} : { expires_in: options.expiresIn ?? 3600 }),
       });
     }
     if (url === `${ORIGIN}/oauth/revoke`) {
@@ -999,6 +1000,86 @@ describe("RemoteMcpProvider", () => {
       provider.invoke("example.fetch", { documentId: "d" }, invocation(false)),
     ).resolves.toMatchObject({ content: [{ text: "streamed" }] });
   });
+
+  it("uses 60-second tokens before proactively renewing them", async () => {
+    const mock = remote({ expiresIn: 60 });
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      mock.fetchImplementation,
+    );
+    const issuedAt = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(issuedAt);
+    try {
+      await authorize(provider);
+      await provider.prepare(lifecycle());
+      await expect(
+        provider.invoke("example.fetch", { documentId: "d" }, invocation(false)),
+      ).resolves.toMatchObject({ content: [{ text: "ok" }] });
+      clock.mockReturnValue(issuedAt + 44_000);
+      await provider.prepare(lifecycle());
+      expect(mock.requests.filter(({ url }) => url.endsWith("/oauth/token"))).toHaveLength(1);
+      clock.mockReturnValue(issuedAt + 45_000);
+      await provider.prepare(lifecycle());
+      expect(mock.requests.filter(({ url }) => url.endsWith("/oauth/token"))).toHaveLength(2);
+      await expect(
+        provider.invoke("example.fetch", { documentId: "d" }, invocation(false)),
+      ).resolves.toMatchObject({ content: [{ text: "ok" }] });
+      const lastCall = mock.requests.filter(({ body }) => body?.method === "tools/call").at(-1)!;
+      expect(new Headers(lastCall.init?.headers).get("authorization")).toBe("Bearer access-2");
+      clock.mockReturnValue(issuedAt + 101_000);
+      await expect(
+        provider.invoke("example.fetch", { documentId: "d" }, invocation(false)),
+      ).rejects.toThrow(/access is not prepared/u);
+    } finally {
+      clock.mockRestore();
+      await provider.close();
+    }
+  });
+
+  it.each(["reconnect", "refresh"] as const)(
+    "does not dispatch an admitted write after a %s replaces its access",
+    async (change) => {
+      const mock = remote({ revokeStatus: 503 });
+      const provider = new RemoteMcpProvider(
+        POLICY,
+        memorySecrets().service,
+        mock.fetchImplementation,
+      );
+      await authorize(provider, ["read", "write"]);
+      let release: (signal: AbortSignal) => void = () => undefined;
+      const context = invocation(true);
+      context.beginCommit = vi.fn(
+        () =>
+          new Promise<AbortSignal>((resolve) => {
+            release = resolve;
+          }),
+      );
+      const stale = provider.invoke("example.create", { documentId: "d" }, context);
+      expect(context.beginCommit).toHaveBeenCalledOnce();
+      if (change === "reconnect") {
+        await provider.disconnect(lifecycle());
+        await authorize(provider, ["read", "write"]);
+      } else {
+        const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 3_600_000);
+        try {
+          await provider.prepare(lifecycle());
+        } finally {
+          clock.mockRestore();
+        }
+      }
+      release(new AbortController().signal);
+      await expect(stale).resolves.toMatchObject({
+        isError: true,
+        content: [{ text: /changed before this call was sent.*not run/u }],
+      });
+      expect(mock.requests.filter(({ body }) => body?.method === "tools/call")).toHaveLength(0);
+      await expect(
+        provider.invoke("example.create", { documentId: "d" }, invocation(true)),
+      ).resolves.toMatchObject({ content: [{ text: "ok" }] });
+      await provider.close();
+    },
+  );
 
   it("keeps refreshed access when a call made before the refresh is refused late", async () => {
     const mock = remote();

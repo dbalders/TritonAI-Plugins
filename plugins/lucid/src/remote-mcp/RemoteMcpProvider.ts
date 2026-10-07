@@ -60,7 +60,10 @@ const REVOCATION_RETRY_BUDGET_MS = 5_000;
 const FLOW_LIFETIME_MS = 5 * 60_000;
 const FLOW_CALLBACK_CLAIM_MS = 60_000;
 const FLOW_POLL_SECONDS = 2;
+// Renew this long before an access token expires, capped at a quarter of its lifetime so even a
+// short-lived token is usable for most of it. Calls are admitted until shortly before expiry.
 const ACCESS_TOKEN_SKEW_MS = 60_000;
+const ACCESS_TOKEN_CALL_MARGIN_MS = 5_000;
 const DEFAULT_ACCESS_TOKEN_SECONDS = 3_600;
 const METADATA_RESPONSE_BYTES = 128 * 1024;
 const TOKEN_RESPONSE_BYTES = 128 * 1024;
@@ -184,6 +187,8 @@ interface Credential {
 interface AccessToken {
   readonly value: string;
   readonly expiresAt: number;
+  /** When prepare should renew this token. */
+  readonly refreshAt: number;
   readonly endpoint: RemoteMcpEndpoint;
 }
 
@@ -1446,6 +1451,7 @@ export class RemoteMcpProvider {
     if (json.scope !== undefined && (typeof json.scope !== "string" || json.scope.length > 4_096)) {
       throw new Error(`${this.#name} OAuth scope grant is invalid.`);
     }
+    const issuedAt = Date.now();
     return {
       credential: {
         version: 1,
@@ -1456,7 +1462,12 @@ export class RemoteMcpProvider {
         refreshToken,
         updatedAt: new Date().toISOString(),
       },
-      access: { value: accessToken, expiresAt: Date.now() + expiresIn * 1_000, endpoint },
+      access: {
+        value: accessToken,
+        expiresAt: issuedAt + expiresIn * 1_000,
+        refreshAt: issuedAt + expiresIn * 1_000 - Math.min(ACCESS_TOKEN_SKEW_MS, expiresIn * 250),
+        endpoint,
+      },
     };
   }
 
@@ -1895,7 +1906,7 @@ export class RemoteMcpProvider {
         throw new Error(`${this.#name} credential state is uncertain.`);
       }
       const access = this.#accessToken;
-      if (access && access.expiresAt - ACCESS_TOKEN_SKEW_MS > Date.now()) {
+      if (access && access.refreshAt > Date.now()) {
         await this.#initializeSession(access, context?.signal ?? new AbortController().signal);
         return;
       }
@@ -2186,7 +2197,7 @@ export class RemoteMcpProvider {
     const access = this.#accessToken;
     if (
       !access ||
-      access.expiresAt - ACCESS_TOKEN_SKEW_MS <= Date.now() ||
+      access.expiresAt - ACCESS_TOKEN_CALL_MARGIN_MS <= Date.now() ||
       !this.#sessionVerified ||
       this.#sessionAccess !== access ||
       this.#closed ||
@@ -2232,6 +2243,18 @@ export class RemoteMcpProvider {
       }
     };
     const call = async (): Promise<JsonValue> => {
+      // Reconnect or refresh replaced the captured access while this call awaited admission.
+      // Check every dispatch, including a retry, so superseded access is never sent.
+      if (
+        generation !== this.#generation ||
+        this.#accessToken !== access ||
+        this.#closed ||
+        this.#disconnecting
+      ) {
+        return rejectedToolResult(
+          `${this.#name} connection changed before this call was sent, so it was not run.`,
+        );
+      }
       // Re-checked on every attempt: a recovered session re-verifies the catalog and may have
       // paused or dropped this tool.
       assertAvailable();

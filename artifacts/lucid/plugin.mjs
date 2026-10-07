@@ -2492,6 +2492,7 @@ var FLOW_LIFETIME_MS = 5 * 6e4;
 var FLOW_CALLBACK_CLAIM_MS = 6e4;
 var FLOW_POLL_SECONDS = 2;
 var ACCESS_TOKEN_SKEW_MS = 6e4;
+var ACCESS_TOKEN_CALL_MARGIN_MS = 5e3;
 var DEFAULT_ACCESS_TOKEN_SECONDS = 3600;
 var METADATA_RESPONSE_BYTES = 128 * 1024;
 var TOKEN_RESPONSE_BYTES = 128 * 1024;
@@ -3433,6 +3434,7 @@ var RemoteMcpProvider = class {
     if (json.scope !== void 0 && (typeof json.scope !== "string" || json.scope.length > 4096)) {
       throw new Error(`${this.#name} OAuth scope grant is invalid.`);
     }
+    const issuedAt = Date.now();
     return {
       credential: {
         version: 1,
@@ -3443,7 +3445,12 @@ var RemoteMcpProvider = class {
         refreshToken,
         updatedAt: (/* @__PURE__ */ new Date()).toISOString()
       },
-      access: { value: accessToken, expiresAt: Date.now() + expiresIn * 1e3, endpoint }
+      access: {
+        value: accessToken,
+        expiresAt: issuedAt + expiresIn * 1e3,
+        refreshAt: issuedAt + expiresIn * 1e3 - Math.min(ACCESS_TOKEN_SKEW_MS, expiresIn * 250),
+        endpoint
+      }
     };
   }
   #validateCapabilities(capabilities) {
@@ -3805,7 +3812,7 @@ var RemoteMcpProvider = class {
         throw new Error(`${this.#name} credential state is uncertain.`);
       }
       const access = this.#accessToken;
-      if (access && access.expiresAt - ACCESS_TOKEN_SKEW_MS > Date.now()) {
+      if (access && access.refreshAt > Date.now()) {
         await this.#initializeSession(access, context?.signal ?? new AbortController().signal);
         return;
       }
@@ -4054,7 +4061,7 @@ var RemoteMcpProvider = class {
     }
     const generation = this.#generation;
     const access = this.#accessToken;
-    if (!access || access.expiresAt - ACCESS_TOKEN_SKEW_MS <= Date.now() || !this.#sessionVerified || this.#sessionAccess !== access || this.#closed || this.#disconnecting || this.#uncertainCredentialState) {
+    if (!access || access.expiresAt - ACCESS_TOKEN_CALL_MARGIN_MS <= Date.now() || !this.#sessionVerified || this.#sessionAccess !== access || this.#closed || this.#disconnecting || this.#uncertainCredentialState) {
       throw new IntegrationProviderPublicError(
         this.#renewalDeferred && !this.#uncertainCredentialState ? `${this.#name} was briefly unavailable while renewing access, so this call was not run. Try again in a moment.` : `${this.#name} access is not prepared. Reconnect if this continues.`
       );
@@ -4090,6 +4097,11 @@ var RemoteMcpProvider = class {
       }
     };
     const call = async () => {
+      if (generation !== this.#generation || this.#accessToken !== access || this.#closed || this.#disconnecting) {
+        return rejectedToolResult(
+          `${this.#name} connection changed before this call was sent, so it was not run.`
+        );
+      }
       assertAvailable();
       const result = asRecord(
         await this.#mcpRpc(

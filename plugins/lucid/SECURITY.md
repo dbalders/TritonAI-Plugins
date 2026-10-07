@@ -11,9 +11,10 @@ The local manifest, tool schemas, names, descriptions, and effect classification
 Lucid's live tool list can verify the reviewed contract but cannot add tools, broaden schemas, or
 turn a write into a read. Lucid remains the resource authorization boundary for the connected user.
 With only Read selected, the grant is for Lucid's read-only server, which cannot change content.
-The SDK host remains the approval and commit-admission boundary for every write. Nothing is ever
-replayed automatically after admission. A document write whose outcome is unknown (timeout, dropped
-connection, server error) returns an error result telling the agent to read the document before
+The SDK host remains the approval and commit-admission boundary for every write. A write is retried
+automatically only when the service shows the first request was never run (an expired session
+answered before dispatch); a write whose outcome is unknown is never resent. A document write whose
+outcome is unknown (timeout, dropped connection, server error) returns an error result telling the agent to read the document before
 retrying, so the plugin stays available. Only an ambiguous sign-in, refresh, or disconnect, where
 the stored credential itself may be wrong, is reported as an unknown external commit outcome and
 needs a reset.
