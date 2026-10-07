@@ -1983,7 +1983,9 @@ export class RemoteMcpProvider {
     );
     const retrySignal = AbortSignal.any([signal, budget]);
     const remaining: PendingRevocation[] = [];
-    for (const grant of await this.#readPendingRevocations()) {
+    const grants = await this.#readPendingRevocations();
+    for (let index = 0; index < grants.length; index += 1) {
+      const grant = grants[index]!;
       if (budget.aborted) {
         remaining.push(grant);
         continue;
@@ -1991,10 +1993,16 @@ export class RemoteMcpProvider {
       try {
         await this.#revokeGrant(discovery, grant, retrySignal);
       } catch (error) {
-        if (signal.aborted) throw error;
         remaining.push(grant);
         if (error instanceof RevocationIncomplete && error.replacement) {
           remaining.push(error.replacement);
+        }
+        if (signal.aborted) {
+          // Keep every grant still owed, including a replacement this attempt just received,
+          // before cancellation propagates; otherwise a rotated token could be lost unrevoked.
+          remaining.push(...grants.slice(index + 1));
+          await this.#writePendingRevocations(remaining);
+          throw error;
         }
       }
     }

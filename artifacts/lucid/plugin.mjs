@@ -3885,7 +3885,9 @@ var RemoteMcpProvider = class {
     );
     const retrySignal = AbortSignal.any([signal, budget]);
     const remaining = [];
-    for (const grant of await this.#readPendingRevocations()) {
+    const grants = await this.#readPendingRevocations();
+    for (let index = 0; index < grants.length; index += 1) {
+      const grant = grants[index];
       if (budget.aborted) {
         remaining.push(grant);
         continue;
@@ -3893,10 +3895,14 @@ var RemoteMcpProvider = class {
       try {
         await this.#revokeGrant(discovery, grant, retrySignal);
       } catch (error) {
-        if (signal.aborted) throw error;
         remaining.push(grant);
         if (error instanceof RevocationIncomplete && error.replacement) {
           remaining.push(error.replacement);
+        }
+        if (signal.aborted) {
+          remaining.push(...grants.slice(index + 1));
+          await this.#writePendingRevocations(remaining);
+          throw error;
         }
       }
     }

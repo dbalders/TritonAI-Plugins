@@ -864,6 +864,44 @@ describe("RemoteMcpProvider", () => {
       ]);
     });
 
+    it("keeps a refreshed replacement and unprocessed grants when cancelled mid-revocation", async () => {
+      const secrets = memorySecrets();
+      secrets.values.set(
+        REVOCATION_SECRET_SUFFIX,
+        JSON.stringify({
+          version: 1,
+          origin: ORIGIN,
+          grants: [
+            { clientId: "old", refreshToken: "queued-1", endpoint: "/mcp" },
+            { clientId: "old", refreshToken: "queued-2", endpoint: "/mcp" },
+          ],
+        }),
+      );
+      const mock = remote({ revocationNeedsBearer: true });
+      const controller = new AbortController();
+      const fetchImplementation = (async (input: string | URL | Request, init?: RequestInit) => {
+        // Cancel the lifecycle as the first revocation is sent, after its grant was refreshed.
+        if (String(input).endsWith("/oauth/revoke")) {
+          controller.abort();
+          throw new DOMException("aborted", "AbortError");
+        }
+        return mock.fetchImplementation(input, init);
+      }) as unknown as typeof fetch;
+      const provider = new RemoteMcpProvider(BEARER_POLICY, secrets.service, fetchImplementation);
+      await expect(
+        provider.disconnect({
+          signal: controller.signal,
+          beginCommit: async () => controller.signal,
+        }),
+      ).resolves.toBeUndefined();
+      const grants = JSON.parse(secrets.values.get(REVOCATION_SECRET_SUFFIX)!).grants;
+      expect(grants.map((grant: { refreshToken: string }) => grant.refreshToken)).toEqual([
+        "queued-1",
+        "refresh-1",
+        "queued-2",
+      ]);
+    });
+
     it("drops queued grants that are already invalid or that Lucid will not revoke", async () => {
       const secrets = memorySecrets();
       secrets.values.set(
