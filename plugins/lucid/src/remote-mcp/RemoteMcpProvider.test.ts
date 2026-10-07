@@ -1,0 +1,822 @@
+import { describe, expect, it, vi } from "vite-plus/test";
+
+import type {
+  IntegrationInvocationContext,
+  IntegrationLifecycleContext,
+  IntegrationSecretStore,
+} from "../host-contract.ts";
+import {
+  OAUTH_SECRET_SUFFIX,
+  REVOCATION_SECRET_SUFFIX,
+  type RemoteMcpPolicy,
+  type RemoteMcpTool,
+  RemoteMcpProvider,
+  type UpstreamToolSnapshot,
+} from "./RemoteMcpProvider.ts";
+
+const ORIGIN = "https://mcp.example.test";
+const FULL = `${ORIGIN}/mcp`;
+const READONLY = `${ORIGIN}/mcp/readonly`;
+
+function upstream(
+  name: string,
+  readOnly: boolean,
+  properties: Record<string, unknown> = { documentId: { type: "string" } },
+): UpstreamToolSnapshot {
+  return {
+    name,
+    title: null,
+    annotations: {
+      readOnlyHint: readOnly,
+      destructiveHint: readOnly ? false : null,
+      idempotentHint: null,
+      openWorldHint: null,
+    },
+    inputSchema: { type: "object", properties, required: Object.keys(properties) },
+  };
+}
+
+function tool(
+  name: string,
+  upstreamName: string,
+  capability: string,
+  effect: "read" | "write",
+): RemoteMcpTool {
+  const snapshot = upstream(upstreamName, effect === "read");
+  return {
+    name,
+    upstreamName,
+    displayName: name,
+    description: name,
+    capability,
+    effect,
+    destructive: false,
+    idempotent: effect === "read",
+    openWorld: true,
+    inputSchema: { ...snapshot.inputSchema, additionalProperties: false },
+    upstream: snapshot,
+  };
+}
+
+const POLICY: RemoteMcpPolicy = {
+  providerId: "example",
+  serviceName: "Example",
+  origin: ORIGIN,
+  endpoints: [
+    { path: "/mcp/readonly", capabilities: ["read"], label: "Read-only" },
+    { path: "/mcp", capabilities: ["read", "write"], label: "Full" },
+  ],
+  oauth: {
+    clientName: "TritonAI Harness",
+    scopes: ["offline_access"],
+    paths: {
+      authorization: "/oauth/authorize",
+      token: "/oauth/token",
+      registration: "/oauth/register",
+      revocation: "/oauth/revoke",
+    },
+    requireIssuerParameter: false,
+    revocation: "rfc7009",
+  },
+  tools: [
+    tool("example.fetch", "fetch", "read", "read"),
+    tool("example.create", "example_create", "write", "write"),
+  ],
+  writeFailureNote: "Check the document before retrying.",
+};
+
+function memorySecrets() {
+  const values = new Map<string, string>();
+  const service: IntegrationSecretStore = {
+    get: async (name) => values.get(name) ?? null,
+    set: async (name, value) => {
+      values.set(name, value);
+    },
+    remove: async (name) => {
+      values.delete(name);
+    },
+  };
+  return { service, values };
+}
+
+function lifecycle(events: string[] = []): IntegrationLifecycleContext {
+  const controller = new AbortController();
+  return {
+    signal: controller.signal,
+    beginCommit: vi.fn(async () => {
+      events.push("beginCommit");
+      return controller.signal;
+    }),
+  };
+}
+
+function invocation(approved: boolean, events: string[] = []): IntegrationInvocationContext {
+  return { ...lifecycle(events), writeApproved: approved };
+}
+
+function json(body: unknown, status = 200, headers: HeadersInit = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", ...headers },
+  });
+}
+
+interface FixtureOptions {
+  readonly tools?: (endpoint: string) => unknown[];
+  readonly toolResult?: unknown;
+  readonly toolStatus?: number;
+  readonly eventStream?: boolean;
+  readonly refuseInitialize?: boolean;
+  readonly refreshError?: { readonly status: number; readonly error: string };
+  readonly omitExpiry?: boolean;
+  readonly registrationExtras?: Record<string, unknown>;
+  readonly revokeStatus?: number;
+  readonly advertiseIssuer?: boolean;
+  readonly failToolsList?: boolean;
+  /** Revocation answers 401 unless an access token is sent as a bearer (Lucid's behavior). */
+  readonly revocationNeedsBearer?: boolean;
+}
+
+function liveTools(endpoint: string) {
+  return POLICY.tools
+    .filter((entry) => endpoint === FULL || entry.effect === "read")
+    .map((entry) => ({
+      name: entry.upstreamName,
+      description: "upstream wording",
+      inputSchema: entry.upstream.inputSchema,
+      annotations: entry.upstream.annotations,
+    }));
+}
+
+function remote(options: FixtureOptions = {}) {
+  const requests: Array<{
+    url: string;
+    init?: RequestInit;
+    body?: Record<string, unknown>;
+    form?: URLSearchParams;
+  }> = [];
+  let tokenSerial = 0;
+  const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    const contentType = new Headers(init?.headers).get("content-type") ?? "";
+    const body =
+      typeof init?.body === "string" && contentType.includes("application/json")
+        ? (JSON.parse(init.body) as Record<string, unknown>)
+        : undefined;
+    const form =
+      contentType.includes("x-www-form-urlencoded") && init?.body
+        ? new URLSearchParams(String(init.body))
+        : undefined;
+    requests.push({ url, init, body, form });
+    if (url === `${ORIGIN}/.well-known/oauth-protected-resource/mcp`) {
+      return json({ resource: FULL, authorization_servers: [ORIGIN], scopes_supported: [] });
+    }
+    if (url === `${ORIGIN}/.well-known/oauth-protected-resource/mcp/readonly`) {
+      return json({ resource: READONLY, authorization_servers: [ORIGIN], scopes_supported: [] });
+    }
+    if (url === `${ORIGIN}/.well-known/oauth-authorization-server`) {
+      return json({
+        issuer: ORIGIN,
+        authorization_endpoint: `${ORIGIN}/oauth/authorize`,
+        token_endpoint: `${ORIGIN}/oauth/token`,
+        revocation_endpoint: `${ORIGIN}/oauth/revoke`,
+        registration_endpoint: `${ORIGIN}/oauth/register`,
+        response_types_supported: ["code"],
+        grant_types_supported: ["authorization_code", "refresh_token"],
+        scopes_supported: ["offline_access"],
+        token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
+        code_challenge_methods_supported: ["S256"],
+        ...(options.advertiseIssuer
+          ? { authorization_response_iss_parameter_supported: true }
+          : {}),
+      });
+    }
+    if (url === `${ORIGIN}/oauth/register`) {
+      return json(
+        {
+          client_id: `client-${requests.filter((entry) => entry.url.endsWith("/register")).length}`,
+          token_endpoint_auth_method: "none",
+          redirect_uris: [(body as { redirect_uris: string[] }).redirect_uris[0]],
+          ...options.registrationExtras,
+        },
+        201,
+      );
+    }
+    if (url === `${ORIGIN}/oauth/token`) {
+      if (form?.get("grant_type") === "refresh_token" && options.refreshError) {
+        return json({ error: options.refreshError.error }, options.refreshError.status);
+      }
+      tokenSerial += 1;
+      return json({
+        access_token: `access-${tokenSerial}`,
+        refresh_token: `refresh-${tokenSerial}`,
+        token_type: "bearer",
+        ...(options.omitExpiry ? {} : { expires_in: 3600 }),
+      });
+    }
+    if (url === `${ORIGIN}/oauth/revoke`) {
+      if (
+        options.revocationNeedsBearer &&
+        !new Headers(init?.headers).get("authorization")?.startsWith("Bearer ")
+      ) {
+        return json({ error: "invalid_token" }, 401);
+      }
+      return new Response(null, { status: options.revokeStatus ?? 200 });
+    }
+    if (url === FULL || url === READONLY) {
+      if (!body) throw new Error("missing MCP body");
+      const respond = (result: unknown) => {
+        const payload = { jsonrpc: "2.0", id: body.id, result };
+        if (!options.eventStream) return json(payload, 200, { "mcp-session-id": "session-1" });
+        const progress = JSON.stringify({
+          jsonrpc: "2.0",
+          method: "notifications/progress",
+          params: { progress: 1 },
+        });
+        return new Response(
+          `event: message\ndata: ${progress}\n\nevent: message\ndata: ${JSON.stringify(payload)}\n\n`,
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream", "mcp-session-id": "session-1" },
+          },
+        );
+      };
+      if (body.method === "initialize") {
+        if (options.refuseInitialize) {
+          return json({
+            jsonrpc: "2.0",
+            id: body.id,
+            error: { code: -32_601, message: "Method not found" },
+          });
+        }
+        return respond({
+          protocolVersion: "2025-06-18",
+          capabilities: { tools: { listChanged: false } },
+          serverInfo: { name: "fixture", version: "1" },
+        });
+      }
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      if (body.method === "server/discover") {
+        return respond({
+          resultType: "complete",
+          supportedVersions: ["2026-07-28"],
+          capabilities: { tools: {} },
+        });
+      }
+      if (body.method === "tools/list" && options.failToolsList) {
+        return json({ message: "private" }, 503);
+      }
+      if (body.method === "tools/list") {
+        return respond({ tools: (options.tools ?? liveTools)(url) });
+      }
+      if (body.method === "tools/call") {
+        if (options.toolStatus) return json({ message: "private" }, options.toolStatus);
+        return respond(options.toolResult ?? { content: [{ type: "text", text: "ok" }] });
+      }
+    }
+    throw new Error(`unexpected fixture request: ${url}`);
+  }) as unknown as typeof fetch;
+  return { fetchImplementation, requests };
+}
+
+async function authorize(
+  provider: RemoteMcpProvider,
+  capabilities: ReadonlyArray<string> = ["read"],
+  callbackExtras: Record<string, string> = {},
+) {
+  const flow = await provider.connect(capabilities, lifecycle());
+  if (flow.kind !== "authorization_url") throw new Error("expected a browser flow");
+  const authorization = new URL(flow.authorizationUrl);
+  const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+  callback.searchParams.set("state", authorization.searchParams.get("state")!);
+  callback.searchParams.set("code", "code-fixture");
+  for (const [key, value] of Object.entries(callbackExtras)) callback.searchParams.set(key, value);
+  const response = await fetch(callback);
+  expect(response.status).toBe(200);
+  const result = await provider.poll(flow.flowId, lifecycle());
+  return { authorization, result };
+}
+
+describe("RemoteMcpProvider", () => {
+  it("signs in to the least-privileged endpoint and proxies a reviewed read", async () => {
+    const secrets = memorySecrets();
+    const mock = remote();
+    const provider = new RemoteMcpProvider(POLICY, secrets.service, mock.fetchImplementation);
+    const { authorization, result } = await authorize(provider);
+    expect(result).toMatchObject({ state: "connected" });
+    expect(authorization.origin + authorization.pathname).toBe(`${ORIGIN}/oauth/authorize`);
+    expect(authorization.searchParams.get("resource")).toBe(READONLY);
+    expect(authorization.searchParams.get("scope")).toBe("offline_access");
+    expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
+    const registration = mock.requests.find(({ url }) => url.endsWith("/oauth/register"))!;
+    expect(registration.body).toMatchObject({
+      token_endpoint_auth_method: "none",
+      scope: "offline_access",
+    });
+    const token = mock.requests.find(({ url }) => url.endsWith("/oauth/token"))!;
+    expect(token.form?.get("resource")).toBe(READONLY);
+    expect(JSON.parse(secrets.values.get(OAUTH_SECRET_SUFFIX)!)).toMatchObject({
+      version: 1,
+      endpoint: "/mcp/readonly",
+      clientId: "client-1",
+      refreshToken: "refresh-1",
+    });
+    await expect(provider.status({ signal: new AbortController().signal })).resolves.toMatchObject({
+      state: "connected",
+      grantedCapabilities: ["read"],
+      accountLabel: "Example (Read-only)",
+    });
+    await expect(
+      provider.invoke("example.fetch", { documentId: "doc-1" }, invocation(false)),
+    ).resolves.toMatchObject({ content: [{ type: "text", text: "ok" }] });
+    const call = mock.requests.at(-1)!;
+    expect(call.url).toBe(READONLY);
+    expect(call.body).toMatchObject({
+      method: "tools/call",
+      params: { name: "fetch", arguments: { documentId: "doc-1" } },
+    });
+    const headers = new Headers(call.init?.headers);
+    expect(headers.get("mcp-protocol-version")).toBe("2025-06-18");
+    expect(headers.get("mcp-session-id")).toBe("session-1");
+    expect(headers.get("authorization")).toBe("Bearer access-1");
+    expect(mock.requests.some(({ body }) => body?.method === "notifications/initialized")).toBe(
+      true,
+    );
+  });
+
+  it("keeps write tools off a read-only grant and upgrades by signing in again", async () => {
+    const secrets = memorySecrets();
+    const mock = remote();
+    const provider = new RemoteMcpProvider(POLICY, secrets.service, mock.fetchImplementation);
+    await authorize(provider);
+    await expect(
+      provider.invoke("example.create", { documentId: "d" }, invocation(true)),
+    ).rejects.toThrow(/needs an ability the current connection does not include/u);
+    const upgrade = await authorize(provider, ["read", "write"]);
+    expect(upgrade.result).toMatchObject({ state: "connected" });
+    expect(upgrade.authorization.searchParams.get("resource")).toBe(FULL);
+    expect(JSON.parse(secrets.values.get(OAUTH_SECRET_SUFFIX)!)).toMatchObject({
+      endpoint: "/mcp",
+      refreshToken: "refresh-2",
+    });
+    const revoked = mock.requests.filter(({ url }) => url.endsWith("/oauth/revoke"));
+    expect(revoked.map(({ form }) => form?.get("token"))).toEqual(["refresh-1"]);
+    expect(secrets.values.has(REVOCATION_SECRET_SUFFIX)).toBe(false);
+    await expect(provider.status({ signal: new AbortController().signal })).resolves.toMatchObject({
+      grantedCapabilities: ["read", "write"],
+    });
+    await expect(provider.connect(["read", "write"], lifecycle())).resolves.toMatchObject({
+      kind: "connected",
+    });
+  });
+
+  it("requires approval and commit admission before a write, and annotates tool errors", async () => {
+    const events: string[] = [];
+    const mock = remote({
+      toolResult: { isError: true, content: [{ type: "text", text: "bad shape" }] },
+    });
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      mock.fetchImplementation,
+    );
+    await authorize(provider, ["read", "write"]);
+    await expect(
+      provider.invoke("example.create", { documentId: "d" }, invocation(false)),
+    ).rejects.toThrow(/explicit Harness approval/u);
+    const result = await provider.invoke(
+      "example.create",
+      { documentId: "d" },
+      invocation(true, events),
+    );
+    expect(events).toEqual(["beginCommit"]);
+    expect(result).toMatchObject({
+      isError: true,
+      content: [
+        { type: "text", text: "bad shape" },
+        { type: "text", text: "Check the document before retrying." },
+      ],
+    });
+    await expect(provider.status({ signal: new AbortController().signal })).resolves.toMatchObject({
+      state: "connected",
+    });
+  });
+
+  it("faults after an ambiguous write and reports refusals as unchanged results", async () => {
+    const refused = remote({ toolStatus: 429 });
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      refused.fetchImplementation,
+    );
+    await authorize(provider, ["read", "write"]);
+    await expect(
+      provider.invoke("example.create", { documentId: "d" }, invocation(true)),
+    ).resolves.toMatchObject({ isError: true, content: [{ text: /rate limiting/u }] });
+
+    const failing = remote({ toolStatus: 502 });
+    const faulted = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      failing.fetchImplementation,
+    );
+    await authorize(faulted, ["read", "write"]);
+    await expect(
+      faulted.invoke("example.create", { documentId: "d" }, invocation(true)),
+    ).rejects.toMatchObject({ code: "external_commit_outcome_unknown" });
+    await expect(faulted.status({ signal: new AbortController().signal })).resolves.toMatchObject({
+      state: "error",
+      grantedCapabilities: [],
+    });
+  });
+
+  it("validates input locally before any network call", async () => {
+    const mock = remote();
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      mock.fetchImplementation,
+    );
+    await authorize(provider);
+    const before = mock.requests.length;
+    await expect(
+      provider.invoke("example.fetch", { documentId: "d", extra: true }, invocation(false)),
+    ).rejects.toThrow(/extra is not allowed/u);
+    await expect(provider.invoke("example.fetch", {}, invocation(false))).rejects.toThrow(
+      /documentId is required/u,
+    );
+    expect(mock.requests.length).toBe(before);
+  });
+
+  it("pauses one drifted tool, ignores unreviewed tools, and reports the pause", async () => {
+    const mock = remote({
+      tools: (endpoint) => [
+        ...liveTools(endpoint).map((entry) =>
+          entry.name === "example_create"
+            ? {
+                ...entry,
+                inputSchema: { type: "object", properties: { other: { type: "string" } } },
+              }
+            : entry,
+        ),
+        { name: "unreviewed_tool", inputSchema: { type: "object" } },
+      ],
+    });
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      mock.fetchImplementation,
+    );
+    await authorize(provider, ["read", "write"]);
+    const status = await provider.status({ signal: new AbortController().signal });
+    expect(status.message).toContain("example.create");
+    await expect(
+      provider.invoke("example.create", { documentId: "d" }, invocation(true)),
+    ).rejects.toThrow(/paused until the TritonAI Example plugin is updated/u);
+    await expect(
+      provider.invoke("example.fetch", { documentId: "d" }, invocation(false)),
+    ).resolves.toMatchObject({ content: [{ text: "ok" }] });
+  });
+
+  it("pauses a reviewed read tool that upstream starts marking as a write", async () => {
+    const mock = remote({
+      tools: (endpoint) =>
+        liveTools(endpoint).map((entry) =>
+          entry.name === "fetch"
+            ? { ...entry, annotations: { ...entry.annotations, readOnlyHint: false } }
+            : entry,
+        ),
+    });
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      mock.fetchImplementation,
+    );
+    await authorize(provider, ["read", "write"]);
+    await expect(
+      provider.invoke("example.fetch", { documentId: "d" }, invocation(false)),
+    ).rejects.toThrow(/paused until the TritonAI Example plugin is updated/u);
+  });
+
+  it("reads responses from an event stream that carries notifications first", async () => {
+    const mock = remote({ eventStream: true });
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      mock.fetchImplementation,
+    );
+    await authorize(provider);
+    await expect(
+      provider.invoke("example.fetch", { documentId: "d" }, invocation(false)),
+    ).resolves.toMatchObject({ content: [{ text: "ok" }] });
+  });
+
+  it("falls back to the stateless discover handshake when initialize is refused", async () => {
+    const mock = remote({ refuseInitialize: true });
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      mock.fetchImplementation,
+    );
+    const { result } = await authorize(provider);
+    expect(result).toMatchObject({ state: "connected" });
+    await provider.invoke("example.fetch", { documentId: "d" }, invocation(false));
+    const call = mock.requests.at(-1)!;
+    expect(new Headers(call.init?.headers).get("mcp-method")).toBe("tools/call");
+    expect(new Headers(call.init?.headers).get("mcp-name")).toBe("fetch");
+  });
+
+  it("rejects a callback whose issuer does not match, and accepts one without iss", async () => {
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      remote().fetchImplementation,
+    );
+    const flow = await provider.connect(["read"], lifecycle());
+    if (flow.kind !== "authorization_url") throw new Error("expected a browser flow");
+    const authorization = new URL(flow.authorizationUrl);
+    const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+    callback.searchParams.set("state", authorization.searchParams.get("state")!);
+    callback.searchParams.set("code", "code-fixture");
+    callback.searchParams.set("iss", "https://attacker.invalid");
+    expect((await fetch(callback)).status).toBe(400);
+    callback.searchParams.delete("iss");
+    expect((await fetch(callback)).status).toBe(200);
+    await expect(provider.poll(flow.flowId, lifecycle())).resolves.toMatchObject({
+      state: "connected",
+    });
+  });
+
+  it("refuses a registration that turns into a confidential client", async () => {
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      remote({
+        registrationExtras: {
+          client_secret: "s",
+          token_endpoint_auth_method: "client_secret_post",
+        },
+      }).fetchImplementation,
+    );
+    await expect(provider.connect(["read"], lifecycle())).rejects.toMatchObject({
+      code: "external_commit_outcome_unknown",
+    });
+  });
+
+  it("tolerates an echoed secret on a public registration without storing it", async () => {
+    const secrets = memorySecrets();
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      secrets.service,
+      remote({ registrationExtras: { client_secret: "echoed-secret" } }).fetchImplementation,
+    );
+    await authorize(provider);
+    expect(secrets.values.get(OAUTH_SECRET_SUFFIX)).not.toContain("echoed-secret");
+  });
+
+  it("refreshes in prepare, defaults a missing lifetime, and resets on invalid_grant", async () => {
+    const secrets = memorySecrets();
+    const mock = remote({ omitExpiry: true });
+    const first = new RemoteMcpProvider(POLICY, secrets.service, mock.fetchImplementation);
+    await authorize(first);
+    const second = new RemoteMcpProvider(POLICY, secrets.service, mock.fetchImplementation);
+    const events: string[] = [];
+    await second.prepare(lifecycle(events));
+    expect(events).toEqual(["beginCommit"]);
+    expect(JSON.parse(secrets.values.get(OAUTH_SECRET_SUFFIX)!)).toMatchObject({
+      refreshToken: "refresh-2",
+    });
+    await expect(
+      second.invoke("example.fetch", { documentId: "d" }, invocation(false)),
+    ).resolves.toMatchObject({ content: [{ text: "ok" }] });
+
+    const expired = new RemoteMcpProvider(
+      POLICY,
+      secrets.service,
+      remote({ refreshError: { status: 400, error: "invalid_grant" } }).fetchImplementation,
+    );
+    await expired.prepare(lifecycle());
+    expect(secrets.values.has(OAUTH_SECRET_SUFFIX)).toBe(false);
+    await expect(expired.status({ signal: new AbortController().signal })).resolves.toMatchObject({
+      state: "not_connected",
+    });
+  });
+
+  it("queues the grant before removing it and revokes it on disconnect", async () => {
+    const secrets = memorySecrets();
+    const mock = remote();
+    const provider = new RemoteMcpProvider(POLICY, secrets.service, mock.fetchImplementation);
+    await authorize(provider);
+    const events: string[] = [];
+    await provider.disconnect(lifecycle(events));
+    expect(events).toEqual(["beginCommit"]);
+    expect(secrets.values.has(OAUTH_SECRET_SUFFIX)).toBe(false);
+    expect(secrets.values.has(REVOCATION_SECRET_SUFFIX)).toBe(false);
+    const revoke = mock.requests.filter(({ url }) => url.endsWith("/oauth/revoke")).at(-1)!;
+    expect(revoke.form?.get("token")).toBe("refresh-1");
+    expect(revoke.form?.get("client_id")).toBe("client-1");
+  });
+
+  it("never lets a full revocation queue block disconnect, and reserves room for an upgrade", async () => {
+    const secrets = memorySecrets();
+    const mock = remote({ revokeStatus: 503 });
+    const provider = new RemoteMcpProvider(POLICY, secrets.service, mock.fetchImplementation);
+    await authorize(provider);
+    const queued = Array.from({ length: 15 }, (_, index) => ({
+      clientId: "old",
+      refreshToken: `stale-${index}`,
+    }));
+    secrets.values.set(
+      REVOCATION_SECRET_SUFFIX,
+      JSON.stringify({ version: 1, origin: ORIGIN, grants: queued }),
+    );
+    // An upgrade could queue two grants, so with 15 queued it is refused before registering.
+    await expect(provider.connect(["read", "write"], lifecycle())).rejects.toThrow(
+      /has not confirmed revoking earlier sign-ins/u,
+    );
+    expect(mock.requests.filter(({ url }) => url.endsWith("/oauth/register"))).toHaveLength(1);
+    // Disconnect still resets locally and keeps every grant queued.
+    await provider.disconnect(lifecycle());
+    expect(secrets.values.has(OAUTH_SECRET_SUFFIX)).toBe(false);
+    const grants = JSON.parse(secrets.values.get(REVOCATION_SECRET_SUFFIX)!).grants;
+    expect(grants).toHaveLength(16);
+    expect(grants.at(-1)).toEqual({
+      clientId: "client-1",
+      refreshToken: "refresh-1",
+      endpoint: "/mcp/readonly",
+    });
+    await expect(provider.status({ signal: new AbortController().signal })).resolves.toMatchObject({
+      state: "not_connected",
+    });
+  });
+
+  it("queues a newly issued grant it cannot verify or revoke, without faulting", async () => {
+    const secrets = memorySecrets();
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      secrets.service,
+      remote({ failToolsList: true, revokeStatus: 503 }).fetchImplementation,
+    );
+    const { result } = await authorize(provider);
+    expect(result).toMatchObject({ state: "failed" });
+    expect(secrets.values.has(OAUTH_SECRET_SUFFIX)).toBe(false);
+    expect(JSON.parse(secrets.values.get(REVOCATION_SECRET_SUFFIX)!).grants).toEqual([
+      { clientId: "client-1", refreshToken: "refresh-1", endpoint: "/mcp/readonly" },
+    ]);
+    await expect(provider.status({ signal: new AbortController().signal })).resolves.toMatchObject({
+      state: "not_connected",
+    });
+  });
+
+  it("keeps the stored grant when an upgrade fails, and does not queue it for revocation", async () => {
+    const secrets = memorySecrets();
+    const working = remote();
+    const provider = new RemoteMcpProvider(POLICY, secrets.service, working.fetchImplementation);
+    await authorize(provider);
+    const upgrading = new RemoteMcpProvider(
+      POLICY,
+      secrets.service,
+      remote({ failToolsList: true }).fetchImplementation,
+    );
+    const { result } = await authorize(upgrading, ["read", "write"]);
+    expect(result).toMatchObject({ state: "failed" });
+    expect(JSON.parse(secrets.values.get(OAUTH_SECRET_SUFFIX)!)).toMatchObject({
+      endpoint: "/mcp/readonly",
+      refreshToken: "refresh-1",
+    });
+    expect(secrets.values.has(REVOCATION_SECRET_SUFFIX)).toBe(false);
+  });
+
+  it("requires iss on the callback when the server advertises it", async () => {
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      remote({ advertiseIssuer: true }).fetchImplementation,
+    );
+    const flow = await provider.connect(["read"], lifecycle());
+    if (flow.kind !== "authorization_url") throw new Error("expected a browser flow");
+    const authorization = new URL(flow.authorizationUrl);
+    const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+    callback.searchParams.set("state", authorization.searchParams.get("state")!);
+    callback.searchParams.set("code", "code-fixture");
+    expect((await fetch(callback)).status).toBe(400);
+    callback.searchParams.set("iss", ORIGIN);
+    expect((await fetch(callback)).status).toBe(200);
+  });
+
+  it("names reviewed tools the connected endpoint does not offer", async () => {
+    const mock = remote({
+      tools: (endpoint) => liveTools(endpoint).filter((entry) => entry.name !== "example_create"),
+    });
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      mock.fetchImplementation,
+    );
+    await authorize(provider, ["read", "write"]);
+    const status = await provider.status({ signal: new AbortController().signal });
+    expect(status.message).toContain("Not offered by Example on this connection: example.create.");
+    await expect(
+      provider.invoke("example.create", { documentId: "d" }, invocation(true)),
+    ).rejects.toThrow(/does not offer this tool/u);
+  });
+
+  describe("bearer revocation", () => {
+    const BEARER_POLICY: RemoteMcpPolicy = {
+      ...POLICY,
+      endpoints: [
+        { path: "/mcp/readonly", capabilities: ["read"], label: "Read-only", revocable: false },
+        { path: "/mcp", capabilities: ["read", "write"], label: "Full" },
+      ],
+      oauth: { ...POLICY.oauth, revocation: "bearer" },
+    };
+
+    it("refreshes a stored full grant and revokes it with a bearer access token", async () => {
+      const secrets = memorySecrets();
+      const mock = remote({ revocationNeedsBearer: true });
+      const provider = new RemoteMcpProvider(
+        BEARER_POLICY,
+        secrets.service,
+        mock.fetchImplementation,
+      );
+      await authorize(provider, ["read", "write"]);
+      const before = mock.requests.length;
+      await provider.disconnect(lifecycle());
+      const after = mock.requests.slice(before);
+      const refresh = after.find(({ form }) => form?.get("grant_type") === "refresh_token")!;
+      expect(refresh.form?.get("refresh_token")).toBe("refresh-1");
+      expect(refresh.form?.get("resource")).toBe(FULL);
+      const revocations = after.filter(({ url }) => url.endsWith("/oauth/revoke"));
+      expect(revocations.map(({ form }) => form?.get("token"))).toEqual(["refresh-2", "refresh-1"]);
+      for (const revocation of revocations) {
+        expect(new Headers(revocation.init?.headers).get("authorization")).toBe("Bearer access-2");
+      }
+      expect(secrets.values.has(OAUTH_SECRET_SUFFIX)).toBe(false);
+      expect(secrets.values.has(REVOCATION_SECRET_SUFFIX)).toBe(false);
+    });
+
+    it("deletes a read-only grant locally without retrying a revocation Lucid refuses", async () => {
+      const secrets = memorySecrets();
+      const mock = remote({ revocationNeedsBearer: true });
+      const provider = new RemoteMcpProvider(
+        BEARER_POLICY,
+        secrets.service,
+        mock.fetchImplementation,
+      );
+      await authorize(provider);
+      const before = mock.requests.length;
+      await provider.disconnect(lifecycle());
+      expect(
+        mock.requests.slice(before).filter(({ url }) => /\/oauth\/(revoke|token)$/u.test(url)),
+      ).toEqual([]);
+      expect(secrets.values.has(REVOCATION_SECRET_SUFFIX)).toBe(false);
+      await expect(provider.status({ signal: new AbortController().signal })).resolves.toEqual({
+        state: "not_connected",
+        accountLabel: null,
+        grantedCapabilities: [],
+        message: null,
+      });
+    });
+
+    it("drops queued grants that are already invalid or that Lucid will not revoke", async () => {
+      const secrets = memorySecrets();
+      secrets.values.set(
+        REVOCATION_SECRET_SUFFIX,
+        JSON.stringify({
+          version: 1,
+          origin: ORIGIN,
+          grants: [{ clientId: "legacy", refreshToken: "legacy-refresh" }],
+        }),
+      );
+      // A legacy entry has no endpoint; the refresh succeeds but Lucid refuses the revocation.
+      const refusing = remote({ revokeStatus: 401, revocationNeedsBearer: true });
+      const provider = new RemoteMcpProvider(
+        BEARER_POLICY,
+        secrets.service,
+        refusing.fetchImplementation,
+      );
+      await authorize(provider);
+      expect(secrets.values.has(REVOCATION_SECRET_SUFFIX)).toBe(false);
+      await expect(
+        provider.status({ signal: new AbortController().signal }),
+      ).resolves.toMatchObject({ state: "connected" });
+    });
+  });
+
+  it("refuses endpoints outside the reviewed origin and malformed policies", () => {
+    expect(
+      () =>
+        new RemoteMcpProvider(
+          { ...POLICY, origin: "http://mcp.example.test" },
+          memorySecrets().service,
+        ),
+    ).toThrow(/bare HTTPS origin/u);
+    expect(
+      () =>
+        new RemoteMcpProvider(
+          { ...POLICY, tools: [...POLICY.tools, POLICY.tools[0]!] },
+          memorySecrets().service,
+        ),
+    ).toThrow(/declared twice/u);
+  });
+});
