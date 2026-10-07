@@ -3,10 +3,13 @@
 //
 // It signs in through the system browser with the same public-client flow the plugin uses
 // (dynamic client registration, PKCE, loopback redirect), once per endpoint, lists the tools,
-// and revokes each grant before exiting. Use an account whose Lucid admin has enabled MCP.
+// and revokes the full-server grant before exiting (Lucid cannot revoke read-only grants). Use an
+// account whose Lucid admin has enabled MCP.
 //
-//   node scripts/capture-upstream-tools.mjs            # full and read-only endpoints
-//   LUCID_CAPTURE_ENDPOINTS=full node scripts/capture-upstream-tools.mjs
+//   node scripts/capture-upstream-tools.mjs
+//
+// Both endpoints are always captured: the snapshot pins the full catalog and the read-only list
+// together, so a partial capture would erase the half it skipped.
 import { spawn, spawnSync } from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as Fs from "node:fs/promises";
@@ -17,13 +20,7 @@ const ORIGIN = "https://mcp.lucid.app";
 const ENDPOINTS = { full: "/mcp", readonly: "/mcp/readonly" };
 const PROTOCOL_VERSION = "2025-11-25";
 const CALLBACK_PATH = "/oauth2/callback";
-const selected = (process.env.LUCID_CAPTURE_ENDPOINTS ?? "full,readonly")
-  .split(",")
-  .map((entry) => entry.trim())
-  .filter(Boolean);
-if (selected.length === 0 || selected.some((entry) => !(entry in ENDPOINTS))) {
-  throw new Error("LUCID_CAPTURE_ENDPOINTS must list full and/or readonly.");
-}
+const selected = ["full", "readonly"];
 
 async function getJson(url) {
   const response = await fetch(url, { headers: { accept: "application/json" } });

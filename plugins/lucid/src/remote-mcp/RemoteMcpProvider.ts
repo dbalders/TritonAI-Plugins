@@ -416,6 +416,8 @@ export class RemoteMcpProvider {
   #protocol: Protocol | null = null;
   #sessionId: string | null = null;
   #sessionVerified = false;
+  /** The access token the verified session belongs to. */
+  #sessionAccess: AccessToken | null = null;
   #availableTools: ReadonlySet<string> = new Set();
   #pausedTools: ReadonlyArray<string> = [];
   #unofferedTools: ReadonlyArray<string> = [];
@@ -489,6 +491,7 @@ export class RemoteMcpProvider {
     this.#protocol = null;
     this.#sessionId = null;
     this.#sessionVerified = false;
+    this.#sessionAccess = null;
     this.#availableTools = new Set();
     this.#pausedTools = [];
     this.#unofferedTools = [];
@@ -1237,7 +1240,7 @@ export class RemoteMcpProvider {
 
   async #initializeSession(access: AccessToken, signal: AbortSignal): Promise<void> {
     await this.#serializeSession(async () => {
-      if (this.#sessionVerified) return;
+      if (this.#sessionVerified && this.#sessionAccess === access) return;
       await this.#handshake(access, signal);
       const collected: unknown[] = [];
       let cursor: string | undefined;
@@ -1272,10 +1275,16 @@ export class RemoteMcpProvider {
         throw new Error(`${this.#name} MCP tool inventory pagination is too large.`);
       }
       const inventory = validateToolInventory(this.#policy, access.endpoint, collected);
+      // A refresh replaced the access token while this session was being set up. Publishing it
+      // would mark the refreshed access verified without its own session.
+      if (this.#accessToken !== access) {
+        throw new SessionInvalidError(`${this.#name} access was refreshed during session setup.`);
+      }
       this.#availableTools = inventory.available;
       this.#pausedTools = inventory.paused;
       this.#unofferedTools = inventory.unoffered;
       this.#sessionVerified = true;
+      this.#sessionAccess = access;
     });
   }
 
@@ -1570,18 +1579,23 @@ export class RemoteMcpProvider {
     try {
       const commitSignal = await this.#beginCommit(context);
       admitted = true;
-      try {
-        await this.#retryPendingRevocations(discovery, commitSignal);
-      } catch (error) {
-        if (commitSignal.aborted) throw error;
-      }
-      // The replaced grant, a refreshed replacement for it, and an issued grant that fails setup.
-      const reserved = existing ? 3 : 1;
-      if ((await this.#readPendingRevocations()).length > MAX_PENDING_REVOCATIONS - reserved) {
-        throw new ConfirmedRemoteFailure(
-          `${this.#name} has not confirmed revoking earlier sign-ins. Try again once ${this.#name} accepts revocation.`,
-        );
-      }
+      // The revocation queue is read, retried, and rewritten under the credential lock so a
+      // concurrent disconnect cannot have its newly queued grant overwritten by this snapshot.
+      await this.#serializeCredential(async () => {
+        try {
+          await this.#retryPendingRevocations(discovery, commitSignal);
+        } catch (error) {
+          if (commitSignal.aborted) throw error;
+        }
+        // The replaced grant, a refreshed replacement for it, and an issued grant that fails
+        // setup.
+        const reserved = existing ? 3 : 1;
+        if ((await this.#readPendingRevocations()).length > MAX_PENDING_REVOCATIONS - reserved) {
+          throw new ConfirmedRemoteFailure(
+            `${this.#name} has not confirmed revoking earlier sign-ins. Try again once ${this.#name} accepts revocation.`,
+          );
+        }
+      });
       const clientId = await this.#registerClient(discovery, flow.redirectUri, commitSignal);
       if (
         generation !== this.#generation ||
@@ -2151,6 +2165,7 @@ export class RemoteMcpProvider {
       !access ||
       access.expiresAt - ACCESS_TOKEN_SKEW_MS <= Date.now() ||
       !this.#sessionVerified ||
+      this.#sessionAccess !== access ||
       this.#closed ||
       this.#disconnecting ||
       this.#uncertainCredentialState
@@ -2251,6 +2266,12 @@ export class RemoteMcpProvider {
         await this.#initializeSession(access, commitSignal);
         assertAvailable();
       } catch (error) {
+        if (this.#accessToken !== access) {
+          assertAccessCurrent();
+          return rejectedToolResult(
+            `${this.#name} access was refreshed during this call, which was not run. Try again.`,
+          );
+        }
         if (!admitted) throw error;
         assertAccessCurrent();
         return rejectedToolResult(
@@ -2270,6 +2291,10 @@ export class RemoteMcpProvider {
       return rejectedToolResult(failure.message);
     }
     if (write && admitted) {
+      // Deliberately fault the whole provider, reads included. The host faults any provider whose
+      // admitted write ends ambiguously and keeps it faulted until the connection is reset, so a
+      // reads-only carve-out here could not take effect; this flag keeps the provider's own
+      // status consistent with the host until disconnect clears both.
       this.#uncertainCredentialState = true;
       throw new ExternalCommitOutcomeUnknownError(
         `The ${this.#name} operation may have completed. Check the document before retrying.`,

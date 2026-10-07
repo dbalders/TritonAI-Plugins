@@ -977,6 +977,99 @@ describe("RemoteMcpProvider", () => {
     expect(new Headers(lastCall.init?.headers).get("authorization")).toBe("Bearer access-2");
   });
 
+  it("does not let a session set up on old access stand in for the refreshed access", async () => {
+    const mock = remote();
+    let release: () => void = () => undefined;
+    let held = false;
+    let expired = false;
+    let lists = 0;
+    const fetchImplementation = (async (input: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (!expired && body.includes('"tools/call"')) {
+        expired = true;
+        return json({ error: "session not found" }, 404);
+      }
+      if (body.includes('"tools/list"')) {
+        lists += 1;
+        // Hold the old access's session setup (the second tools/list) until after a refresh.
+        if (lists === 2) {
+          held = true;
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new RemoteMcpProvider(POLICY, memorySecrets().service, fetchImplementation);
+    await authorize(provider);
+    const stale = provider.invoke("example.fetch", { documentId: "d" }, invocation(false));
+    await vi.waitFor(() => expect(held).toBe(true));
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 3_600_000);
+    let refreshed: Promise<void>;
+    try {
+      refreshed = provider.prepare(lifecycle());
+      await vi.waitFor(() =>
+        expect(mock.requests.some(({ form }) => form?.get("grant_type") === "refresh_token")).toBe(
+          true,
+        ),
+      );
+    } finally {
+      clock.mockRestore();
+    }
+    release();
+    await expect(stale).resolves.toMatchObject({
+      isError: true,
+      content: [{ text: /refreshed during this call/u }],
+    });
+    await refreshed;
+    await expect(
+      provider.invoke("example.fetch", { documentId: "d" }, invocation(false)),
+    ).resolves.toMatchObject({ content: [{ text: "ok" }] });
+    const lastCall = mock.requests.filter(({ body }) => body?.method === "tools/call").at(-1)!;
+    const headers = new Headers(lastCall.init?.headers);
+    expect(headers.get("authorization")).toBe("Bearer access-2");
+    expect(headers.get("mcp-session-id")).toBe("session-1");
+  });
+
+  it("does not let a sign-in's revocation retry overwrite a concurrent disconnect's queue", async () => {
+    const secrets = memorySecrets();
+    const mock = remote({ revokeStatus: 503 });
+    let release: () => void = () => undefined;
+    let held = false;
+    const fetchImplementation = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (!held && String(input).endsWith("/oauth/revoke")) {
+        held = true;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new RemoteMcpProvider(POLICY, secrets.service, fetchImplementation);
+    await authorize(provider);
+    secrets.values.set(
+      REVOCATION_SECRET_SUFFIX,
+      JSON.stringify({
+        version: 1,
+        origin: ORIGIN,
+        grants: [{ clientId: "old", refreshToken: "queued", endpoint: "/mcp" }],
+      }),
+    );
+    const upgrade = provider.connect(["read", "write"], lifecycle()).catch(() => undefined);
+    await vi.waitFor(() => expect(held).toBe(true));
+    const disconnected = provider.disconnect(lifecycle());
+    // Let the disconnect finish, or block on the credential lock, before the retry resumes.
+    await Promise.race([disconnected, new Promise((resolve) => setTimeout(resolve, 100))]);
+    release();
+    await Promise.all([upgrade, disconnected]);
+    const grants = JSON.parse(secrets.values.get(REVOCATION_SECRET_SUFFIX)!).grants;
+    expect(grants.map((grant: { refreshToken: string }) => grant.refreshToken)).toContain(
+      "refresh-1",
+    );
+    expect(secrets.values.has(OAUTH_SECRET_SUFFIX)).toBe(false);
+  });
+
   it("refuses an oversize request locally without faulting an admitted write", async () => {
     const mock = remote();
     const provider = new RemoteMcpProvider(

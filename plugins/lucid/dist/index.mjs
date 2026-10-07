@@ -2633,6 +2633,8 @@ var RemoteMcpProvider = class {
   #protocol = null;
   #sessionId = null;
   #sessionVerified = false;
+  /** The access token the verified session belongs to. */
+  #sessionAccess = null;
   #availableTools = /* @__PURE__ */ new Set();
   #pausedTools = [];
   #unofferedTools = [];
@@ -2690,6 +2692,7 @@ var RemoteMcpProvider = class {
     this.#protocol = null;
     this.#sessionId = null;
     this.#sessionVerified = false;
+    this.#sessionAccess = null;
     this.#availableTools = /* @__PURE__ */ new Set();
     this.#pausedTools = [];
     this.#unofferedTools = [];
@@ -3269,7 +3272,7 @@ var RemoteMcpProvider = class {
   }
   async #initializeSession(access, signal) {
     await this.#serializeSession(async () => {
-      if (this.#sessionVerified) return;
+      if (this.#sessionVerified && this.#sessionAccess === access) return;
       await this.#handshake(access, signal);
       const collected = [];
       let cursor;
@@ -3301,10 +3304,14 @@ var RemoteMcpProvider = class {
         throw new Error(`${this.#name} MCP tool inventory pagination is too large.`);
       }
       const inventory = validateToolInventory(this.#policy, access.endpoint, collected);
+      if (this.#accessToken !== access) {
+        throw new SessionInvalidError(`${this.#name} access was refreshed during session setup.`);
+      }
       this.#availableTools = inventory.available;
       this.#pausedTools = inventory.paused;
       this.#unofferedTools = inventory.unoffered;
       this.#sessionVerified = true;
+      this.#sessionAccess = access;
     });
   }
   async #postRevocation(discovery, token, clientId, signal, accessToken) {
@@ -3528,17 +3535,19 @@ var RemoteMcpProvider = class {
     try {
       const commitSignal = await this.#beginCommit(context);
       admitted = true;
-      try {
-        await this.#retryPendingRevocations(discovery, commitSignal);
-      } catch (error) {
-        if (commitSignal.aborted) throw error;
-      }
-      const reserved = existing ? 3 : 1;
-      if ((await this.#readPendingRevocations()).length > MAX_PENDING_REVOCATIONS - reserved) {
-        throw new ConfirmedRemoteFailure(
-          `${this.#name} has not confirmed revoking earlier sign-ins. Try again once ${this.#name} accepts revocation.`
-        );
-      }
+      await this.#serializeCredential(async () => {
+        try {
+          await this.#retryPendingRevocations(discovery, commitSignal);
+        } catch (error) {
+          if (commitSignal.aborted) throw error;
+        }
+        const reserved = existing ? 3 : 1;
+        if ((await this.#readPendingRevocations()).length > MAX_PENDING_REVOCATIONS - reserved) {
+          throw new ConfirmedRemoteFailure(
+            `${this.#name} has not confirmed revoking earlier sign-ins. Try again once ${this.#name} accepts revocation.`
+          );
+        }
+      });
       const clientId = await this.#registerClient(discovery, flow.redirectUri, commitSignal);
       if (generation !== this.#generation || revision !== this.#credentialRevision || attempt !== this.#connectAttempt || this.#closed || this.#disconnecting) {
         throw new Error(`${this.#name} sign-in was superseded while starting.`);
@@ -4025,7 +4034,7 @@ var RemoteMcpProvider = class {
     }
     const generation = this.#generation;
     const access = this.#accessToken;
-    if (!access || access.expiresAt - ACCESS_TOKEN_SKEW_MS <= Date.now() || !this.#sessionVerified || this.#closed || this.#disconnecting || this.#uncertainCredentialState) {
+    if (!access || access.expiresAt - ACCESS_TOKEN_SKEW_MS <= Date.now() || !this.#sessionVerified || this.#sessionAccess !== access || this.#closed || this.#disconnecting || this.#uncertainCredentialState) {
       throw new IntegrationProviderPublicError(
         this.#renewalDeferred && !this.#uncertainCredentialState ? `${this.#name} was briefly unavailable while renewing access, so this call was not run. Try again in a moment.` : `${this.#name} access is not prepared. Reconnect if this continues.`
       );
@@ -4106,6 +4115,12 @@ var RemoteMcpProvider = class {
         await this.#initializeSession(access, commitSignal);
         assertAvailable();
       } catch (error) {
+        if (this.#accessToken !== access) {
+          assertAccessCurrent();
+          return rejectedToolResult(
+            `${this.#name} access was refreshed during this call, which was not run. Try again.`
+          );
+        }
         if (!admitted) throw error;
         assertAccessCurrent();
         return rejectedToolResult(
