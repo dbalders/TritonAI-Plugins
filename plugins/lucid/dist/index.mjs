@@ -4152,9 +4152,8 @@ var RemoteMcpProvider = class {
       return rejectedToolResult(failure.message);
     }
     if (write && admitted) {
-      this.#uncertainCredentialState = true;
-      throw new ExternalCommitOutcomeUnknownError(
-        `The ${this.#name} operation may have completed. Check the document before retrying.`
+      return rejectedToolResult(
+        `${this.#name} did not confirm whether this change was applied: the request failed after it was sent. Read the document to check before retrying, and do not resend it blindly.`
       );
     }
     throw failure;

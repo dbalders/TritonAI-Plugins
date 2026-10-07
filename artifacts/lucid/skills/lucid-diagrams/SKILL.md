@@ -63,8 +63,8 @@ Lucid edits existing documents with scripts, not individual shape tools.
   `lucid.copy_document_style` first.
 - Confirm deletions with the user and name the exact items before running a script that removes
   them.
-- If a write result says it may have completed, do not resend it. Read the document first;
-  repeating an add creates duplicates.
+- If a write result says Lucid did not confirm whether the change was applied, do not resend it.
+  Read the document first; repeating an add creates duplicates.
 
 ## Sharing and feedback
 

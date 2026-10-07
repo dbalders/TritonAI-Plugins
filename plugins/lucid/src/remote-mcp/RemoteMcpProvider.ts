@@ -2305,13 +2305,14 @@ export class RemoteMcpProvider {
       return rejectedToolResult(failure.message);
     }
     if (write && admitted) {
-      // Deliberately fault the whole provider, reads included. The host faults any provider whose
-      // admitted write ends ambiguously and keeps it faulted until the connection is reset, so a
-      // reads-only carve-out here could not take effect; this flag keeps the provider's own
-      // status consistent with the host until disconnect clears both.
-      this.#uncertainCredentialState = true;
-      throw new ExternalCommitOutcomeUnknownError(
-        `The ${this.#name} operation may have completed. Check the document before retrying.`,
+      // The change was sent but its outcome is unknown (timeout, dropped connection, server
+      // error). Report that to the agent as the call's result instead of throwing: a thrown error
+      // after admission makes the host shut the whole plugin off until the user resets the
+      // connection, which would also block the reads needed to check what happened. The
+      // credential is unaffected, nothing is retried automatically, and the message tells the
+      // agent not to resend blindly.
+      return rejectedToolResult(
+        `${this.#name} did not confirm whether this change was applied: the request failed after it was sent. Read the document to check before retrying, and do not resend it blindly.`,
       );
     }
     throw failure;

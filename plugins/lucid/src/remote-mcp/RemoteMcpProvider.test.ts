@@ -446,7 +446,7 @@ describe("RemoteMcpProvider", () => {
     });
   });
 
-  it("faults after an ambiguous write and reports refusals as unchanged results", async () => {
+  it("keeps the plugin available after an unconfirmed write and reports refusals as results", async () => {
     const refused = remote({ toolStatus: 429 });
     const provider = new RemoteMcpProvider(
       POLICY,
@@ -458,20 +458,34 @@ describe("RemoteMcpProvider", () => {
       provider.invoke("example.create", { documentId: "d" }, invocation(true)),
     ).resolves.toMatchObject({ isError: true, content: [{ text: /rate limiting/u }] });
 
-    const failing = remote({ toolStatus: 502 });
-    const faulted = new RemoteMcpProvider(
-      POLICY,
-      memorySecrets().service,
-      failing.fetchImplementation,
-    );
-    await authorize(faulted, ["read", "write"]);
+    // The write is sent but the server fails it with a 502, so its outcome is unknown.
+    const base = remote();
+    let writes = 0;
+    const flaky = (async (input: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (body.includes('"example_create"') && writes++ === 0) {
+        return json({ message: "private" }, 502);
+      }
+      return base.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider2 = new RemoteMcpProvider(POLICY, memorySecrets().service, flaky);
+    await authorize(provider2, ["read", "write"]);
     await expect(
-      faulted.invoke("example.create", { documentId: "d" }, invocation(true)),
-    ).rejects.toMatchObject({ code: "external_commit_outcome_unknown" });
-    await expect(faulted.status({ signal: new AbortController().signal })).resolves.toMatchObject({
-      state: "error",
-      grantedCapabilities: [],
+      provider2.invoke("example.create", { documentId: "d" }, invocation(true)),
+    ).resolves.toMatchObject({
+      isError: true,
+      content: [{ text: /did not confirm whether this change was applied/u }],
     });
+    await expect(provider2.status({ signal: new AbortController().signal })).resolves.toMatchObject(
+      { state: "connected", grantedCapabilities: ["read", "write"] },
+    );
+    // Reads and later writes keep working, so the agent can check what happened.
+    await expect(
+      provider2.invoke("example.fetch", { documentId: "d" }, invocation(false)),
+    ).resolves.toMatchObject({ content: [{ text: "ok" }] });
+    await expect(
+      provider2.invoke("example.create", { documentId: "d" }, invocation(true)),
+    ).resolves.toMatchObject({ content: [{ text: "ok" }] });
   });
 
   it("validates input locally before any network call", async () => {
