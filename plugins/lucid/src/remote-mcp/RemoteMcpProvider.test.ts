@@ -1081,6 +1081,71 @@ describe("RemoteMcpProvider", () => {
     },
   );
 
+  it.each(["initialize", "tools/list"] as const)(
+    "refuses an admitted write during session recovery at %s",
+    async (holdMethod) => {
+      let recovering = false;
+      const mock = remote({
+        rotateSessions: true,
+        tools: (endpoint) =>
+          liveTools(endpoint).filter(
+            (entry) =>
+              !recovering || holdMethod !== "tools/list" || entry.name !== "example_create",
+          ),
+      });
+      let releaseRecovery: () => void = () => undefined;
+      let held = false;
+      const fetchImplementation = (async (input: string | URL | Request, init?: RequestInit) => {
+        const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+        if (body.method === "tools/call" && !recovering) {
+          recovering = true;
+          return json({ error: "session not found" }, 404);
+        }
+        if (recovering && body.method === holdMethod) {
+          held = true;
+          await new Promise<void>((resolve) => {
+            releaseRecovery = resolve;
+          });
+        }
+        return mock.fetchImplementation(input, init);
+      }) as typeof fetch;
+      const provider = new RemoteMcpProvider(POLICY, memorySecrets().service, fetchImplementation);
+      await authorize(provider, ["read", "write"]);
+      let releaseAdmission: (signal: AbortSignal) => void = () => undefined;
+      const context = invocation(true);
+      context.beginCommit = vi.fn(
+        () =>
+          new Promise<AbortSignal>((resolve) => {
+            releaseAdmission = resolve;
+          }),
+      );
+      const write = provider.invoke("example.create", { documentId: "d" }, context);
+      expect(context.beginCommit).toHaveBeenCalledOnce();
+      const read = provider.invoke("example.fetch", { documentId: "d" }, invocation(false));
+      await vi.waitFor(() => expect(held).toBe(true));
+      releaseAdmission(new AbortController().signal);
+      await expect(write).resolves.toMatchObject({
+        isError: true,
+        content: [{ text: /session is not ready.*not run/u }],
+      });
+      expect(mock.requests.filter(({ body }) => body?.method === "tools/call")).toHaveLength(0);
+      releaseRecovery();
+      await expect(read).resolves.toMatchObject({ content: [{ text: "ok" }] });
+      if (holdMethod === "tools/list") {
+        await expect(
+          provider.invoke("example.create", { documentId: "d" }, invocation(true)),
+        ).rejects.toThrow(/does not offer this tool/u);
+      } else {
+        await expect(
+          provider.invoke("example.create", { documentId: "d" }, invocation(true)),
+        ).resolves.toMatchObject({ content: [{ text: "ok" }] });
+        const lastCall = mock.requests.filter(({ body }) => body?.method === "tools/call").at(-1)!;
+        expect(new Headers(lastCall.init?.headers).get("mcp-session-id")).toBe("session-2");
+      }
+      await provider.close();
+    },
+  );
+
   it("keeps refreshed access when a call made before the refresh is refused late", async () => {
     const mock = remote();
     let release: (response: Response) => void = () => undefined;

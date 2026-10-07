@@ -4102,6 +4102,11 @@ var RemoteMcpProvider = class {
           `${this.#name} connection changed before this call was sent, so it was not run.`
         );
       }
+      if (!this.#sessionVerified || this.#sessionAccess !== access) {
+        return rejectedToolResult(
+          `${this.#name} session is not ready, so this call was not run. Try again.`
+        );
+      }
       assertAvailable();
       const result = asRecord(
         await this.#mcpRpc(

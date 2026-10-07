@@ -2255,6 +2255,13 @@ export class RemoteMcpProvider {
           `${this.#name} connection changed before this call was sent, so it was not run.`,
         );
       }
+      // Another call may have expired the session while this write awaited admission.
+      // Refuse before dispatch until recovery has verified the replacement tool inventory.
+      if (!this.#sessionVerified || this.#sessionAccess !== access) {
+        return rejectedToolResult(
+          `${this.#name} session is not ready, so this call was not run. Try again.`,
+        );
+      }
       // Re-checked on every attempt: a recovered session re-verifies the catalog and may have
       // paused or dropped this tool.
       assertAvailable();
