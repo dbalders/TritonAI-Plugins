@@ -66,6 +66,7 @@ names. Each operation has a `type` and only the fields documented for that type;
   and reports it in `removedGroups`. Check both before you report the edit as complete.
 - If the call is rejected as invalid input, nothing was sent to n8n: read the error, fix the
   input, and retry. Do not report the tool as unavailable because of an input error.
-- If the result says the operation may have completed, do not resend it. Read
-  `get_workflow_details` first, because repeating structural operations can duplicate changes.
+- If the result says n8n did not confirm whether the operation completed, do not resend it. Read
+  `get_workflow_details` (or the execution) first, because repeating structural operations can
+  duplicate changes and rerunning a workflow repeats its effects.
 - After saving, read `get_workflow_details` again to confirm the change before you report it.
