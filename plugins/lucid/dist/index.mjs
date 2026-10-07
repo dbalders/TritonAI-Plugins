@@ -2277,6 +2277,7 @@ var ExternalCommitOutcomeUnknownError = class extends Error {
 import * as NodeCrypto from "node:crypto";
 var encoder = new TextEncoder();
 var decoder = new TextDecoder("utf-8", { fatal: true });
+var lenientDecoder = new TextDecoder("utf-8");
 var MAX_INPUT_BYTES = 2 * 1024 * 1024;
 var MAX_JSON_DEPTH = 32;
 var MAX_JSON_NODES = 1e5;
@@ -2300,7 +2301,7 @@ function timingSafeTextEqual(left, right) {
   const rightBytes = Buffer.from(right);
   return leftBytes.byteLength === rightBytes.byteLength && NodeCrypto.timingSafeEqual(leftBytes, rightBytes);
 }
-async function readResponseBytes(response, maximumBytes, label) {
+async function readResponseBytes(response, maximumBytes, label, isComplete) {
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > maximumBytes) {
     throw new Error(`${label} exceeded the allowed size.`);
@@ -2319,10 +2320,17 @@ async function readResponseBytes(response, maximumBytes, label) {
         throw new Error(`${label} exceeded the allowed size.`);
       }
       chunks.push(value);
+      if (isComplete && isComplete(concatenate(chunks, total))) {
+        await reader.cancel().catch(() => void 0);
+        break;
+      }
     }
   } finally {
     reader.releaseLock();
   }
+  return concatenate(chunks, total);
+}
+function concatenate(chunks, total) {
   const bytes = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
@@ -2330,6 +2338,21 @@ async function readResponseBytes(response, maximumBytes, label) {
     offset += chunk.byteLength;
   }
   return bytes;
+}
+function eventStreamHasResponse(bytes, id) {
+  const text = lenientDecoder.decode(bytes).replace(/\r\n?/gu, "\n");
+  const boundary = text.lastIndexOf("\n\n");
+  if (boundary === -1) return false;
+  for (const block of text.slice(0, boundary).split("\n\n")) {
+    const data = block.split("\n").filter((line) => line === "data" || line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /u, "")).join("\n");
+    if (!data) continue;
+    try {
+      const message = JSON.parse(data);
+      if (message.id === id && typeof message.method !== "string") return true;
+    } catch {
+    }
+  }
+  return false;
 }
 function parseJson(bytes, label) {
   let text;
@@ -2353,27 +2376,35 @@ function parseMcpPayload(response, bytes, id, label) {
     throw new Error(`${label} had an invalid content type.`);
   }
   let text;
+  let cut = false;
   try {
     text = decoder.decode(bytes);
   } catch {
-    throw new Error(`${label} contained invalid event-stream text.`);
+    text = lenientDecoder.decode(bytes);
+    cut = true;
   }
   text = text.replace(/\r\n?/gu, "\n");
+  const parts = text.split("\n\n");
+  const trailing = text.endsWith("\n\n") ? null : parts.pop() ?? null;
+  let matched = scanEvents(parts, id, label);
+  if (!matched && trailing !== null && !cut) matched = scanEvents([trailing], id, label);
+  if (!matched) throw new Error(`${label} omitted its response.`);
+  return matched;
+}
+function scanEvents(blocks, id, label) {
   let matched = null;
-  for (const block of text.split("\n\n")) {
+  for (const block of blocks) {
     const dataLines = [];
     let eventType = "message";
-    let meaningful = false;
     for (const line of block.split("\n")) {
       if (line === "" || line.startsWith(":")) continue;
-      meaningful = true;
       const colon = line.indexOf(":");
       const field = colon === -1 ? line : line.slice(0, colon);
       const value = colon === -1 ? "" : line.slice(colon + 1).replace(/^ /u, "");
       if (field === "event") eventType = value.trim();
       else if (field === "data") dataLines.push(value);
     }
-    if (!meaningful || dataLines.length === 0) continue;
+    if (dataLines.length === 0) continue;
     if (eventType !== "message") throw new Error(`${label} used an unsupported event type.`);
     const message = parseJson(encoder.encode(dataLines.join("\n")), label);
     if (typeof message.method === "string") {
@@ -2388,7 +2419,6 @@ function parseMcpPayload(response, bytes, id, label) {
     if (matched) throw new Error(`${label} contained duplicate responses.`);
     matched = message;
   }
-  if (!matched) throw new Error(`${label} omitted its response.`);
   return matched;
 }
 function assertJsonBounds(value, serviceName) {
@@ -2473,6 +2503,13 @@ var ConfirmedRemoteFailure = class extends IntegrationProviderPublicError {
 var RemoteRejection = class extends ConfirmedRemoteFailure {
 };
 var ProtocolRejection = class extends RemoteRejection {
+};
+var RevocationIncomplete = class extends ConfirmedRemoteFailure {
+  constructor(message, replacement) {
+    super(message);
+    this.replacement = replacement;
+  }
+  replacement;
 };
 function rejectedToolResult(message) {
   return { isError: true, content: [{ type: "text", text: message }] };
@@ -2653,7 +2690,7 @@ var RemoteMcpProvider = class {
     this.#pausedTools = [];
     this.#unofferedTools = [];
   }
-  async #request(url, init, maximumBytes, timeoutMs = this.#requestTimeoutMs) {
+  async #request(url, init, maximumBytes, timeoutMs = this.#requestTimeoutMs, isComplete) {
     if (this.#closed) throw new Error(`${this.#name} provider is closed.`);
     let endpoint;
     try {
@@ -2677,7 +2714,12 @@ var RemoteMcpProvider = class {
       });
       return {
         response,
-        bytes: await readResponseBytes(response, maximumBytes, `${this.#name} response`)
+        bytes: await readResponseBytes(
+          response,
+          maximumBytes,
+          `${this.#name} response`,
+          isComplete ? (bytes) => isComplete(response, bytes) : void 0
+        )
       };
     } catch (error) {
       if (init.signal?.aborted) {
@@ -3114,15 +3156,14 @@ var RemoteMcpProvider = class {
     }
     const body = JSON.stringify(payload);
     if (Buffer.byteLength(body) > MAX_INPUT_BYTES) {
-      throw new IntegrationProviderPublicError(
-        `${this.#name} MCP request exceeded the allowed size.`
-      );
+      throw new RemoteRejection(`${this.#name} MCP request exceeded the allowed size.`);
     }
     const { response, bytes } = await this.#request(
       this.#endpointUrl(access.endpoint),
       { method: "POST", headers: this.#mcpHeaders(access, method, params), body, signal },
       maximumBytes,
-      timeoutMs
+      timeoutMs,
+      (received, soFar) => (received.headers.get("content-type")?.toLowerCase() ?? "").includes("text/event-stream") && eventStreamHasResponse(soFar, id)
     );
     if (!response.ok) this.#rejectHttpStatus(response, method);
     this.#acceptSessionId(response);
@@ -3316,9 +3357,15 @@ var RemoteMcpProvider = class {
         );
       }
     }
-    const response = await this.#postRevocation(discovery, current, grant.clientId, signal, access);
+    const replacement = current === grant.refreshToken ? null : { clientId: grant.clientId, refreshToken: current, endpoint: grant.endpoint };
+    let response;
+    try {
+      response = await this.#postRevocation(discovery, current, grant.clientId, signal, access);
+    } catch {
+      throw new RevocationIncomplete(failed().message, replacement);
+    }
     if (response.status === 401) return;
-    if (!response.ok) throw failed();
+    if (!response.ok) throw new RevocationIncomplete(failed().message, replacement);
     if (current !== grant.refreshToken) {
       await this.#postRevocation(discovery, grant.refreshToken, grant.clientId, signal, access).then(() => void 0).catch(() => void 0);
     }
@@ -3464,7 +3511,7 @@ var RemoteMcpProvider = class {
       } catch (error) {
         if (commitSignal.aborted) throw error;
       }
-      const reserved = existing ? 2 : 1;
+      const reserved = existing ? 3 : 1;
       if ((await this.#readPendingRevocations()).length > MAX_PENDING_REVOCATIONS - reserved) {
         throw new ConfirmedRemoteFailure(
           `${this.#name} has not confirmed revoking earlier sign-ins. Try again once ${this.#name} accepts revocation.`
@@ -3820,6 +3867,9 @@ var RemoteMcpProvider = class {
       } catch (error) {
         if (signal.aborted) throw error;
         remaining.push(grant);
+        if (error instanceof RevocationIncomplete && error.replacement) {
+          remaining.push(error.replacement);
+        }
       }
     }
     await this.#writePendingRevocations(remaining);
@@ -3831,6 +3881,7 @@ var RemoteMcpProvider = class {
       refreshToken: grant.refreshToken,
       endpoint: grant.endpoint
     };
+    const queued = [pendingGrant];
     try {
       await this.#revokeGrant(
         discovery,
@@ -3842,12 +3893,16 @@ var RemoteMcpProvider = class {
         accessToken
       );
       return;
-    } catch {
+    } catch (error) {
+      if (error instanceof RevocationIncomplete && error.replacement) {
+        queued.push(error.replacement);
+      }
     }
     const pending = await this.#readPendingRevocations();
-    if (!pending.some((entry) => entry.refreshToken === grant.refreshToken)) {
-      await this.#writePendingRevocations([...pending, pendingGrant]);
-    }
+    const additions = queued.filter(
+      (entry) => !pending.some((existing) => existing.refreshToken === entry.refreshToken)
+    );
+    if (additions.length > 0) await this.#writePendingRevocations([...pending, ...additions]);
   }
   disconnect(context) {
     return this.#serializeCredential(async () => {

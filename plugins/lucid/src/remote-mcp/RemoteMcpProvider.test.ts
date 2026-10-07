@@ -135,6 +135,8 @@ interface FixtureOptions {
   readonly failToolsList?: boolean;
   /** Revocation answers 401 unless an access token is sent as a bearer (Lucid's behavior). */
   readonly revocationNeedsBearer?: boolean;
+  /** tools/call answers over an event stream that stays open after the response. */
+  readonly openStream?: boolean;
 }
 
 function liveTools(endpoint: string) {
@@ -271,6 +273,24 @@ function remote(options: FixtureOptions = {}) {
       }
       if (body.method === "tools/call") {
         if (options.toolStatus) return json({ message: "private" }, options.toolStatus);
+        if (options.openStream) {
+          const payload = JSON.stringify({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: { content: [{ type: "text", text: "streamed" }] },
+          });
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              // Answer, then begin another event and never close the stream.
+              controller.enqueue(new TextEncoder().encode(`event: message\ndata: ${payload}\n\n`));
+              controller.enqueue(new TextEncoder().encode('data: {"partial'));
+            },
+          });
+          return new Response(stream, {
+            status: 200,
+            headers: { "content-type": "text/event-stream", "mcp-session-id": "session-1" },
+          });
+        }
         return respond(options.toolResult ?? { content: [{ type: "text", text: "ok" }] });
       }
     }
@@ -778,6 +798,22 @@ describe("RemoteMcpProvider", () => {
       });
     });
 
+    it("keeps a refreshed replacement queued when its revocation fails", async () => {
+      const secrets = memorySecrets();
+      const provider = new RemoteMcpProvider(
+        BEARER_POLICY,
+        secrets.service,
+        remote({ revocationNeedsBearer: true, revokeStatus: 503 }).fetchImplementation,
+      );
+      await authorize(provider, ["read", "write"]);
+      await provider.disconnect(lifecycle());
+      const grants = JSON.parse(secrets.values.get(REVOCATION_SECRET_SUFFIX)!).grants;
+      expect(grants.map((grant: { refreshToken: string }) => grant.refreshToken)).toEqual([
+        "refresh-1",
+        "refresh-2",
+      ]);
+    });
+
     it("drops queued grants that are already invalid or that Lucid will not revoke", async () => {
       const secrets = memorySecrets();
       secrets.values.set(
@@ -800,6 +836,39 @@ describe("RemoteMcpProvider", () => {
       await expect(
         provider.status({ signal: new AbortController().signal }),
       ).resolves.toMatchObject({ state: "connected" });
+    });
+  });
+
+  it("settles a call once the answer arrives on an event stream that stays open", async () => {
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      remote({ openStream: true }).fetchImplementation,
+      2_000,
+    );
+    await authorize(provider);
+    await expect(
+      provider.invoke("example.fetch", { documentId: "d" }, invocation(false)),
+    ).resolves.toMatchObject({ content: [{ text: "streamed" }] });
+  });
+
+  it("refuses an oversize request locally without faulting an admitted write", async () => {
+    const mock = remote();
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      mock.fetchImplementation,
+    );
+    await authorize(provider, ["read", "write"]);
+    const before = mock.requests.length;
+    // Within the two-megabyte input limit, but not once wrapped in the JSON-RPC request.
+    const documentId = "x".repeat(2 * 1024 * 1024 - '{"documentId":""}'.length);
+    await expect(
+      provider.invoke("example.create", { documentId }, invocation(true)),
+    ).resolves.toMatchObject({ isError: true, content: [{ text: /exceeded the allowed size/u }] });
+    expect(mock.requests.length).toBe(before);
+    await expect(provider.status({ signal: new AbortController().signal })).resolves.toMatchObject({
+      state: "connected",
     });
   });
 

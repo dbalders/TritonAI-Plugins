@@ -28,6 +28,7 @@ import {
   assertJsonBounds,
   boundedString,
   parseJson,
+  eventStreamHasResponse,
   parseMcpPayload,
   randomBase64Url,
   readResponseBytes,
@@ -72,10 +73,9 @@ const MAX_MCP_PAGES = 8;
 const MAX_MCP_TOOLS = 256;
 const MAX_ADVERTISED_SCOPES = 256;
 const MAX_REJECTION_DETAIL_CHARS = 2_000;
-// Grants are never dropped before the service confirms revoking them. A sign-in can queue at most
-// two (the grant it replaces and, if its own setup fails and cannot be revoked, the new one), so it
-// reserves that room and is refused otherwise. Disconnect always queues, keeping the queue within
-// MAX_PENDING_REVOCATIONS + 1 without ever blocking a reset.
+// Grants are never dropped before the service confirms revoking them. A sign-in reserves room for
+// everything it can queue and is refused otherwise. Disconnect always queues, keeping the queue
+// within a few entries of MAX_PENDING_REVOCATIONS without ever blocking a reset.
 const MAX_PENDING_REVOCATIONS = 16;
 // JSON-RPC parse, invalid request, method not found, and invalid params errors are raised before
 // the tool runs. Server and internal errors may follow a partial write, so they stay ambiguous.
@@ -229,6 +229,15 @@ class RemoteRejection extends ConfirmedRemoteFailure {}
 // A refusal of the request's shape or method rather than of the caller. During the handshake it
 // identifies a server on the other protocol revision.
 class ProtocolRejection extends RemoteRejection {}
+// A revocation that failed after the grant was refreshed; the replacement token must stay queued.
+class RevocationIncomplete extends ConfirmedRemoteFailure {
+  constructor(
+    message: string,
+    readonly replacement: PendingRevocation | null,
+  ) {
+    super(message);
+  }
+}
 
 function rejectedToolResult(message: string): JsonObject {
   return { isError: true, content: [{ type: "text", text: message }] };
@@ -486,6 +495,7 @@ export class RemoteMcpProvider {
     init: RequestInit,
     maximumBytes: number,
     timeoutMs = this.#requestTimeoutMs,
+    isComplete?: (response: Response, bytes: Uint8Array) => boolean,
   ): Promise<{ readonly response: Response; readonly bytes: Uint8Array }> {
     if (this.#closed) throw new Error(`${this.#name} provider is closed.`);
     let endpoint: URL;
@@ -515,7 +525,12 @@ export class RemoteMcpProvider {
       });
       return {
         response,
-        bytes: await readResponseBytes(response, maximumBytes, `${this.#name} response`),
+        bytes: await readResponseBytes(
+          response,
+          maximumBytes,
+          `${this.#name} response`,
+          isComplete ? (bytes) => isComplete(response, bytes) : undefined,
+        ),
       };
     } catch (error) {
       if (init.signal?.aborted) {
@@ -1079,15 +1094,17 @@ export class RemoteMcpProvider {
     }
     const body = JSON.stringify(payload);
     if (Buffer.byteLength(body) > MAX_INPUT_BYTES) {
-      throw new IntegrationProviderPublicError(
-        `${this.#name} MCP request exceeded the allowed size.`,
-      );
+      // Refused locally before anything is sent, so even an admitted write did not happen.
+      throw new RemoteRejection(`${this.#name} MCP request exceeded the allowed size.`);
     }
     const { response, bytes } = await this.#request(
       this.#endpointUrl(access.endpoint),
       { method: "POST", headers: this.#mcpHeaders(access, method, params), body, signal },
       maximumBytes,
       timeoutMs,
+      (received, soFar) =>
+        (received.headers.get("content-type")?.toLowerCase() ?? "").includes("text/event-stream") &&
+        eventStreamHasResponse(soFar, id),
     );
     if (!response.ok) this.#rejectHttpStatus(response, method);
     this.#acceptSessionId(response);
@@ -1321,11 +1338,22 @@ export class RemoteMcpProvider {
         );
       }
     }
-    const response = await this.#postRevocation(discovery, current, grant.clientId, signal, access);
+    // A refresh that rotated the token makes the replacement the grant to revoke; keep it queued
+    // if revocation does not settle, since the spent token may stop working.
+    const replacement: PendingRevocation | null =
+      current === grant.refreshToken
+        ? null
+        : { clientId: grant.clientId, refreshToken: current, endpoint: grant.endpoint };
+    let response: Response;
+    try {
+      response = await this.#postRevocation(discovery, current, grant.clientId, signal, access);
+    } catch {
+      throw new RevocationIncomplete(failed().message, replacement);
+    }
     // A freshly issued access token is only refused when the service will not revoke this grant's
     // endpoint, so retrying cannot help.
     if (response.status === 401) return;
-    if (!response.ok) throw failed();
+    if (!response.ok) throw new RevocationIncomplete(failed().message, replacement);
     if (current !== grant.refreshToken) {
       // The service may keep honoring a spent refresh token; revoke it as well, best effort.
       await this.#postRevocation(discovery, grant.refreshToken, grant.clientId, signal, access)
@@ -1516,7 +1544,8 @@ export class RemoteMcpProvider {
       } catch (error) {
         if (commitSignal.aborted) throw error;
       }
-      const reserved = existing ? 2 : 1;
+      // The replaced grant, a refreshed replacement for it, and an issued grant that fails setup.
+      const reserved = existing ? 3 : 1;
       if ((await this.#readPendingRevocations()).length > MAX_PENDING_REVOCATIONS - reserved) {
         throw new ConfirmedRemoteFailure(
           `${this.#name} has not confirmed revoking earlier sign-ins. Try again once ${this.#name} accepts revocation.`,
@@ -1924,6 +1953,9 @@ export class RemoteMcpProvider {
       } catch (error) {
         if (signal.aborted) throw error;
         remaining.push(grant);
+        if (error instanceof RevocationIncomplete && error.replacement) {
+          remaining.push(error.replacement);
+        }
       }
     }
     await this.#writePendingRevocations(remaining);
@@ -1941,6 +1973,7 @@ export class RemoteMcpProvider {
       refreshToken: grant.refreshToken,
       endpoint: grant.endpoint,
     };
+    const queued: PendingRevocation[] = [pendingGrant];
     try {
       await this.#revokeGrant(
         discovery,
@@ -1952,13 +1985,17 @@ export class RemoteMcpProvider {
         accessToken,
       );
       return;
-    } catch {
+    } catch (error) {
       // Fall through to the durable queue.
+      if (error instanceof RevocationIncomplete && error.replacement) {
+        queued.push(error.replacement);
+      }
     }
     const pending = await this.#readPendingRevocations();
-    if (!pending.some((entry) => entry.refreshToken === grant.refreshToken)) {
-      await this.#writePendingRevocations([...pending, pendingGrant]);
-    }
+    const additions = queued.filter(
+      (entry) => !pending.some((existing) => existing.refreshToken === entry.refreshToken),
+    );
+    if (additions.length > 0) await this.#writePendingRevocations([...pending, ...additions]);
   }
 
   disconnect(context?: IntegrationLifecycleContext): Promise<void> {

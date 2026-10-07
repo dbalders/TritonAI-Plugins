@@ -4,6 +4,7 @@ import { IntegrationProviderPublicError } from "../host-contract.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
+const lenientDecoder = new TextDecoder("utf-8");
 
 export const MAX_INPUT_BYTES = 2 * 1024 * 1024;
 const MAX_JSON_DEPTH = 32;
@@ -40,6 +41,7 @@ export async function readResponseBytes(
   response: Response,
   maximumBytes: number,
   label: string,
+  isComplete?: (bytes: Uint8Array) => boolean,
 ): Promise<Uint8Array> {
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > maximumBytes) {
@@ -59,10 +61,19 @@ export async function readResponseBytes(
         throw new Error(`${label} exceeded the allowed size.`);
       }
       chunks.push(value);
+      // A server may keep an event stream open after it has answered; stop once the answer is in.
+      if (isComplete && isComplete(concatenate(chunks, total))) {
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
     }
   } finally {
     reader.releaseLock();
   }
+  return concatenate(chunks, total);
+}
+
+function concatenate(chunks: ReadonlyArray<Uint8Array>, total: number): Uint8Array {
   const bytes = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
@@ -70,6 +81,28 @@ export async function readResponseBytes(
     offset += chunk.byteLength;
   }
   return bytes;
+}
+
+/** Whether an event stream received so far already holds the complete response for `id`. */
+export function eventStreamHasResponse(bytes: Uint8Array, id: string): boolean {
+  const text = lenientDecoder.decode(bytes).replace(/\r\n?/gu, "\n");
+  const boundary = text.lastIndexOf("\n\n");
+  if (boundary === -1) return false;
+  for (const block of text.slice(0, boundary).split("\n\n")) {
+    const data = block
+      .split("\n")
+      .filter((line) => line === "data" || line.startsWith("data:"))
+      .map((line) => line.slice(5).replace(/^ /u, ""))
+      .join("\n");
+    if (!data) continue;
+    try {
+      const message = JSON.parse(data) as Record<string, unknown>;
+      if (message.id === id && typeof message.method !== "string") return true;
+    } catch {
+      // Not this block.
+    }
+  }
+  return false;
 }
 
 export function parseJson(bytes: Uint8Array, label: string): Record<string, unknown> {
@@ -106,20 +139,36 @@ export function parseMcpPayload(
     throw new Error(`${label} had an invalid content type.`);
   }
   let text: string;
+  let cut = false;
   try {
     text = decoder.decode(bytes);
   } catch {
-    throw new Error(`${label} contained invalid event-stream text.`);
+    // A read stopped once the answer arrived can end inside a multi-byte character of a later,
+    // incomplete event. Only that trailing event may be malformed.
+    text = lenientDecoder.decode(bytes);
+    cut = true;
   }
   text = text.replace(/\r\n?/gu, "\n");
+  const parts = text.split("\n\n");
+  const trailing = text.endsWith("\n\n") ? null : (parts.pop() ?? null);
+  let matched = scanEvents(parts, id, label);
+  // An event is complete only at a blank line, but some servers close the stream without one.
+  if (!matched && trailing !== null && !cut) matched = scanEvents([trailing], id, label);
+  if (!matched) throw new Error(`${label} omitted its response.`);
+  return matched;
+}
+
+function scanEvents(
+  blocks: ReadonlyArray<string>,
+  id: string,
+  label: string,
+): Record<string, unknown> | null {
   let matched: Record<string, unknown> | null = null;
-  for (const block of text.split("\n\n")) {
+  for (const block of blocks) {
     const dataLines: string[] = [];
     let eventType = "message";
-    let meaningful = false;
     for (const line of block.split("\n")) {
       if (line === "" || line.startsWith(":")) continue;
-      meaningful = true;
       // Per the SSE format, a line without a colon is a field with an empty value, and unknown
       // fields (id, retry, or future ones) are ignored.
       const colon = line.indexOf(":");
@@ -128,7 +177,7 @@ export function parseMcpPayload(
       if (field === "event") eventType = value.trim();
       else if (field === "data") dataLines.push(value);
     }
-    if (!meaningful || dataLines.length === 0) continue;
+    if (dataLines.length === 0) continue;
     if (eventType !== "message") throw new Error(`${label} used an unsupported event type.`);
     const message = parseJson(encoder.encode(dataLines.join("\n")), label);
     if (typeof message.method === "string") {
@@ -143,7 +192,6 @@ export function parseMcpPayload(
     if (matched) throw new Error(`${label} contained duplicate responses.`);
     matched = message;
   }
-  if (!matched) throw new Error(`${label} omitted its response.`);
   return matched;
 }
 
