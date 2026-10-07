@@ -419,6 +419,8 @@ export class RemoteMcpProvider {
   #availableTools: ReadonlySet<string> = new Set();
   #pausedTools: ReadonlyArray<string> = [];
   #unofferedTools: ReadonlyArray<string> = [];
+  /** The last refresh hit a transient outage; the stored grant is fine and the next prepare retries. */
+  #renewalDeferred = false;
   #generation = 0;
   #connectAttempt = 0;
   #credentialRevision = 0;
@@ -1501,7 +1503,11 @@ export class RemoteMcpProvider {
         state: "connected",
         accountLabel: `${this.#name} (${endpoint.label})`,
         grantedCapabilities: [...endpoint.capabilities],
-        message: `Connected with your own ${this.#name} permissions (${endpoint.label.toLowerCase()} access).${paused}${unoffered}`,
+        message: `Connected with your own ${this.#name} permissions (${endpoint.label.toLowerCase()} access).${paused}${unoffered}${
+          this.#renewalDeferred
+            ? ` ${this.#name} was briefly unavailable while renewing access; the next request retries.`
+            : ""
+        }`,
       };
     } catch {
       return {
@@ -1785,6 +1791,7 @@ export class RemoteMcpProvider {
           await this.#writeCredential(parsed.credential, commitSignal, () => {
             persisted = true;
             issued = null;
+            this.#renewalDeferred = false;
           });
           this.#credentialRevision += 1;
           this.#generation += 1;
@@ -1907,7 +1914,10 @@ export class RemoteMcpProvider {
           // An outage or rate limit issued nothing and changed nothing. Settle without a session
           // so the connection is not faulted; invoke reports that access is not prepared, and the
           // next prepare retries the refresh.
-          if (response.status === 429 || response.status >= 500) return;
+          if (response.status === 429 || response.status >= 500) {
+            this.#renewalDeferred = true;
+            return;
+          }
           throw new IntegrationProviderPublicError(
             `${this.#name} access could not be refreshed. Disconnect and reconnect.`,
           );
@@ -1927,6 +1937,7 @@ export class RemoteMcpProvider {
         // MCP session round trip, which can fail routinely on a waking laptop.
         await this.#writeCredential(parsed.credential, commitSignal, () => {
           credentialPersisted = true;
+          this.#renewalDeferred = false;
           this.#credentialRevision += 1;
           this.#accessToken = parsed.access;
           this.#resetSession();
@@ -2069,6 +2080,7 @@ export class RemoteMcpProvider {
         this.#accessToken = null;
         this.#credentialRevision += 1;
         this.#uncertainCredentialState = false;
+        this.#renewalDeferred = false;
         // Local reset is already durable. Network cleanup is bounded and best effort; an outage
         // or cancellation cannot turn it into a faulted connection again.
         const endpoint = credential
@@ -2136,7 +2148,9 @@ export class RemoteMcpProvider {
       this.#uncertainCredentialState
     ) {
       throw new IntegrationProviderPublicError(
-        `${this.#name} access is not prepared. Reconnect if this continues.`,
+        this.#renewalDeferred && !this.#uncertainCredentialState
+          ? `${this.#name} was briefly unavailable while renewing access, so this call was not run. Try again in a moment.`
+          : `${this.#name} access is not prepared. Reconnect if this continues.`,
       );
     }
     const assertAvailable = () => {

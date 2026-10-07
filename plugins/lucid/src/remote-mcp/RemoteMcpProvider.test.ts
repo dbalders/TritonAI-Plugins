@@ -645,12 +645,12 @@ describe("RemoteMcpProvider", () => {
       remote({ tokenGatewayError: { grant: "refresh_token", status: 503 } }).fetchImplementation,
     );
     await expect(outage.prepare(lifecycle())).resolves.toBeUndefined();
-    await expect(outage.status({ signal: new AbortController().signal })).resolves.toMatchObject({
-      state: "connected",
-    });
+    const status = await outage.status({ signal: new AbortController().signal });
+    expect(status).toMatchObject({ state: "connected" });
+    expect(status.message).toContain("briefly unavailable while renewing access");
     await expect(
       outage.invoke("example.fetch", { documentId: "d" }, invocation(false)),
-    ).rejects.toThrow(/not prepared/u);
+    ).rejects.toThrow(/briefly unavailable while renewing access, so this call was not run/u);
     const recovered = new RemoteMcpProvider(POLICY, secrets.service, remote().fetchImplementation);
     await recovered.prepare(lifecycle());
     await expect(

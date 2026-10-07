@@ -2636,6 +2636,8 @@ var RemoteMcpProvider = class {
   #availableTools = /* @__PURE__ */ new Set();
   #pausedTools = [];
   #unofferedTools = [];
+  /** The last refresh hit a transient outage; the stored grant is fine and the next prepare retries. */
+  #renewalDeferred = false;
   #generation = 0;
   #connectAttempt = 0;
   #credentialRevision = 0;
@@ -3470,7 +3472,7 @@ var RemoteMcpProvider = class {
         state: "connected",
         accountLabel: `${this.#name} (${endpoint.label})`,
         grantedCapabilities: [...endpoint.capabilities],
-        message: `Connected with your own ${this.#name} permissions (${endpoint.label.toLowerCase()} access).${paused}${unoffered}`
+        message: `Connected with your own ${this.#name} permissions (${endpoint.label.toLowerCase()} access).${paused}${unoffered}${this.#renewalDeferred ? ` ${this.#name} was briefly unavailable while renewing access; the next request retries.` : ""}`
       };
     } catch {
       return {
@@ -3710,6 +3712,7 @@ var RemoteMcpProvider = class {
           await this.#writeCredential(parsed.credential, commitSignal, () => {
             persisted = true;
             issued = null;
+            this.#renewalDeferred = false;
           });
           this.#credentialRevision += 1;
           this.#generation += 1;
@@ -3822,7 +3825,10 @@ var RemoteMcpProvider = class {
             this.#resetSession();
             return;
           }
-          if (response.status === 429 || response.status >= 500) return;
+          if (response.status === 429 || response.status >= 500) {
+            this.#renewalDeferred = true;
+            return;
+          }
           throw new IntegrationProviderPublicError(
             `${this.#name} access could not be refreshed. Disconnect and reconnect.`
           );
@@ -3840,6 +3846,7 @@ var RemoteMcpProvider = class {
         }
         await this.#writeCredential(parsed.credential, commitSignal, () => {
           credentialPersisted = true;
+          this.#renewalDeferred = false;
           this.#credentialRevision += 1;
           this.#accessToken = parsed.access;
           this.#resetSession();
@@ -3963,6 +3970,7 @@ var RemoteMcpProvider = class {
         this.#accessToken = null;
         this.#credentialRevision += 1;
         this.#uncertainCredentialState = false;
+        this.#renewalDeferred = false;
         const endpoint = credential ? this.#endpointForPath(credential.endpoint) : this.#policy.endpoints[0];
         let discovery;
         try {
@@ -4013,7 +4021,7 @@ var RemoteMcpProvider = class {
     const access = this.#accessToken;
     if (!access || access.expiresAt - ACCESS_TOKEN_SKEW_MS <= Date.now() || !this.#sessionVerified || this.#closed || this.#disconnecting || this.#uncertainCredentialState) {
       throw new IntegrationProviderPublicError(
-        `${this.#name} access is not prepared. Reconnect if this continues.`
+        this.#renewalDeferred && !this.#uncertainCredentialState ? `${this.#name} was briefly unavailable while renewing access, so this call was not run. Try again in a moment.` : `${this.#name} access is not prepared. Reconnect if this continues.`
       );
     }
     const assertAvailable = () => {
