@@ -11,7 +11,7 @@ export const LUCID_CAPABILITIES: ReadonlyArray<PluginCapability> = [
     id: "read",
     displayName: "Read",
     description:
-      "Search and read Lucidchart and Lucidspark documents, folders, comments, images, shape libraries, and integrations the connected user can already see.",
+      "Search and read Lucidchart and Lucidspark documents, folders, comments, and images the connected user can already see. Lucid offers its authoring guides, integration list, style reading, script reference, and diagram checking only when Create and edit is also on.",
     access: "default",
   },
   {

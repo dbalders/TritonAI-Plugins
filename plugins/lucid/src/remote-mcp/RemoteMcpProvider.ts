@@ -555,6 +555,19 @@ export class RemoteMcpProvider {
   ): Promise<{ readonly response: Response; readonly json: Record<string, unknown> }> {
     const { response, bytes } = await this.#request(url, init, maximumBytes);
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+    if (!response.ok) {
+      // A refused request issued nothing. Hand callers the status, and the OAuth error body when
+      // there is one, instead of failing on a gateway's HTML error page.
+      let json: Record<string, unknown> = {};
+      if (contentType.includes("application/json")) {
+        try {
+          json = parseJson(bytes, `${this.#name} OAuth response`);
+        } catch {
+          json = {};
+        }
+      }
+      return { response, json };
+    }
     if (!contentType.includes("application/json")) {
       throw new Error(`${this.#name} OAuth endpoint returned an invalid content type.`);
     }
@@ -1879,6 +1892,10 @@ export class RemoteMcpProvider {
             // A known reset must settle admission successfully so Harness permits reconnect.
             return;
           }
+          // An outage or rate limit issued nothing and changed nothing. Settle without a session
+          // so the connection is not faulted; invoke reports that access is not prepared, and the
+          // next prepare retries the refresh.
+          if (response.status === 429 || response.status >= 500) return;
           throw new IntegrationProviderPublicError(
             `${this.#name} access could not be refreshed. Disconnect and reconnect.`,
           );

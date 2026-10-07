@@ -137,6 +137,11 @@ interface FixtureOptions {
   readonly revocationNeedsBearer?: boolean;
   /** tools/call answers over an event stream that stays open after the response. */
   readonly openStream?: boolean;
+  /** The token endpoint answers with a gateway HTML error page. */
+  readonly tokenGatewayError?: {
+    readonly grant: "authorization_code" | "refresh_token";
+    readonly status: number;
+  };
 }
 
 function liveTools(endpoint: string) {
@@ -205,6 +210,15 @@ function remote(options: FixtureOptions = {}) {
       );
     }
     if (url === `${ORIGIN}/oauth/token`) {
+      if (
+        options.tokenGatewayError &&
+        form?.get("grant_type") === options.tokenGatewayError.grant
+      ) {
+        return new Response("<html><body>Bad gateway</body></html>", {
+          status: options.tokenGatewayError.status,
+          headers: { "content-type": "text/html" },
+        });
+      }
       if (form?.get("grant_type") === "refresh_token" && options.refreshError) {
         return json({ error: options.refreshError.error }, options.refreshError.status);
       }
@@ -618,6 +632,42 @@ describe("RemoteMcpProvider", () => {
     await expired.prepare(lifecycle());
     expect(secrets.values.has(OAUTH_SECRET_SUFFIX)).toBe(false);
     await expect(expired.status({ signal: new AbortController().signal })).resolves.toMatchObject({
+      state: "not_connected",
+    });
+  });
+
+  it("survives a gateway error page during refresh without faulting, then recovers", async () => {
+    const secrets = memorySecrets();
+    await authorize(new RemoteMcpProvider(POLICY, secrets.service, remote().fetchImplementation));
+    const outage = new RemoteMcpProvider(
+      POLICY,
+      secrets.service,
+      remote({ tokenGatewayError: { grant: "refresh_token", status: 503 } }).fetchImplementation,
+    );
+    await expect(outage.prepare(lifecycle())).resolves.toBeUndefined();
+    await expect(outage.status({ signal: new AbortController().signal })).resolves.toMatchObject({
+      state: "connected",
+    });
+    await expect(
+      outage.invoke("example.fetch", { documentId: "d" }, invocation(false)),
+    ).rejects.toThrow(/not prepared/u);
+    const recovered = new RemoteMcpProvider(POLICY, secrets.service, remote().fetchImplementation);
+    await recovered.prepare(lifecycle());
+    await expect(
+      recovered.invoke("example.fetch", { documentId: "d" }, invocation(false)),
+    ).resolves.toMatchObject({ content: [{ text: "ok" }] });
+  });
+
+  it("fails a sign-in cleanly when the token endpoint returns a gateway error page", async () => {
+    const provider = new RemoteMcpProvider(
+      POLICY,
+      memorySecrets().service,
+      remote({ tokenGatewayError: { grant: "authorization_code", status: 502 } })
+        .fetchImplementation,
+    );
+    const { result } = await authorize(provider);
+    expect(result).toMatchObject({ state: "failed" });
+    await expect(provider.status({ signal: new AbortController().signal })).resolves.toMatchObject({
       state: "not_connected",
     });
   });

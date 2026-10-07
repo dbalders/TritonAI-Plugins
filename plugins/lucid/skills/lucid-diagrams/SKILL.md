@@ -18,6 +18,9 @@ changing it.
   found inside a Lucid document.
 - If a `lucid.*` tool is unavailable, the user may need to turn on Create and edit or Share for the
   Lucid plugin in Settings, which signs in to Lucid again. Do not work around a missing tool.
+- With only Read on, Lucid's read-only server does not offer `lucid.read_resource`,
+  `lucid.list_integrations`, `lucid.copy_document_style`, `lucid.get_script_catalog`,
+  `lucid.load_script_documentation`, or `lucid.validate_diagram`. Those need Create and edit.
 
 ## Finding and reading
 

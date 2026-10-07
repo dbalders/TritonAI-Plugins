@@ -2739,6 +2739,17 @@ var RemoteMcpProvider = class {
   async #requestJson(url, init, maximumBytes) {
     const { response, bytes } = await this.#request(url, init, maximumBytes);
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+    if (!response.ok) {
+      let json = {};
+      if (contentType.includes("application/json")) {
+        try {
+          json = parseJson(bytes, `${this.#name} OAuth response`);
+        } catch {
+          json = {};
+        }
+      }
+      return { response, json };
+    }
     if (!contentType.includes("application/json")) {
       throw new Error(`${this.#name} OAuth endpoint returned an invalid content type.`);
     }
@@ -3802,6 +3813,7 @@ var RemoteMcpProvider = class {
             this.#resetSession();
             return;
           }
+          if (response.status === 429 || response.status >= 500) return;
           throw new IntegrationProviderPublicError(
             `${this.#name} access could not be refreshed. Disconnect and reconnect.`
           );
