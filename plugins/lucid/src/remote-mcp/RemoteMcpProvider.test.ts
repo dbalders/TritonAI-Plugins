@@ -1158,6 +1158,35 @@ describe("RemoteMcpProvider", () => {
     ).toEqual([]);
   });
 
+  it("does not let an older overlapping sign-in remove a newer one", async () => {
+    const mock = remote();
+    let releaseFirst: () => void = () => undefined;
+    let discoveries = 0;
+    const fetchImplementation = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).includes("/.well-known/oauth-protected-resource") && discoveries++ === 0) {
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    const provider = new RemoteMcpProvider(POLICY, memorySecrets().service, fetchImplementation);
+    const older = provider.connect(["read"], lifecycle());
+    await vi.waitFor(() => expect(discoveries).toBe(1));
+    const newer = await provider.connect(["read"], lifecycle());
+    if (newer.kind !== "authorization_url") throw new Error("expected a browser flow");
+    releaseFirst();
+    await expect(older).rejects.toThrow(/replaced by a newer attempt/u);
+    const authorization = new URL(newer.authorizationUrl);
+    const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+    callback.searchParams.set("state", authorization.searchParams.get("state")!);
+    callback.searchParams.set("code", "code-fixture");
+    expect((await fetch(callback)).status).toBe(200);
+    await expect(provider.poll(newer.flowId, lifecycle())).resolves.toMatchObject({
+      state: "connected",
+    });
+  });
+
   it("refuses an oversize request locally without faulting an admitted write", async () => {
     const mock = remote();
     const provider = new RemoteMcpProvider(

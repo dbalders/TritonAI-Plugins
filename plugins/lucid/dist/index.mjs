@@ -3534,7 +3534,13 @@ var RemoteMcpProvider = class {
         `${this.#name} cannot grant that combination of access.`
       );
     }
+    const superseded = () => generation !== this.#generation || revision !== this.#credentialRevision || attempt !== this.#connectAttempt || this.#closed || this.#disconnecting;
     const discovery = await this.#discover(endpoint, context?.signal);
+    if (superseded()) {
+      throw new IntegrationProviderPublicError(
+        `${this.#name} sign-in was replaced by a newer attempt.`
+      );
+    }
     await this.#clearPendingFlows();
     const flowId = NodeCrypto2.randomUUID();
     const state = randomBase64Url(32);
@@ -3562,8 +3568,8 @@ var RemoteMcpProvider = class {
         }
       });
       const clientId = await this.#registerClient(discovery, flow.redirectUri, commitSignal);
-      if (generation !== this.#generation || revision !== this.#credentialRevision || attempt !== this.#connectAttempt || this.#closed || this.#disconnecting) {
-        throw new Error(`${this.#name} sign-in was superseded while starting.`);
+      if (superseded()) {
+        throw new ConfirmedRemoteFailure(`${this.#name} sign-in was replaced by a newer attempt.`);
       }
       flow.clientId = clientId;
       this.#pending.set(flowId, flow);
