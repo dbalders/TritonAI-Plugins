@@ -1266,6 +1266,10 @@ class TableauChanges {
       )
         throw failure("conflict", "The data-source connections changed. Prepare a new preview.");
     }
+    if (Date.now() >= plan.expiresAt) {
+      this.#plans.delete(input.planId);
+      throw failure("preview_required", "The preview expired. Prepare a fresh preview.");
+    }
     const signal = await context.beginCommit();
     if (!(signal instanceof AbortSignal))
       throw failure("invalid_context", "Harness returned an invalid commit signal.");
@@ -1276,6 +1280,8 @@ class TableauChanges {
     let dispatched = false;
     let stage = "change";
     try {
+      if (Date.now() >= plan.expiresAt)
+        throw failure("preview_required", "The preview expired. Prepare a fresh preview.");
       signal.throwIfAborted();
       const target = `${base}/${plan.resource}/${plan.id}`;
       let receipt;

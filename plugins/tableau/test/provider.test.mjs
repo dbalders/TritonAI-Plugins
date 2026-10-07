@@ -565,6 +565,48 @@ test("plans expire, are bounded, and disappear on disconnect", async (t) => {
   await assert.rejects(apply(f, fresh), (e) => e.code === "preview_required");
 });
 
+test("preview expiry during target preflight refuses commit admission", async (t) => {
+  const f = await writeFixture(t);
+  const plan = await preview(f);
+  let now = Date.parse(plan.expiresAt) - 1;
+  t.mock.method(Date, "now", () => now);
+  const fetch = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", async (...args) => {
+    const response = await fetch(...args);
+    now += 1;
+    return response;
+  });
+  await assert.rejects(
+    apply(f, plan, {
+      ...lifecycle(),
+      writeApproved: true,
+      beginCommit: async () => assert.fail("expired preview admitted"),
+    }),
+    (e) => e.code === "preview_required",
+  );
+  assert.equal(mutations(f).length, 0);
+});
+
+test("preview expiry during commit admission returns a rejection without dispatch", async (t) => {
+  const f = await writeFixture(t);
+  const plan = await preview(f);
+  let now = Date.parse(plan.expiresAt) - 1;
+  t.mock.method(Date, "now", () => now);
+  const result = await apply(f, plan, {
+    ...lifecycle(),
+    writeApproved: true,
+    beginCommit: async () => {
+      now += 1;
+      return new AbortController().signal;
+    },
+  });
+  assert.equal(result.status, "error");
+  assert.equal(result.code, "preview_required");
+  assert.equal(result.retryable, false);
+  assert.equal(mutations(f).length, 0);
+  await assert.rejects(apply(f, plan), (e) => e.code === "preview_required");
+});
+
 test("concurrent attempts consume a preview only once", async (t) => {
   const f = await writeFixture(t);
   const plan = await preview(f);
