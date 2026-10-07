@@ -51,6 +51,15 @@ importers:
 
   plugins/kuali-build: {}
 
+  plugins/lucid:
+    devDependencies:
+      '@tritonai/plugin-sdk':
+        specifier: workspace:^
+        version: link:../../packages/plugin-sdk
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+
   plugins/microsoft-365:
     devDependencies:
       effect:
