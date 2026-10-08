@@ -20,7 +20,7 @@
   "devDependencies": {
     "@types/node": "24.12.4",
     "acorn": "8.16.0",
-    "effect": "4.0.0-rc.112",
+    "effect": "4.0.0-rc.115",
     "es-module-lexer": "2.3.1",
     "semver": "7.7.2",
     "typescript": "~6.0.3",
