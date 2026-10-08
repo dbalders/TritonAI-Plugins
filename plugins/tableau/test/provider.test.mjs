@@ -615,7 +615,7 @@ test("concurrent attempts consume a preview only once", async (t) => {
   assert.equal(mutations(f).length, 1);
 });
 
-for (const status of [403, 500, "lost"])
+for (const status of [400, 403, 408, 409, 415, 429, 500, "lost"])
   test(`post-commit ${status} response never becomes success or an automatic retry`, async (t) => {
     const f = await writeFixture(t, () => {
       if (status === "lost") throw Error("private transport details");
@@ -624,10 +624,16 @@ for (const status of [403, 500, "lost"])
     const plan = await preview(f);
     const result = await apply(f, plan);
     assert.equal(result.retryable, false);
-    assert.equal(
-      status === 403 ? result.code : result.status,
-      status === 403 ? "access_denied" : "outcome_unknown",
-    );
+    if ([400, 409, 415].includes(status)) {
+      assert.equal(result.status, "error");
+      assert.equal(result.code, "tableau_request_rejected");
+      assert.ok(result.message.includes(`HTTP ${status}`));
+    } else {
+      assert.equal(
+        status === 403 ? result.code : result.status,
+        status === 403 ? "access_denied" : "outcome_unknown",
+      );
+    }
     assert.ok(!JSON.stringify(result).includes("private"));
     assert.equal(mutations(f).length, 1);
     await assert.rejects(apply(f, plan), (e) => e.code === "preview_required");

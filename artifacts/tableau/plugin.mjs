@@ -227,6 +227,13 @@ class TableauProvider {
           "This Tableau content was not found or is not visible to your account.",
         );
       if (response.status === 400 && form) throw failure("authorization_expired", RECONNECT);
+      // Preserve explicit validation, conflict, and media-type rejections.
+      // Do not infer a settled outcome from timeouts or throttling responses.
+      if ([400, 409, 415].includes(response.status))
+        throw failure(
+          "tableau_request_rejected",
+          `Tableau rejected the request (HTTP ${response.status}). Check the supplied values and content.`,
+        );
       throw failure(
         "tableau_request_failed",
         `Tableau returned HTTP ${response.status}. Try again or use a narrower request.`,
@@ -1401,9 +1408,13 @@ class TableauChanges {
     } catch (error) {
       const knownRejection =
         error?._tag === "PluginFailure" &&
-        ["access_denied", "not_found", "connection_required", "authorization_expired"].includes(
-          error.code,
-        );
+        [
+          "access_denied",
+          "not_found",
+          "connection_required",
+          "authorization_expired",
+          "tableau_request_rejected",
+        ].includes(error.code);
       if (!dispatched || knownRejection)
         return { ...resultError(error), retryable: false, operationId: plan.operationId };
       if (stage === "payload_upload")
