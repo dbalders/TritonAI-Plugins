@@ -1199,3 +1199,84 @@ test("later worklogs stay reachable when Jira ignores paging", async () => {
   assert.equal(page.startAt, 25);
   assert.equal(page.hasMore, false);
 });
+
+test("an identical append waiting for admission cannot send after another goes unconfirmed", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  const first = await prepareComment(provider, net);
+  const second = await prepareComment(provider, net);
+  let admit;
+  const admission = new Promise((resolve) => (admit = resolve));
+  const held = {
+    ...invocation([], { writeApproved: true }),
+    async beginCommit() {
+      await admission;
+      return new AbortController().signal;
+    },
+  };
+  const waiting = provider.invoke("jira.changes.apply", applyInput(second), held);
+  net.on(`POST ${API}/issue/ITS-1/comment`, () => {
+    throw new TypeError("socket hang up");
+  });
+  const lost = await provider.invoke(
+    "jira.changes.apply",
+    applyInput(first),
+    invocation([], { writeApproved: true }),
+  );
+  assert.equal(lost.status, "outcome_unknown");
+  admit();
+  const blocked = await waiting;
+  assert.equal(blocked.status, "not_applied");
+  assert.equal(blocked.code, "unconfirmed_duplicate");
+  assert.equal(blocked.earlierOperationId, lost.operationId);
+  assert.equal(net.count(`POST ${API}/issue/ITS-1/comment`), 1);
+});
+
+test("previews show the full written text and their hash covers the exact request", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  const prefix = "a".repeat(2_500);
+  const one = await prepareComment(provider, net, { body: `${prefix} first` });
+  const two = await prepareComment(provider, net, { body: `${prefix} second` });
+  assert.equal(one.preview.body, `${prefix} first`);
+  assert.notEqual(one.previewHash, two.previewHash);
+});
+
+test("transition screen fields the issue already has are not reported missing", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  net.on(`GET ${API}/issue/ITS-1`, (call) =>
+    json(
+      call.url.searchParams.get("fields").includes("customfield_9")
+        ? issue({ customfield_9: null })
+        : issue(),
+    ),
+  );
+  const transition = (fields) =>
+    json({ transitions: [{ id: "41", name: "Close", to: { id: "6", name: "Closed" }, fields }] });
+  net.on(`GET ${API}/issue/ITS-1/transitions`, [
+    () =>
+      transition({
+        summary: { name: "Summary", required: true },
+        comment: { name: "Comment", required: true },
+      }),
+    () => transition({ customfield_9: { name: "Root cause", required: true } }),
+  ]);
+  const preview = await provider.invoke(
+    "jira.changes.prepare_transition",
+    { issueKey: "ITS-1", transitionId: "41", comment: "Done." },
+    invocation(),
+  );
+  assert.equal(preview.status, "preview");
+  await assert.rejects(
+    provider.invoke(
+      "jira.changes.prepare_transition",
+      { issueKey: "ITS-1", transitionId: "41" },
+      invocation(),
+    ),
+    (error) => error.code === "missing_required_fields" && /Root cause/u.test(error.message),
+  );
+});

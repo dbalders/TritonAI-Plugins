@@ -1097,6 +1097,10 @@ function projectMetaField(fieldId, value) {
   };
 }
 
+function isEmptyFieldValue(value) {
+  return value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0);
+}
+
 function projectTransition(value) {
   if (!isPlainObject(value)) throw failure("invalid_response", "Jira returned an invalid transition.");
   const fields = isPlainObject(value.fields) ? value.fields : {};
@@ -1225,6 +1229,8 @@ export function createIntegrationProvider(context) {
   // Appending writes whose outcome is unknown, keyed by payload digest, so the same comment,
   // worklog, link, or issue is not blindly created twice.
   const unconfirmed = new Map();
+  // Payload digests of appends being sent right now.
+  const inFlight = new Set();
   let closed = false;
   let generation = 0;
   let access = null;
@@ -1581,8 +1587,10 @@ export function createIntegrationProvider(context) {
     while (plans.size >= MAX_PLANS) plans.delete(plans.keys().next().value);
     const planId = randomUUID();
     plan = { ...plan, summary: clip(oneLine(plan.summary), 590) };
+    // Written text appears in full in the preview; the hash also covers the exact request, so
+    // nothing sent can differ from what was previewed.
     const preview = { operation: plan.operation, summary: plan.summary, ...plan.preview };
-    const previewHash = digest(canonical(preview));
+    const previewHash = digest(canonical({ preview, request: plan.request }));
     const expiresAt = Date.now() + PLAN_LIFETIME_MS;
     plans.set(planId, {
       ...plan,
@@ -1660,7 +1668,7 @@ export function createIntegrationProvider(context) {
     if (changes.description !== undefined) {
       meta("description");
       fields.description = changes.description;
-      readable.description = clip(changes.description);
+      readable.description = changes.description;
     }
     if (changes.priority !== undefined) {
       const entry = meta("priority");
@@ -1847,8 +1855,20 @@ export function createIntegrationProvider(context) {
           const resolved = resolveAllowed(resolutionField, parsed.resolution, "resolution");
           body.fields = { resolution: resolved.id ? { id: resolved.id } : { name: resolved.name } };
         }
-        const missing = transition.fields
-          .filter((field) => field.required && !field.hasDefaultValue && !(field.fieldId === "resolution" && body.fields))
+        const required = transition.fields.filter(
+          (field) =>
+            field.required &&
+            !field.hasDefaultValue &&
+            !(field.fieldId === "resolution" && body.fields) &&
+            !(field.fieldId === "comment" && parsed.comment !== undefined),
+        );
+        // A required screen field that already has a value on the issue is kept by Jira.
+        const existing =
+          required.length > 0
+            ? await getIssue(current, parsed.issueKey, required.map((field) => field.fieldId), signal)
+            : null;
+        const missing = required
+          .filter((field) => isEmptyFieldValue(existing?.fields?.[field.fieldId]))
           .map((field) => `${field.name} (${field.fieldId})`);
         if (missing.length > 0) {
           throw failure("missing_required_fields", `This transition requires: ${missing.join(", ")}.`);
@@ -1864,7 +1884,7 @@ export function createIntegrationProvider(context) {
             transition: { id: transition.id, name: transition.name, to: transition.to?.name ?? null },
             from,
             resolution: parsed.resolution ?? null,
-            comment: clip(parsed.comment ?? null),
+            comment: parsed.comment ?? null,
           },
           request: { method: "POST", path: `/issue/${encodeURIComponent(parsed.issueKey)}/transitions`, body },
           fingerprint: { kind: "issue", issueKey: parsed.issueKey, value: issueFingerprint(issue) },
@@ -1912,7 +1932,7 @@ export function createIntegrationProvider(context) {
         return storePlan(current, {
           operation: "add_comment",
           summary: `Comment on ${parsed.issueKey} ${quoted(title, 80)}${parsed.visibility ? ` visible only to ${parsed.visibility.type} "${parsed.visibility.value}"` : ""}: ${quoted(parsed.body, 300)}`,
-          preview: { issueKey: parsed.issueKey, body: clip(parsed.body), visibility: parsed.visibility ?? null },
+          preview: { issueKey: parsed.issueKey, body: parsed.body, visibility: parsed.visibility ?? null },
           request: { method: "POST", path: `/issue/${encodeURIComponent(parsed.issueKey)}/comment`, body },
           payloadDigest,
           appends: true,
@@ -1931,7 +1951,7 @@ export function createIntegrationProvider(context) {
             author: comment.author?.displayName ?? comment.author?.name ?? null,
             visibility: comment.visibility,
             before: clip(comment.body),
-            after: clip(parsed.body),
+            after: parsed.body,
           },
           // Jira treats a comment update without visibility as public, so the current
           // restriction is sent back explicitly.
@@ -1960,7 +1980,7 @@ export function createIntegrationProvider(context) {
             issueKey: parsed.issueKey,
             timeSpent: parsed.timeSpent,
             started: parsed.started ?? "now",
-            comment: clip(parsed.comment ?? null),
+            comment: parsed.comment ?? null,
             remainingEstimate: "adjusted automatically by Jira",
           },
           request: {
@@ -2069,6 +2089,23 @@ export function createIntegrationProvider(context) {
         message: "UCSD Jira was disconnected or reconnected before this change was sent. Nothing was sent to Jira.",
       };
     }
+    if (plan.appends) {
+      // Another identical append may have been sent or gone unconfirmed while this one waited.
+      const record = unconfirmed.get(plan.payloadDigest);
+      if (inFlight.has(plan.payloadDigest) || (record && record.operationId !== plan.acknowledgedOperationId)) {
+        return {
+          status: "not_applied",
+          retryable: false,
+          operationId,
+          operation: plan.operation,
+          code: "unconfirmed_duplicate",
+          message:
+            "An identical change was sent moments ago. Nothing was sent to Jira. Read the issue to check whether it already exists before preparing it again.",
+          ...(record ? { earlierOperationId: record.operationId } : {}),
+        };
+      }
+      inFlight.add(plan.payloadDigest);
+    }
     let result;
     try {
       result = await jiraSend(fetchImplementation, current.token, plan.request.path, {
@@ -2078,6 +2115,7 @@ export function createIntegrationProvider(context) {
         signal: commitSignal,
       });
     } catch (error) {
+      if (plan.appends) inFlight.delete(plan.payloadDigest);
       if (error?.code === "request_too_large" || error?.code === "invalid_request") {
         return {
           status: "not_applied",
@@ -2098,6 +2136,8 @@ export function createIntegrationProvider(context) {
           "The change was sent but Jira's answer was lost. Read the issue to check whether it was applied before preparing anything again; do not retry blindly.",
       };
     }
+    // Synchronous from here, so the unconfirmed record below lands before another apply can look.
+    if (plan.appends) inFlight.delete(plan.payloadDigest);
     if (result.ok) {
       const output = {
         status: "applied",
