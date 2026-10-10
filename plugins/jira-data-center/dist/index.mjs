@@ -1433,12 +1433,17 @@ export function createIntegrationProvider(context) {
     else traffic.active -= 1;
   }
 
-  // Every Jira API request goes through here. A rate_limited failure means nothing was sent.
-  async function guardedSend(accessToken, path, options) {
+  // Every Jira API request goes through here. A rate_limited failure means nothing was sent;
+  // `dispatch.started` turns true only once the request is actually handed to fetch.
+  async function guardedSend(accessToken, path, options, dispatch = {}) {
     options.signal.throwIfAborted();
     admitRequest();
     await acquireSlot(options.signal);
     try {
+      // Jira may have asked us to pause while this call waited for a slot.
+      assertNotPaused();
+      options.signal.throwIfAborted();
+      dispatch.started = true;
       const result = await jiraSend(fetchImplementation, accessToken, path, options);
       if (result.status === 429 || result.status === 503) {
         pauseTraffic(retryAfter(result.response) ?? BACKOFF_SECONDS);
@@ -2204,17 +2209,33 @@ export function createIntegrationProvider(context) {
       }
       inFlight.add(plan.payloadDigest);
     }
+    const dispatch = { started: false };
     let result;
     try {
-      result = await guardedSend(current.token, plan.request.path, {
-        method: plan.request.method,
-        query: plan.request.query,
-        body: plan.request.body,
-        signal: commitSignal,
-      });
+      result = await guardedSend(
+        current.token,
+        plan.request.path,
+        {
+          method: plan.request.method,
+          query: plan.request.query,
+          body: plan.request.body,
+          signal: commitSignal,
+        },
+        dispatch,
+      );
     } catch (error) {
       if (plan.appends) inFlight.delete(plan.payloadDigest);
-      if (error?.code === "request_too_large" || error?.code === "invalid_request" || error?.code === "rate_limited") {
+      if (!dispatch.started) {
+        return {
+          status: "not_applied",
+          retryable: false,
+          operationId,
+          operation: plan.operation,
+          code: error?.code === "rate_limited" ? "rate_limited" : "cancelled",
+          message: "The change was stopped before it was sent. Nothing was sent to Jira.",
+        };
+      }
+      if (error?.code === "request_too_large" || error?.code === "invalid_request") {
         return {
           status: "not_applied",
           retryable: false,

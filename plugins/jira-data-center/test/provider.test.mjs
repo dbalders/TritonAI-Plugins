@@ -1355,3 +1355,59 @@ test("at most two Jira requests run at once; the rest wait their turn", async ()
   for (const release of releases) release();
   await Promise.all(reads);
 });
+
+test("a call waiting for a slot honors a pause Jira requested meanwhile", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  const gates = [];
+  const gated = (response) => async () => {
+    await new Promise((resolve) => gates.push(resolve));
+    return response();
+  };
+  net.on(`GET ${API}/issue/ITS-1`, [
+    gated(() => json({}, 503, { "retry-after": "60" })),
+    gated(() => json(issue())),
+  ]);
+  const reads = Array.from({ length: 3 }, () =>
+    provider.invoke("jira.issues.get", { issueKey: "ITS-1" }, invocation()).then(
+      () => "ok",
+      (error) => error.code,
+    ),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  gates.shift()();
+  await new Promise((resolve) => setImmediate(resolve));
+  for (const release of gates) release();
+  assert.deepEqual((await Promise.all(reads)).toSorted(), ["http_error", "ok", "rate_limited"]);
+  assert.equal(net.count(`GET ${API}/issue/ITS-1`), 2);
+});
+
+test("a write cancelled before it is sent is reported as not applied", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  const preview = await prepareComment(provider, net);
+  const gates = [];
+  net.on(`GET ${API}/issue/ITS-2`, async () => {
+    await new Promise((resolve) => gates.push(resolve));
+    return json(issue());
+  });
+  const busy = Array.from({ length: 2 }, () =>
+    provider.invoke("jira.issues.get", { issueKey: "ITS-2" }, invocation()),
+  );
+  const controller = new AbortController();
+  const applying = provider.invoke("jira.changes.apply", applyInput(preview), {
+    ...lifecycle([], controller),
+    writeApproved: true,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort(new Error("cancelled by the user"));
+  const result = await applying;
+  assert.equal(result.status, "not_applied");
+  assert.equal(result.code, "cancelled");
+  for (const release of gates) release();
+  await Promise.all(busy);
+  assert.equal(net.count(`POST ${API}/issue/ITS-1/comment`), 0);
+  assert.equal((await prepareComment(provider, net)).status, "preview");
+});
