@@ -1,41 +1,99 @@
 # UC San Diego Jira
 
-This dependency-free TritonAI plugin provides bounded, read-only access to the UC San Diego Jira
-Data Center instance at `https://its-pro.ucsd.edu`. It calls Jira's REST API directly over HTTPS.
-TritonAI Harness exposes the reviewed tools through its own MCP surface; the plugin does not use
-Atlassian's Cloud MCP service or an OAuth flow.
+This TritonAI plugin reads and, with the user's approval, changes the UC San Diego Jira Data Center
+instance at `https://its-pro.ucsd.edu` as the signed-in user. It calls Jira's REST API directly over
+HTTPS. Jira permissions are always authoritative: the plugin can only see and change what the
+connected person could in Jira.
 
 ## Connection
 
-Open the UCSD Jira [Personal Access Tokens page](https://its-pro.ucsd.edu/secure/ViewPersonalAccessTokens.jspa),
-sign in if prompted, select **Create token**, give the token a recognizable name such as
-`TritonAI Harness`, choose an appropriate expiration, and copy the token before closing the dialog.
-Then enable the plugin, select **Open token settings** if you still need the page, paste the token,
-and select **Connect**. The token is validated against UCSD Jira before it is stored through the
-Harness package-scoped secret store. Jira applies the connected user's existing project and issue
-permissions.
+Users select **Connect** and sign in to UCSD Jira in their browser, then select **Allow**. The
+plugin uses Jira's OAuth 2.0 authorization code flow with PKCE (S256) and a fresh `state` per
+attempt.
 
-The only accepted tenant configuration is `https://its-pro.ucsd.edu`; an omitted `tenantUrl`
-defaults to that exact origin. Paths, query strings, credentials, non-HTTPS URLs, lookalike hosts,
-and alternate ports are rejected.
+UCSD Jira incoming links are confidential clients: Jira requires the client secret on every token
+request. That secret must not ship in Harness, so a private TritonAI relay holds it. The relay is
+stateless and stores no codes or tokens:
 
-## Scope
+1. Harness starts a one-use listener on `127.0.0.1` and puts its port in `state`.
+2. Jira redirects the browser to the relay's registered HTTPS callback, which only redirects to
+   `http://127.0.0.1:<port>/tritonai/jira/callback` on the same computer.
+3. Harness checks the exact `state` and immediately redeems the code through the relay with its
+   PKCE verifier, which never leaves Harness. Jira codes expire within seconds by default.
+4. The refresh token is stored only in Harness's package-scoped secret store. Access tokens stay in
+   memory.
 
-The first version can read the connected user, list visible projects, search issues with bounded
-JQL, read one exact issue, list an issue's comments, and list visible Jira fields. Search results
-exclude descriptions and comments; those larger fields require an exact issue key. Responses are
-bounded and projected rather than returning arbitrary REST payloads.
+The browser and the Harness backend must therefore be on the same computer when connecting. That is
+the normal desktop case. A remote web or mobile client cannot complete the sign-in for a remote
+backend; connect from the desktop app or a browser on the backend's machine, after which every
+client uses the connection.
 
-The plugin deliberately excludes arbitrary Jira REST calls, attachments, worklogs, dashboards,
-filters, agile administration, user search, project administration, and every create, edit,
-transition, comment, assignment, link, upload, or delete operation. A later write-capable version
-should introduce separately reviewed capabilities and Harness write approval immediately before
-each fixed mutation.
+Connecting with only **Read UCSD Jira** requests the `READ` scope. Enabling **Change UCSD Jira**
+requests `WRITE`. If Jira grants less than requested, only the granted ability is enabled.
+
+Jira rotates refresh tokens on every use. Harness renews before invocation and while idle, at most
+one renewal at a time, and commits each rotation through the host. If Jira's answer to a renewal is
+lost, the stored token is retried; if Jira had already rotated it, the user is asked to connect
+again. Disconnect deletes the stored token and stops all pending sign-ins and previews. Jira Data
+Center documents no token revocation API for incoming OAuth clients, so access ends when Harness
+deletes its only copy and when Jira expires the unused refresh token.
+
+### Build configuration
+
+The private build configuration for `jira-data-center` must provide:
+
+```json
+{ "brokerUrl": "https://<relay origin>", "oauthClientId": "<client ID from the incoming link>" }
+```
+
+`tenantUrl` may be omitted; only `https://its-pro.ucsd.edu` is accepted. The client ID is not a
+secret. The client secret is never part of Harness configuration.
+
+## Load on UCSD Jira
+
+Each user's traffic is limited to two concurrent requests, with bursts of 20 then two per second, so
+a looping agent is stopped before it reaches Jira. When Jira answers 429 or 503, or a request times
+out after 15 seconds, every request pauses for Jira's `Retry-After` (default 30 seconds) and returns
+`rate_limited` without sending. Reads are bounded pages of fixed fields. Requests identify themselves
+as `TritonAI-Harness-Jira/1.1.0`. UCSD Jira's server-side limits stay authoritative; administrators
+can revoke all access by disabling the incoming application link.
+
+## Tools
+
+Reading (**Read UCSD Jira**): connected user, projects, bounded JQL search, one issue, comments,
+worklogs, fields, available transitions, create and edit metadata, assignable users, and link types.
+
+Changing (**Change UCSD Jira**, opt-in): create an issue, edit typed fields, transition, assign or
+unassign, add or edit a comment, log work, and link issues. Each change is a two-step tool pair:
+
+- A `jira.changes.prepare_*` tool validates the change against Jira's current metadata and the
+  user's permissions, and returns a preview with a human-readable summary. Nothing changes.
+- `jira.changes.apply` takes the preview's `planId`, `previewHash`, and exact `summary`. It is the
+  only write tool, so Harness asks for approval (showing that summary) immediately before the change.
+  The summary is generated by the plugin from the checked change and includes the values being
+  written, bounded to one line. A long value is shortened there with its full length noted; the
+  preview carries every written value in full, and its hash covers the exact request.
+
+Previews expire after ten minutes, work once, and are bound to the signed-in Jira account and
+connection. Before sending, apply rechecks the issue or comment and refuses with `conflict` if it
+changed. This check is a preflight, not an atomic lock: Jira offers no conditional update. A lost or
+5xx response is reported as `outcome_unknown` and never retried. Creating an identical issue,
+comment, worklog, or link after an unknown outcome is refused until the agent confirms it did not
+land and names the earlier `operationId`.
+
+Editing a restricted comment sends its current visibility back, because Jira makes a comment
+public when an update omits it. Link previews state the resulting sentence using Jira REST's
+convention that the `inwardIssue` shows the type's outward phrase ("A blocks B"); confirm this on
+UCSD Jira before relying on links.
+
+The plugin deliberately excludes deleting issues or comments, attachments, watchers, sprints and
+boards, project or permission administration, and arbitrary REST calls.
 
 References:
 
-- https://developer.atlassian.com/server/jira/platform/rest/v10001/intro/
-- https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html
+- https://confluence.atlassian.com/adminjiraserver/jira-oauth-2-0-provider-api-1115659070.html
+- https://confluence.atlassian.com/adminjiraserver/oauth-2-0-provider-system-properties-1115659073.html
+- https://developer.atlassian.com/server/jira/platform/rest/v10002/intro/
 
 From the repository root, run `pnpm --filter @tritonai/plugin-jira-data-center test` and
 `pnpm artifacts:sdk` to test and seal the deterministic artifact.

@@ -1,19 +1,36 @@
 # Security notes
 
-- Authentication uses a user-scoped Jira Data Center personal access token sent only as a Bearer
-  credential to the fixed `https://its-pro.ucsd.edu` origin.
-- The token is validated before storage and is retained only in the Harness package-scoped secret
-  store under this plugin's namespace.
-- Configuration rejects alternate origins, paths, ports, credentials, query strings, and URL
-  fragments. HTTP redirects are rejected.
-- The provider exposes fixed, read-only REST operations. It does not accept arbitrary URLs,
-  endpoints, HTTP methods, response expansions, field lists, or attachment locations.
-- Inputs, response byte size, JSON shape, pagination, collection sizes, and projected strings are
-  bounded. Unsafe object members and malformed JSON are rejected.
-- Jira permissions remain authoritative. A token cannot read projects or issues that its Jira user
-  cannot access.
-- Errors, status results, and tool responses never return the personal access token or raw
-  authorization headers.
+- Authentication is per-user Jira OAuth 2.0 authorization code with PKCE (S256) and a fresh,
+  timing-safe compared `state`. The browser returns through the TritonAI relay to a one-use
+  `127.0.0.1` listener that accepts one GET with the exact host, path, and parameters, then closes.
+- The Jira client secret exists only in the private relay. Harness configuration contains the public
+  client ID and relay origin. Redeeming a code requires the PKCE verifier, which only Harness holds;
+  a code relayed to the wrong machine or copied from browser history is useless.
+- The refresh token is stored only in the Harness package-scoped secret store. Access tokens remain in
+  memory. Neither appears in status, connection results, tool results, errors, or logs.
+- Refresh-token rotation is admitted through the host commit boundary before the request is sent,
+  serialized, and never retried concurrently. An unsaved rotated token is kept in memory and saved
+  later; a definitive rejection requires a new sign-in.
+- Configuration rejects alternate Jira origins, non-HTTPS or path-bearing relay origins, and
+  malformed client IDs. HTTP redirects are rejected.
+- Tools are fixed REST operations with strict input validation. Responses are byte-, shape-, and
+  size-bounded projections.
+- Writes require the opt-in write ability, a `WRITE` grant, Harness write approval, and commit
+  admission, in that order, for one previously prepared change. Previews are single-use, expire
+  after ten minutes, and are bound to the Jira account and connection. Applying rechecks the target
+  first and never retries after dispatch. Duplicate appends after an unknown outcome are refused
+  until acknowledged.
+- The approval summary is one bounded line, so long written text is shortened there with its full
+  length noted. The preview returns every written value in full and its hash covers the exact
+  request, so nothing can be sent that differs from the preview.
+- Load on UCSD Jira is bounded per user: at most two requests at once, a token bucket (bursts of 20,
+  then two per second) that stops runaway agent loops locally, and a pause of every request while
+  Jira answers 429 or 503 (for its `Retry-After`, or 30 seconds) or after a 15-second timeout, whose
+  query may still be running. Requests carry `User-Agent: TritonAI-Harness-Jira/1.1.0` so
+  administrators can find or throttle this traffic. UCSD Jira's own limits remain authoritative, and
+  disabling the incoming application link revokes every user's access at once.
+- Jira permissions remain authoritative. The plugin requests no admin scopes and cannot change
+  permissions or project configuration.
 
-Never place a live UCSD Jira token, issue content, project data, or sanitized-but-reversible
+Never place a live UCSD Jira token, client secret, issue content, project data, or reversible
 credential material in source, tests, logs, screenshots, issues, or pull requests.
