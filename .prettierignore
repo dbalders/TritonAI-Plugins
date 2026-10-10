@@ -4,4 +4,6 @@ plugins/synthetic-api-key/.tritonai-plugin/plugin.json
 plugins/kuali-build/.tritonai-plugin/plugin.json
 plugins/n8n/.tritonai-plugin/plugin.json
 plugins/jira-data-center/.tritonai-plugin/plugin.json
+plugins/tableau/.tritonai-plugin/plugin.json
+plugins/lucid/.tritonai-plugin/plugin.json
 artifacts/

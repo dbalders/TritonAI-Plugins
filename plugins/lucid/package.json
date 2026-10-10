@@ -1,0 +1,29 @@
+{
+  "name": "@tritonai/plugin-lucid",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "files": [
+    ".tritonai-plugin",
+    "skills",
+    "dist",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.mjs"
+  },
+  "scripts": {
+    "build": "node -e \"for (const path of ['dist','.sdk-build']) require('node:fs').rmSync(path,{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node scripts/generate-sdk-manifest.mjs && esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/index.mjs && node -e \"require('node:fs').rmSync('.sdk-build',{recursive:true,force:true})\"",
+    "capture": "node scripts/capture-upstream-tools.mjs",
+    "prepack": "pnpm build",
+    "test": "vp test run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@tritonai/plugin-sdk": "workspace:^",
+    "esbuild": "0.28.2"
+  }
+}
