@@ -1280,3 +1280,78 @@ test("transition screen fields the issue already has are not reported missing", 
     (error) => error.code === "missing_required_fields" && /Root cause/u.test(error.message),
   );
 });
+
+test("a runaway loop of Jira calls is stopped locally before reaching Jira", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  net.on(`GET ${API}/issue/ITS-1`, () => json(issue()));
+  let sent = 0;
+  let refusal;
+  for (let attempt = 0; attempt < 40 && !refusal; attempt += 1) {
+    try {
+      await provider.invoke("jira.issues.get", { issueKey: "ITS-1" }, invocation());
+      sent += 1;
+    } catch (error) {
+      refusal = error;
+    }
+  }
+  assert.equal(refusal?.code, "rate_limited");
+  assert.ok(refusal.details.retryAfterSeconds >= 1);
+  assert.ok(sent >= 15 && sent < 20, `sent ${sent}`);
+  assert.equal(net.count(`GET ${API}/issue/ITS-1`), sent);
+});
+
+test("every request stands down while Jira asks to slow down, and identifies itself", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  const preview = await prepareComment(provider, net);
+  net.on(`GET ${API}/issue/ITS-2`, (call) => {
+    assert.equal(call.init.headers["user-agent"], "TritonAI-Harness-Jira/2.0.0");
+    return json({}, 503, { "retry-after": "120" });
+  });
+  await assert.rejects(
+    provider.invoke("jira.issues.get", { issueKey: "ITS-2" }, invocation()),
+    (error) => error.code === "http_error",
+  );
+  await assert.rejects(
+    provider.invoke("jira.issues.get", { issueKey: "ITS-1" }, invocation()),
+    (error) => error.code === "rate_limited" && error.details.retryAfterSeconds > 100,
+  );
+  const events = [];
+  await assert.rejects(
+    provider.invoke(
+      "jira.changes.apply",
+      applyInput(preview),
+      invocation(events, { writeApproved: true }),
+    ),
+    (error) => error.code === "rate_limited",
+  );
+  assert.deepEqual(events, []);
+  assert.equal(net.count(`POST ${API}/issue/ITS-1/comment`), 0);
+});
+
+test("at most two Jira requests run at once; the rest wait their turn", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  const releases = [];
+  let started = 0;
+  net.on(`GET ${API}/issue/ITS-1`, async () => {
+    started += 1;
+    await new Promise((resolve) => releases.push(resolve));
+    return json(issue());
+  });
+  const reads = Array.from({ length: 3 }, () =>
+    provider.invoke("jira.issues.get", { issueKey: "ITS-1" }, invocation()),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(started, 2);
+  releases.shift()();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(started, 3);
+  for (const release of releases) release();
+  await Promise.all(reads);
+});

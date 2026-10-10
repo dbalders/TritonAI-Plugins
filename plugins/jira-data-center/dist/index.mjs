@@ -14,6 +14,14 @@ const AUTHORIZE_ENDPOINT = `${TENANT_ORIGIN}/rest/oauth2/latest/authorize`;
 const BROKER_CALLBACK_PATH = "/jira/callback";
 const LOOPBACK_CALLBACK_PATH = "/tritonai/jira/callback";
 const REQUEST_TIMEOUT_MS = 15_000;
+// Identifies this plugin's traffic in UCSD Jira logs so administrators can find or throttle it.
+const USER_AGENT = "TritonAI-Harness-Jira/2.0.0";
+// Loop protection only; UCSD Jira enforces the real limits. Far above an agent's normal pace.
+const REQUEST_BURST = 20;
+const REQUESTS_PER_SECOND = 2;
+const MAX_CONCURRENT_REQUESTS = 2;
+// How long every request stands down after Jira pushes back without saying for how long.
+const BACKOFF_SECONDS = 30;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_JSON_DEPTH = 32;
@@ -728,7 +736,11 @@ async function jiraSend(fetchImplementation, accessToken, path, { method = "GET"
       url.searchParams.set(key, value);
     }
   }
-  const headers = { accept: "application/json", authorization: `Bearer ${accessToken}` };
+  const headers = {
+    accept: "application/json",
+    authorization: `Bearer ${accessToken}`,
+    "user-agent": USER_AGENT,
+  };
   let encodedBody;
   if (body !== undefined) {
     encodedBody = JSON.stringify(body);
@@ -1231,6 +1243,9 @@ export function createIntegrationProvider(context) {
   const unconfirmed = new Map();
   // Payload digests of appends being sent right now.
   const inFlight = new Set();
+  // This user's Jira traffic: a token bucket against runaway loops, a small concurrency cap, and
+  // a shared pause while Jira asks us to slow down.
+  const traffic = { tokens: REQUEST_BURST, refilledAt: Date.now(), active: 0, waiting: [], pausedUntil: 0 };
   let closed = false;
   let generation = 0;
   let access = null;
@@ -1357,8 +1372,89 @@ export function createIntegrationProvider(context) {
     while (unconfirmed.size > MAX_UNCONFIRMED) unconfirmed.delete(unconfirmed.keys().next().value);
   }
 
+  function pauseTraffic(seconds) {
+    traffic.pausedUntil = Math.max(traffic.pausedUntil, Date.now() + seconds * 1_000);
+  }
+
+  function assertNotPaused() {
+    const now = Date.now();
+    if (now < traffic.pausedUntil) {
+      throw failure(
+        "rate_limited",
+        "UCSD Jira asked TritonAI to slow down, so nothing was sent. Wait, then try again.",
+        true,
+        { retryAfterSeconds: Math.ceil((traffic.pausedUntil - now) / 1_000) },
+      );
+    }
+  }
+
+  function admitRequest() {
+    assertNotPaused();
+    const now = Date.now();
+    traffic.tokens = Math.min(
+      REQUEST_BURST,
+      traffic.tokens + ((now - traffic.refilledAt) / 1_000) * REQUESTS_PER_SECOND,
+    );
+    traffic.refilledAt = now;
+    if (traffic.tokens < 1) {
+      throw failure(
+        "rate_limited",
+        "Too many UCSD Jira requests in a short time, so nothing was sent. Wait, then continue with fewer, narrower requests.",
+        true,
+        { retryAfterSeconds: Math.ceil((1 - traffic.tokens) / REQUESTS_PER_SECOND) },
+      );
+    }
+    traffic.tokens -= 1;
+  }
+
+  async function acquireSlot(signal) {
+    if (traffic.active < MAX_CONCURRENT_REQUESTS) {
+      traffic.active += 1;
+      return;
+    }
+    await new Promise((resolve, reject) => {
+      const waiter = () => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      const onAbort = () => {
+        traffic.waiting = traffic.waiting.filter((entry) => entry !== waiter);
+        reject(signal.reason);
+      };
+      traffic.waiting.push(waiter);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  function releaseSlot() {
+    const next = traffic.waiting.shift();
+    // A waiter inherits the slot, so the count only drops when nobody is waiting.
+    if (next) next();
+    else traffic.active -= 1;
+  }
+
+  // Every Jira API request goes through here. A rate_limited failure means nothing was sent.
+  async function guardedSend(accessToken, path, options) {
+    options.signal.throwIfAborted();
+    admitRequest();
+    await acquireSlot(options.signal);
+    try {
+      const result = await jiraSend(fetchImplementation, accessToken, path, options);
+      if (result.status === 429 || result.status === 503) {
+        pauseTraffic(retryAfter(result.response) ?? BACKOFF_SECONDS);
+      }
+      return result;
+    } catch (error) {
+      // A query slow enough to time out may still be running in Jira; don't stack another on it.
+      if (error?.code === "request_timeout") pauseTraffic(BACKOFF_SECONDS);
+      throw error;
+    } finally {
+      releaseSlot();
+    }
+  }
+
   async function readJson(accessToken, path, options) {
-    const result = await jiraSend(fetchImplementation, accessToken, path, options);
+    const result = await guardedSend(accessToken, path, options);
     if (!result.ok) {
       if (result.status === 401) forgetAccess(accessToken);
       throw readFailure(result);
@@ -2071,6 +2167,8 @@ export function createIntegrationProvider(context) {
       plans.delete(parsed.planId);
       throw failure("preview_required", "The preview expired. Prepare a fresh preview.");
     }
+    // While Jira asks us to slow down, the preview is kept so the user can approve it again later.
+    assertNotPaused();
     // Consumed before awaiting admission, with no await since the check above, so a concurrent
     // apply of the same plan fails instead of sending it twice. No outcome is ever replayed.
     plans.delete(parsed.planId);
@@ -2108,7 +2206,7 @@ export function createIntegrationProvider(context) {
     }
     let result;
     try {
-      result = await jiraSend(fetchImplementation, current.token, plan.request.path, {
+      result = await guardedSend(current.token, plan.request.path, {
         method: plan.request.method,
         query: plan.request.query,
         body: plan.request.body,
@@ -2116,7 +2214,7 @@ export function createIntegrationProvider(context) {
       });
     } catch (error) {
       if (plan.appends) inFlight.delete(plan.payloadDigest);
-      if (error?.code === "request_too_large" || error?.code === "invalid_request") {
+      if (error?.code === "request_too_large" || error?.code === "invalid_request" || error?.code === "rate_limited") {
         return {
           status: "not_applied",
           retryable: false,
