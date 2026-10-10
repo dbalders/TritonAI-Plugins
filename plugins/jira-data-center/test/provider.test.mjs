@@ -1411,3 +1411,31 @@ test("a write cancelled before it is sent is reported as not applied", async () 
   assert.equal(net.count(`POST ${API}/issue/ITS-1/comment`), 0);
   assert.equal((await prepareComment(provider, net)).status, "preview");
 });
+
+test("a write waiting for a slot is not sent after a disconnect", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  const preview = await prepareComment(provider, net);
+  const gates = [];
+  net.on(`GET ${API}/issue/ITS-2`, async () => {
+    await new Promise((resolve) => gates.push(resolve));
+    return json(issue());
+  });
+  const busy = Array.from({ length: 2 }, () =>
+    provider.invoke("jira.issues.get", { issueKey: "ITS-2" }, invocation()).catch(() => undefined),
+  );
+  const applying = provider.invoke(
+    "jira.changes.apply",
+    applyInput(preview),
+    invocation([], { writeApproved: true }),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  await provider.disconnect(lifecycle());
+  for (const release of gates) release();
+  const result = await applying;
+  assert.equal(result.status, "not_applied");
+  assert.equal(result.code, "preview_required");
+  await Promise.all(busy);
+  assert.equal(net.count(`POST ${API}/issue/ITS-1/comment`), 0);
+});

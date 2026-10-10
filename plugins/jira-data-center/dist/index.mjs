@@ -1434,7 +1434,8 @@ export function createIntegrationProvider(context) {
   }
 
   // Every Jira API request goes through here. A rate_limited failure means nothing was sent;
-  // `dispatch.started` turns true only once the request is actually handed to fetch.
+  // `dispatch.started` turns true only once the request is actually handed to fetch, and
+  // `dispatch.beforeSend` can refuse the request at that last moment.
   async function guardedSend(accessToken, path, options, dispatch = {}) {
     options.signal.throwIfAborted();
     admitRequest();
@@ -1443,6 +1444,7 @@ export function createIntegrationProvider(context) {
       // Jira may have asked us to pause while this call waited for a slot.
       assertNotPaused();
       options.signal.throwIfAborted();
+      dispatch.beforeSend?.();
       dispatch.started = true;
       const result = await jiraSend(fetchImplementation, accessToken, path, options);
       if (result.status === 429 || result.status === 503) {
@@ -2209,7 +2211,15 @@ export function createIntegrationProvider(context) {
       }
       inFlight.add(plan.payloadDigest);
     }
-    const dispatch = { started: false };
+    const dispatch = {
+      started: false,
+      // A disconnect or reconnect while this change waited for a request slot cancels it.
+      beforeSend() {
+        if (plan.generation !== generation) {
+          throw failure("preview_required", "UCSD Jira was disconnected or reconnected before this change was sent.");
+        }
+      },
+    };
     let result;
     try {
       result = await guardedSend(
@@ -2231,7 +2241,7 @@ export function createIntegrationProvider(context) {
           retryable: false,
           operationId,
           operation: plan.operation,
-          code: error?.code === "rate_limited" ? "rate_limited" : "cancelled",
+          code: ["rate_limited", "preview_required"].includes(error?.code) ? error.code : "cancelled",
           message: "The change was stopped before it was sent. Nothing was sent to Jira.",
         };
       }
