@@ -4,9 +4,7 @@ Plugins here are kept for later restoration but are not part of any release. Not
 directory is a workspace package, is built, sealed, tested, or appears in a tagged Plugins release,
 so Harness and Installer cannot ship it.
 
-| Plugin  | Paused     | Last version | Reason                                          |
-| ------- | ---------- | ------------ | ----------------------------------------------- |
-| Tableau | 2026-10-09 | 1.1.0        | Campus pushback; expected back in about a month |
+No plugins are currently paused.
 
 ## Restoring a plugin
 
