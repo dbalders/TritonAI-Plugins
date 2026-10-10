@@ -20,6 +20,9 @@
   after ten minutes, and are bound to the Jira account and connection. Applying rechecks the target
   first and never retries after dispatch. Duplicate appends after an unknown outcome are refused
   until acknowledged.
+- The approval summary is one bounded line, so long written text is shortened there with its full
+  length noted. The preview returns every written value in full and its hash covers the exact
+  request, so nothing can be sent that differs from the preview.
 - Jira permissions remain authoritative. The plugin requests no admin scopes and cannot change
   permissions or project configuration.
 

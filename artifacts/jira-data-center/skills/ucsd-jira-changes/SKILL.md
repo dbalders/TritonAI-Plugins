@@ -18,7 +18,8 @@ user approves it in Harness. Previews expire after ten minutes and work once.
    not request.
    For links, check that the preview sentence (for example "ITS-1 blocks ITS-2") says what the
    user meant; swap the issue keys if it does not.
-3. Show the user the preview summary and the important before/after values, then apply.
+3. Show the user the preview summary and the important before/after values, then apply. When the
+   summary shortens a long value, show the full text from the preview first.
 4. After `applied`, read the item again if the user needs confirmation of the final state.
 
 Handle results literally:
