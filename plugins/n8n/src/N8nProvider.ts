@@ -3216,9 +3216,15 @@ export class N8nProvider implements IntegrationProvider {
       return rejectedToolResult(failure.message);
     }
     if (!reviewed.upstreamReadOnly && admitted) {
-      this.#uncertainCredentialState = true;
-      throw new ExternalCommitOutcomeUnknownError(
-        "The n8n operation may have completed. Verify its result before retrying.",
+      // The write was sent but its outcome is unknown (timeout, dropped connection, server
+      // error). Report that to the agent as the call's result instead of throwing: a thrown error
+      // after admission makes the host shut the whole plugin off until the user resets the
+      // connection, which would also block the reads needed to check what happened. The
+      // credential is unaffected, nothing is retried automatically, and the message tells the
+      // agent not to resend blindly.
+      assertAccessCurrent();
+      return rejectedToolResult(
+        "n8n did not confirm whether this operation completed: the request failed after it was sent. Check the current state (for example with get_workflow_details or the execution) before retrying, and do not resend it blindly.",
       );
     }
     throw failure;

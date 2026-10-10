@@ -586,30 +586,53 @@ describe("N8nProvider", () => {
     await provider.close();
   });
 
-  it("faults after an admitted write has an unknown external outcome", async () => {
+  it("keeps the plugin available after an admitted write has an unknown external outcome", async () => {
     const secrets = memorySecrets();
     const mock = oauthMcpFetch();
     let failWrite = false;
+    let droppedCalls = 0;
     const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
-      if (failWrite && body?.method === "tools/call") throw new Error("fixture connection lost");
+      if (failWrite && body?.method === "tools/call") {
+        droppedCalls += 1;
+        throw new Error("fixture connection lost");
+      }
       return mock.fetchImplementation(input, init);
     }) as unknown as typeof fetch;
     const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
     await authorize(provider, mock.requests);
 
     failWrite = true;
+    const events: string[] = [];
+    await expect(
+      provider.invoke("n8n.archive_workflow", { workflowId: "wf" }, invocation(true, events)),
+    ).resolves.toEqual({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: expect.stringMatching(
+            /did not confirm whether this operation completed[\s\S]*do not resend it blindly/u,
+          ),
+        },
+      ],
+    });
+    expect(events).toEqual(["beginCommit"]);
+    // Nothing is retried automatically.
+    expect(droppedCalls).toBe(1);
+    await expect(provider.status()).resolves.toMatchObject({
+      state: "connected",
+      grantedCapabilities: ["read", "write"],
+    });
+
+    // Reads and later writes keep working, so the agent can check what happened.
+    failWrite = false;
+    await expect(
+      provider.invoke("n8n.get_workflow_details", { workflowId: "wf" }, invocation(false)),
+    ).resolves.toMatchObject({ content: [{ type: "text", text: "ok" }] });
     await expect(
       provider.invoke("n8n.archive_workflow", { workflowId: "wf" }, invocation(true)),
-    ).rejects.toMatchObject({
-      _tag: "ExternalCommitOutcomeUnknown",
-      code: "external_commit_outcome_unknown",
-      retryable: false,
-    });
-    await expect(provider.status()).resolves.toMatchObject({ state: "error" });
-
-    failWrite = false;
-    await provider.disconnect(lifecycle());
+    ).resolves.toMatchObject({ content: [{ type: "text", text: "ok" }] });
     await provider.close();
   });
 
@@ -636,29 +659,48 @@ describe("N8nProvider", () => {
           error: { code: -32_603, message: "fixture remote failure" },
         }),
     ],
-  ])("treats an admitted write followed by a %s as outcome-unknown", async (_label, response) => {
-    const secrets = memorySecrets();
-    const mock = oauthMcpFetch();
-    let failWrite = false;
-    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
-      if (failWrite && body?.method === "tools/call") return response(body);
-      return mock.fetchImplementation(input, init);
-    }) as unknown as typeof fetch;
-    const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
-    await authorize(provider, mock.requests);
+  ])(
+    "returns an unconfirmed result after an admitted write followed by a %s",
+    async (_label, response) => {
+      const secrets = memorySecrets();
+      const mock = oauthMcpFetch();
+      let failWrite = false;
+      const fetchImplementation = vi.fn(
+        async (input: string | URL | Request, init?: RequestInit) => {
+          const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+          if (failWrite && body?.method === "tools/call") return response(body);
+          return mock.fetchImplementation(input, init);
+        },
+      ) as unknown as typeof fetch;
+      const provider = new N8nProvider(secrets.service, { serverUrl: SERVER }, fetchImplementation);
+      await authorize(provider, mock.requests);
 
-    failWrite = true;
-    await expect(
-      provider.invoke("n8n.archive_workflow", { workflowId: "wf" }, invocation(true)),
-    ).rejects.toMatchObject({
-      _tag: "ExternalCommitOutcomeUnknown",
-      code: "external_commit_outcome_unknown",
-      retryable: false,
-    });
-    await expect(provider.status()).resolves.toMatchObject({ state: "error" });
-    await provider.close();
-  });
+      failWrite = true;
+      const result = await provider.invoke(
+        "n8n.archive_workflow",
+        { workflowId: "wf" },
+        invocation(true),
+      );
+      expect(result).toEqual({
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: expect.stringMatching(/did not confirm whether this operation completed/u),
+          },
+        ],
+      });
+      // The remote failure detail is not passed through for an unconfirmed write.
+      expect(JSON.stringify(result)).not.toContain("fixture remote failure");
+      await expect(provider.status()).resolves.toMatchObject({ state: "connected" });
+
+      failWrite = false;
+      await expect(
+        provider.invoke("n8n.get_workflow_details", { workflowId: "wf" }, invocation(false)),
+      ).resolves.toMatchObject({ content: [{ type: "text", text: "ok" }] });
+      await provider.close();
+    },
+  );
 
   it.each([
     [
@@ -797,6 +839,27 @@ describe("N8nProvider", () => {
     await expect(
       provider.invoke("n8n.search_projects", { limit: 1 }, invocation(false)),
     ).rejects.toThrow();
+  });
+
+  it("does not return an unconfirmed result after access changed during a write", async () => {
+    const mock = oauthMcpFetch();
+    let provider: N8nProvider | undefined;
+    let closeDuringCall = false;
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+      if (closeDuringCall && body?.method === "tools/call") {
+        closeDuringCall = false;
+        void provider?.close();
+        return json({ error: "late remote detail" }, 503);
+      }
+      return mock.fetchImplementation(input, init);
+    }) as unknown as typeof fetch;
+    provider = new N8nProvider(memorySecrets().service, { serverUrl: SERVER }, fetchImplementation);
+    await authorize(provider, mock.requests);
+    closeDuringCall = true;
+    await expect(
+      provider.invoke("n8n.archive_workflow", { workflowId: "wf" }, invocation(true)),
+    ).rejects.toThrow("n8n access changed during the tool call.");
   });
 
   it("resends an admitted write once when n8n reports the MCP session expired", async () => {
