@@ -1308,7 +1308,7 @@ test("every request stands down while Jira asks to slow down, and identifies its
   await signIn(provider, net);
   const preview = await prepareComment(provider, net);
   net.on(`GET ${API}/issue/ITS-2`, (call) => {
-    assert.equal(call.init.headers["user-agent"], "TritonAI-Harness-Jira/2.0.0");
+    assert.equal(call.init.headers["user-agent"], "TritonAI-Harness-Jira/1.1.0");
     return json({}, 503, { "retry-after": "120" });
   });
   await assert.rejects(

@@ -55,7 +55,7 @@ Each user's traffic is limited to two concurrent requests, with bursts of 20 the
 a looping agent is stopped before it reaches Jira. When Jira answers 429 or 503, or a request times
 out after 15 seconds, every request pauses for Jira's `Retry-After` (default 30 seconds) and returns
 `rate_limited` without sending. Reads are bounded pages of fixed fields. Requests identify themselves
-as `TritonAI-Harness-Jira/2.0.0`. UCSD Jira's server-side limits stay authoritative; administrators
+as `TritonAI-Harness-Jira/1.1.0`. UCSD Jira's server-side limits stay authoritative; administrators
 can revoke all access by disabling the incoming application link.
 
 ## Tools

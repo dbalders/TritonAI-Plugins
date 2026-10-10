@@ -15,7 +15,7 @@ const BROKER_CALLBACK_PATH = "/jira/callback";
 const LOOPBACK_CALLBACK_PATH = "/tritonai/jira/callback";
 const REQUEST_TIMEOUT_MS = 15_000;
 // Identifies this plugin's traffic in UCSD Jira logs so administrators can find or throttle it.
-const USER_AGENT = "TritonAI-Harness-Jira/2.0.0";
+const USER_AGENT = "TritonAI-Harness-Jira/1.1.0";
 // Loop protection only; UCSD Jira enforces the real limits. Far above an agent's normal pace.
 const REQUEST_BURST = 20;
 const REQUESTS_PER_SECOND = 2;

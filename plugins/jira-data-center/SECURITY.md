@@ -26,7 +26,7 @@
 - Load on UCSD Jira is bounded per user: at most two requests at once, a token bucket (bursts of 20,
   then two per second) that stops runaway agent loops locally, and a pause of every request while
   Jira answers 429 or 503 (for its `Retry-After`, or 30 seconds) or after a 15-second timeout, whose
-  query may still be running. Requests carry `User-Agent: TritonAI-Harness-Jira/2.0.0` so
+  query may still be running. Requests carry `User-Agent: TritonAI-Harness-Jira/1.1.0` so
   administrators can find or throttle this traffic. UCSD Jira's own limits remain authoritative, and
   disabling the incoming application link revokes every user's access at once.
 - Jira permissions remain authoritative. The plugin requests no admin scopes and cannot change
