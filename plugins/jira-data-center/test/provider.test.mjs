@@ -1049,3 +1049,153 @@ test("link previews state the resulting sentence", async () => {
   );
   assert.equal(preview.summary, 'Link: ITS-1 blocks ITS-2 ("Blocks")');
 });
+
+test("two concurrent approvals of one preview send it once", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  const preview = await prepareComment(provider, net);
+  net.on(`POST ${API}/issue/ITS-1/comment`, () => json({ id: "500" }, 201));
+  const results = await Promise.allSettled([
+    provider.invoke(
+      "jira.changes.apply",
+      applyInput(preview),
+      invocation([], { writeApproved: true }),
+    ),
+    provider.invoke(
+      "jira.changes.apply",
+      applyInput(preview),
+      invocation([], { writeApproved: true }),
+    ),
+  ]);
+  assert.deepEqual(results.map((result) => result.value?.status ?? result.reason.code).toSorted(), [
+    "applied",
+    "preview_required",
+  ]);
+  assert.equal(net.count(`POST ${API}/issue/ITS-1/comment`), 1);
+});
+
+test("an older identical preview cannot send after an unconfirmed outcome", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  const first = await prepareComment(provider, net);
+  const second = await prepareComment(provider, net);
+  net.on(`POST ${API}/issue/ITS-1/comment`, () => {
+    throw new TypeError("socket hang up");
+  });
+  const lost = await provider.invoke(
+    "jira.changes.apply",
+    applyInput(first),
+    invocation([], { writeApproved: true }),
+  );
+  assert.equal(lost.status, "outcome_unknown");
+  const events = [];
+  await assert.rejects(
+    provider.invoke(
+      "jira.changes.apply",
+      applyInput(second),
+      invocation(events, { writeApproved: true }),
+    ),
+    (error) =>
+      error.code === "unconfirmed_duplicate" && error.details.operationId === lost.operationId,
+  );
+  assert.deepEqual(events, []);
+  assert.equal(net.count(`POST ${API}/issue/ITS-1/comment`), 1);
+});
+
+test("a disconnect while sign-in is starting cannot be outlived by that sign-in", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  const connecting = provider.connect([READ], lifecycle());
+  await provider.disconnect(lifecycle());
+  await assert.rejects(connecting, (error) => error.code === "cancelled");
+});
+
+test("a preparation that spans a reconnect is refused", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  let reading;
+  const read = new Promise((resolve) => (reading = resolve));
+  net.on(`GET ${API}/issue/ITS-1`, async () => {
+    reading();
+    await gate;
+    return json(issue());
+  });
+  const preparing = provider.invoke(
+    "jira.changes.prepare_add_comment",
+    { issueKey: "ITS-1", body: "Replaced the toner." },
+    invocation(),
+  );
+  await read;
+  await signIn(provider, net, { n: 2 });
+  release();
+  await assert.rejects(preparing, (error) => error.code === "preview_required");
+});
+
+test("values beyond a truncated allowed list are left for Jira to check", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  const components = Array.from({ length: 150 }, (_, index) => ({
+    id: String(index),
+    name: `Team ${index}`,
+  }));
+  net.on(`GET ${API}/issue/ITS-1`, () => json(issue()));
+  net.on(`GET ${API}/issue/ITS-1/editmeta`, () =>
+    json({ fields: { components: { name: "Components", allowedValues: components } } }),
+  );
+  const preview = await provider.invoke(
+    "jira.changes.prepare_update_issue",
+    { issueKey: "ITS-1", components: ["Team 5", "Team 140"] },
+    invocation(),
+  );
+  assert.equal(preview.status, "preview");
+  net.on(`PUT ${API}/issue/ITS-1`, (call) => {
+    assert.deepEqual(call.body.fields.components, [{ id: "5" }, { name: "Team 140" }]);
+    return new Response(null, { status: 204 });
+  });
+  const result = await provider.invoke(
+    "jira.changes.apply",
+    applyInput(preview),
+    invocation([], { writeApproved: true }),
+  );
+  assert.equal(result.status, "applied");
+  net.on(`GET ${API}/issue/ITS-1/editmeta`, () =>
+    json({ fields: { components: { name: "Components", allowedValues: components.slice(0, 3) } } }),
+  );
+  await assert.rejects(
+    provider.invoke(
+      "jira.changes.prepare_update_issue",
+      { issueKey: "ITS-1", components: ["Team 140"] },
+      invocation(),
+    ),
+    (error) => error.code === "invalid_input",
+  );
+});
+
+test("later worklogs stay reachable when Jira ignores paging", async () => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  const worklogs = Array.from({ length: 30 }, (_, index) => ({
+    id: String(index),
+    author: user(),
+    timeSpent: "1h",
+  }));
+  net.on(`GET ${API}/issue/ITS-1/worklog`, () => json({ startAt: 0, total: 30, worklogs }));
+  const page = await provider.invoke(
+    "jira.worklogs.list",
+    { issueKey: "ITS-1", startAt: 25, maxResults: 10 },
+    invocation(),
+  );
+  assert.deepEqual(
+    page.worklogs.map((worklog) => worklog.id),
+    ["25", "26", "27", "28", "29"],
+  );
+  assert.equal(page.startAt, 25);
+  assert.equal(page.hasMore, false);
+});

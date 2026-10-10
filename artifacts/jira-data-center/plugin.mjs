@@ -1571,6 +1571,9 @@ export function createIntegrationProvider(context) {
 
   function storePlan(current, plan) {
     prunePlans();
+    if (current.generation !== generation) {
+      throw failure("preview_required", "UCSD Jira was reconnected while this change was prepared. Prepare it again.");
+    }
     if (plan.request.body !== undefined && encoder.encode(JSON.stringify(plan.request.body)).byteLength > MAX_REQUEST_BYTES) {
       throw failure("request_too_large", "This change is too large to send to Jira in one request. Shorten the text.");
     }
@@ -1585,7 +1588,7 @@ export function createIntegrationProvider(context) {
       ...plan,
       previewHash,
       expiresAt,
-      generation,
+      generation: current.generation,
       accountKey: current.accountKey,
     });
     return {
@@ -1628,6 +1631,8 @@ export function createIntegrationProvider(context) {
       options.find((option) => option.id === wanted) ??
       options.find((option) => option.name === wanted) ??
       options.find((option) => option.name?.toLocaleLowerCase("en-US") === wanted.toLocaleLowerCase("en-US"));
+    // Beyond the bounded list Jira validates the name itself when the change is sent.
+    if (!match?.id && meta.allowedValuesTruncated) return { name: wanted };
     if (!match?.id) {
       throw failure("invalid_input", `${label} "${wanted}" is not an allowed value here.`, false, {
         allowedValues: options.slice(0, 50).map((option) => option.name),
@@ -1790,6 +1795,7 @@ export function createIntegrationProvider(context) {
           request: { method: "POST", path: "/issue", body },
           payloadDigest,
           appends: true,
+          acknowledgedOperationId: parsed.afterUnconfirmedOperationId ?? null,
         });
       }
       case "jira.changes.prepare_update_issue": {
@@ -1910,6 +1916,7 @@ export function createIntegrationProvider(context) {
           request: { method: "POST", path: `/issue/${encodeURIComponent(parsed.issueKey)}/comment`, body },
           payloadDigest,
           appends: true,
+          acknowledgedOperationId: parsed.afterUnconfirmedOperationId ?? null,
         });
       }
       case "jira.changes.prepare_update_comment": {
@@ -1964,6 +1971,7 @@ export function createIntegrationProvider(context) {
           },
           payloadDigest,
           appends: true,
+          acknowledgedOperationId: parsed.afterUnconfirmedOperationId ?? null,
         });
       }
       case "jira.changes.prepare_link_issues": {
@@ -2000,6 +2008,7 @@ export function createIntegrationProvider(context) {
           request: { method: "POST", path: "/issueLink", body },
           payloadDigest,
           appends: true,
+          acknowledgedOperationId: parsed.afterUnconfirmedOperationId ?? null,
         });
       }
       default:
@@ -2042,10 +2051,24 @@ export function createIntegrationProvider(context) {
       plans.delete(parsed.planId);
       throw failure("preview_required", "The preview expired. Prepare a fresh preview.");
     }
-    const commitSignal = await admitCommit(invocationContext);
-    // Consumed before dispatch so no outcome, including an unknown one, can be replayed.
+    // Consumed before awaiting admission, with no await since the check above, so a concurrent
+    // apply of the same plan fails instead of sending it twice. No outcome is ever replayed.
     plans.delete(parsed.planId);
+    // An identical append whose earlier send went unconfirmed after this preview was prepared
+    // still needs the agent's acknowledgement.
+    if (plan.appends) guardDuplicate(plan.payloadDigest, plan.acknowledgedOperationId);
+    const commitSignal = await admitCommit(invocationContext);
     const operationId = randomUUID();
+    if (plan.generation !== generation) {
+      return {
+        status: "not_applied",
+        retryable: false,
+        operationId,
+        operation: plan.operation,
+        code: "preview_required",
+        message: "UCSD Jira was disconnected or reconnected before this change was sent. Nothing was sent to Jira.",
+      };
+    }
     let result;
     try {
       result = await jiraSend(fetchImplementation, current.token, plan.request.path, {
@@ -2186,16 +2209,19 @@ export function createIntegrationProvider(context) {
         ) {
           throw failure("invalid_response", `Jira returned an invalid ${comments ? "comment" : "worklog"} page.`);
         }
-        // Some Jira versions ignore paging for worklogs; slice so the response stays bounded.
-        const page = list.length > parsed.maxResults ? list.slice(0, parsed.maxResults) : list;
+        // Some Jira versions ignore paging for worklogs and return the whole list from 0; page it
+        // here from the requested offset so the response stays bounded and later entries reachable.
+        const offset = Math.max(0, parsed.startAt - value.startAt);
+        const page = list.slice(offset, offset + parsed.maxResults);
+        const startAt = value.startAt + offset;
         const items = page.map(comments ? projectComment : projectWorklog);
         return {
           issueKey: parsed.issueKey,
           [comments ? "comments" : "worklogs"]: items,
-          startAt: value.startAt,
+          startAt,
           total: value.total,
           returned: items.length,
-          hasMore: value.startAt + items.length < value.total,
+          hasMore: startAt + items.length < value.total,
         };
       }
       case "jira.fields.list": {
@@ -2417,8 +2443,15 @@ export function createIntegrationProvider(context) {
       }
       const requested = requestedCapabilities(capabilities);
       // One sign-in at a time: a newer attempt supersedes any unfinished one.
+      const startGeneration = generation;
       await closeAllFlows();
       const flow = await startFlow(requested, lifecycleContext.signal);
+      flow.generation = startGeneration;
+      if (generation !== startGeneration || closed) {
+        // Disconnect ran while the listener was opening and could not see this flow.
+        await closeFlow(flow);
+        throw failure("cancelled", "UCSD Jira was disconnected while sign-in was starting. Connect again.");
+      }
       const url = new URL(AUTHORIZE_ENDPOINT);
       url.searchParams.set("client_id", clientId);
       url.searchParams.set("redirect_uri", `${brokerUrl}${BROKER_CALLBACK_PATH}`);
@@ -2456,7 +2489,8 @@ export function createIntegrationProvider(context) {
         return { state: "failed", retryAfterSeconds: null, message: flow.result.message };
       }
       return serialized(async () => {
-        if (flows.get(flowId) !== flow || closed) {
+        if (flows.get(flowId) !== flow || closed || flow.generation !== generation) {
+          if (flows.get(flowId) === flow) await closeFlow(flow);
           return { state: "expired", retryAfterSeconds: null, message: "This Jira sign-in ended. Connect again." };
         }
         lifecycleContext.signal.throwIfAborted();
@@ -2552,7 +2586,8 @@ export function createIntegrationProvider(context) {
         throw failure("write_not_approved", "Harness must approve this Jira change before it can run.");
       }
       const parsed = validateInput(toolName, input);
-      const current = requireAccess(capability);
+      // The generation is captured now so a preparation that spans a reconnect is refused.
+      const current = { ...requireAccess(capability), generation };
       if (toolName === "jira.changes.apply") return applyChange(parsed, current, invocationContext);
       return runRead(toolName, parsed, current, invocationContext.signal);
     },
