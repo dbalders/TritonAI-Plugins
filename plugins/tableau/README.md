@@ -1,9 +1,9 @@
 # Tableau
 
-> [!WARNING]
-> **Paused 2026-10-09.** Tableau is not built or released and is not in TritonAI Harness or
-> Installer. The code is kept here unchanged for about a month. See [`paused/README.md`](../../README.md)
-> to restore it.
+> [!NOTE]
+> **Nightly only (since 2026-10-09).** Tableau ships in TritonAI Harness nightly builds through the
+> Installer nightly plugin catalog. It is not in stable Harness or the Installer until it is added
+> to the production catalog.
 
 `@tritonai/plugin-tableau` connects Harness directly to UCSD's campus business Tableau Server.
 It uses browser OAuth with PKCE and fourteen reviewed REST tools with opt-in writes. No separate MCP service,
