@@ -2213,10 +2213,14 @@ export function createIntegrationProvider(context) {
     }
     const dispatch = {
       started: false,
-      // A disconnect or reconnect while this change waited for a request slot cancels it.
+      // A disconnect, reconnect, or preview expiry while this change waited for a request slot
+      // cancels it.
       beforeSend() {
         if (plan.generation !== generation) {
           throw failure("preview_required", "UCSD Jira was disconnected or reconnected before this change was sent.");
+        }
+        if (Date.now() >= plan.expiresAt) {
+          throw failure("preview_required", "The preview expired before this change was sent.");
         }
       },
     };

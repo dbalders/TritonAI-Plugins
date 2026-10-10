@@ -1439,3 +1439,32 @@ test("a write waiting for a slot is not sent after a disconnect", async () => {
   await Promise.all(busy);
   assert.equal(net.count(`POST ${API}/issue/ITS-1/comment`), 0);
 });
+
+test("a preview that expires while waiting for a slot is not sent", async (t) => {
+  const net = network();
+  const provider = create(memorySecrets(), net);
+  await signIn(provider, net);
+  const preview = await prepareComment(provider, net);
+  const gates = [];
+  net.on(`GET ${API}/issue/ITS-2`, async () => {
+    await new Promise((resolve) => gates.push(resolve));
+    return json(issue());
+  });
+  const busy = Array.from({ length: 2 }, () =>
+    provider.invoke("jira.issues.get", { issueKey: "ITS-2" }, invocation()),
+  );
+  const applying = provider.invoke(
+    "jira.changes.apply",
+    applyInput(preview),
+    invocation([], { writeApproved: true }),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now + 11 * 60 * 1_000);
+  for (const release of gates) release();
+  const result = await applying;
+  assert.equal(result.status, "not_applied");
+  assert.equal(result.code, "preview_required");
+  await Promise.all(busy);
+  assert.equal(net.count(`POST ${API}/issue/ITS-1/comment`), 0);
+});
