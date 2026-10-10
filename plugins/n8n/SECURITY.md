@@ -8,8 +8,9 @@ only through the SDK's package-scoped secret facade.
 The local manifest, tool schemas, and effect classification are authoritative. Upstream tool
 discovery can verify the reviewed contract but cannot add tools, broaden schemas, or downgrade a
 write into a read. n8n remains the resource authorization boundary for the connected user's own
-account. The SDK host remains the approval and commit-admission boundary for writes. Nothing is
-ever replayed automatically after admission. A tool write whose outcome is unknown (timeout,
+account. The SDK host remains the approval and commit-admission boundary for writes. A write whose
+outcome is unknown is never replayed automatically; an admitted write is resent once only when n8n
+reports that the MCP session expired before dispatch. A tool write whose outcome is unknown (timeout,
 dropped connection, server error) returns an error result telling the agent to check the current
 state before retrying, so the plugin stays available. Only an ambiguous sign-in, refresh, client
 registration, or disconnect, where the stored credential itself may be wrong, is reported as an

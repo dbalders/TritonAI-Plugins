@@ -12985,6 +12985,7 @@ var N8nProvider = class {
       return rejectedToolResult(failure.message);
     }
     if (!reviewed.upstreamReadOnly && admitted) {
+      assertAccessCurrent();
       return rejectedToolResult(
         "n8n did not confirm whether this operation completed: the request failed after it was sent. Check the current state (for example with get_workflow_details or the execution) before retrying, and do not resend it blindly."
       );

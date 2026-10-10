@@ -3222,6 +3222,7 @@ export class N8nProvider implements IntegrationProvider {
       // connection, which would also block the reads needed to check what happened. The
       // credential is unaffected, nothing is retried automatically, and the message tells the
       // agent not to resend blindly.
+      assertAccessCurrent();
       return rejectedToolResult(
         "n8n did not confirm whether this operation completed: the request failed after it was sent. Check the current state (for example with get_workflow_details or the execution) before retrying, and do not resend it blindly.",
       );
