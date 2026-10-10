@@ -1,5 +1,10 @@
 # Tableau
 
+> [!WARNING]
+> **Paused 2026-10-09.** Tableau is not built or released and is not in TritonAI Harness or
+> Installer. The code is kept here unchanged for about a month. See [`paused/README.md`](../../README.md)
+> to restore it.
+
 `@tritonai/plugin-tableau` connects Harness directly to UCSD's campus business Tableau Server.
 It uses browser OAuth with PKCE and fourteen reviewed REST tools with opt-in writes. No separate MCP service,
 PAT, shared account, or Tableau-specific Harness runtime is required.
