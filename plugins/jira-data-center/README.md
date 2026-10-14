@@ -55,13 +55,16 @@ Each user's traffic is limited to two concurrent requests, with bursts of 20 the
 a looping agent is stopped before it reaches Jira. When Jira answers 429 or 503, or a request times
 out after 15 seconds, every request pauses for Jira's `Retry-After` (default 30 seconds) and returns
 `rate_limited` without sending. Reads are bounded pages of fixed fields. Requests identify themselves
-as `TritonAI-Harness-Jira/1.1.0`. UCSD Jira's server-side limits stay authoritative; administrators
+as `TritonAI-Harness-Jira/1.1.1`. UCSD Jira's server-side limits stay authoritative; administrators
 can revoke all access by disabling the incoming application link.
 
 ## Tools
 
 Reading (**Read UCSD Jira**): connected user, projects, bounded JQL search, one issue, comments,
 worklogs, fields, available transitions, create and edit metadata, assignable users, and link types.
+Search and issue results include each issue's `https://its-pro.ucsd.edu/browse/<KEY>` link. Every
+read is a GET, because UCSD Jira refuses POST requests, including `POST /search`, from a read-only
+(READ scope) token.
 
 Changing (**Change UCSD Jira**, opt-in): create an issue, edit typed fields, transition, assign or
 unassign, add or edit a comment, log work, and link issues. Each change is a two-step tool pair:

@@ -15,7 +15,7 @@ const BROKER_CALLBACK_PATH = "/jira/callback";
 const LOOPBACK_CALLBACK_PATH = "/tritonai/jira/callback";
 const REQUEST_TIMEOUT_MS = 15_000;
 // Identifies this plugin's traffic in UCSD Jira logs so administrators can find or throttle it.
-const USER_AGENT = "TritonAI-Harness-Jira/1.1.0";
+const USER_AGENT = "TritonAI-Harness-Jira/1.1.1";
 // Loop protection only; UCSD Jira enforces the real limits. Far above an agent's normal pace.
 const REQUEST_BURST = 20;
 const REQUESTS_PER_SECOND = 2;
@@ -978,9 +978,12 @@ function projectIssue(value, { includeDetails = false } = {}) {
     throw failure("invalid_response", "Jira returned an invalid issue.");
   }
   const fields = value.fields;
+  const key = requiredString(value.key, "issue key", 128);
   const output = {
     id: requiredString(value.id, "issue id", 128),
-    key: requiredString(value.key, "issue key", 128),
+    key,
+    // Agents otherwise guess the host; UCSD Jira lives only at its-pro.ucsd.edu.
+    url: `${TENANT_ORIGIN}/browse/${encodeURIComponent(key)}`,
     summary: requiredString(fields.summary, "issue summary", 32_768),
     status: projectNamed(fields.status, "issue status"),
     issueType: projectNamed(fields.issuetype, "issue type"),
@@ -2324,13 +2327,13 @@ export function createIntegrationProvider(context) {
         };
       }
       case "jira.issues.search": {
+        // GET, not POST: UCSD Jira refuses POST /search with a read-only (READ scope) token.
         const value = await readJson(current.token, "/search", {
-          method: "POST",
-          body: {
+          query: {
             jql: parsed.jql,
-            startAt: parsed.startAt,
-            maxResults: parsed.maxResults,
-            fields: SEARCH_FIELDS,
+            startAt: String(parsed.startAt),
+            maxResults: String(parsed.maxResults),
+            fields: SEARCH_FIELDS.join(","),
           },
           signal,
         });
