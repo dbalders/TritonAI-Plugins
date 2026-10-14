@@ -8,6 +8,10 @@ description: Read UC San Diego Jira projects, issues, comments, worklogs, and fi
 Use these tools only for the UC San Diego Jira Data Center instance at `its-pro.ucsd.edu`. They act
 as the signed-in user, so Jira shows only what that person can see.
 
+UCSD Jira has no other address: never write `jira.ucsd.edu` or any other host. Link an issue with
+the `url` the tools return (`https://its-pro.ucsd.edu/browse/<KEY>`). To send someone to a search in
+their browser, use `https://its-pro.ucsd.edu/issues/?jql=` followed by the URL-encoded JQL.
+
 Start with `jira.projects.list` when the project key is unknown. Use `jira.issues.search` with the
 narrowest practical JQL and pagination; search results intentionally omit descriptions and
 comments. Use `jira.issues.get`, `jira.comments.list`, or `jira.worklogs.list` only when an exact

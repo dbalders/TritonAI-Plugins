@@ -860,8 +860,16 @@ test("reads are bounded projections and HTTP failures do not leak bodies", async
   const net = network();
   const provider = create(memorySecrets(), net);
   await signIn(provider, net);
-  net.on(`POST ${API}/search`, (call) => {
-    assert.equal(call.body.maxResults, 2);
+  net.on(`GET ${API}/search`, (call) => {
+    // A read-only token cannot POST, so search sends its query in the URL.
+    assert.equal(call.body, undefined);
+    assert.equal(call.url.searchParams.get("jql"), "project = ITS");
+    assert.equal(call.url.searchParams.get("startAt"), "0");
+    assert.equal(call.url.searchParams.get("maxResults"), "2");
+    assert.equal(
+      call.url.searchParams.get("fields"),
+      "summary,status,issuetype,priority,assignee,reporter,project,created,updated,resolution,labels",
+    );
     return json({
       startAt: 0,
       maxResults: 2,
@@ -877,6 +885,7 @@ test("reads are bounded projections and HTTP failures do not leak bodies", async
   assert.equal(search.returned, 2);
   assert.equal(search.hasMore, true);
   assert.equal(search.issues[0].description, undefined);
+  assert.equal(search.issues[0].url, `https://its-pro.ucsd.edu/browse/${search.issues[0].key}`);
   net.on(`GET ${API}/issue/ITS-2`, () => json({ errorMessages: ["secret internal detail"] }, 500));
   await assert.rejects(
     provider.invoke("jira.issues.get", { issueKey: "ITS-2" }, invocation()),
@@ -1308,7 +1317,7 @@ test("every request stands down while Jira asks to slow down, and identifies its
   await signIn(provider, net);
   const preview = await prepareComment(provider, net);
   net.on(`GET ${API}/issue/ITS-2`, (call) => {
-    assert.equal(call.init.headers["user-agent"], "TritonAI-Harness-Jira/1.1.0");
+    assert.equal(call.init.headers["user-agent"], "TritonAI-Harness-Jira/1.1.1");
     return json({}, 503, { "retry-after": "120" });
   });
   await assert.rejects(
