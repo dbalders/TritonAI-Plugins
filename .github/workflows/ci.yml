@@ -8,9 +8,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   readiness:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -22,3 +27,69 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm readiness
+
+  harness-contract:
+    name: Harness contract (${{ matrix.channel }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - channel: stable
+            release: v0.3.7
+            commit: 65966171c1b6388d8bb6619369865ab2c8cf6ddb
+          - channel: nightly
+            release: v0.3.8-nightly.20261014.78
+            commit: ef03a9e243b17b682b29f117585db5278878a318
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Reviewed public release commits only. Never execute a caller-supplied host ref.
+      - name: Checkout pinned Harness
+        uses: actions/checkout@v4
+        with:
+          repository: dbalders/TritonAI-Harness
+          ref: ${{ matrix.commit }}
+          path: harness
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        id: host-pnpm
+        with:
+          version: 11.10.0
+          package_json_file: harness/package.json
+          dest: ~/setup-host-pnpm
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.24.0
+          dest: ~/setup-plugins-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.17.0
+          cache: pnpm
+      - name: Install contract dependencies without lifecycle scripts
+        env:
+          HOST_PNPM: ${{ steps.host-pnpm.outputs.bin_dest }}/pnpm
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          "$HOST_PNPM" --dir harness install --frozen-lockfile --ignore-scripts --filter t3...
+      - name: Verify exact host contract
+        env:
+          TRITONAI_HARNESS_ROOT: ${{ github.workspace }}/harness
+          TRITONAI_HARNESS_COMMIT: ${{ matrix.commit }}
+        run: pnpm contract:harness
+      - name: Record compatibility inputs
+        if: always()
+        env:
+          HOST_CHANNEL: ${{ matrix.channel }}
+          HOST_RELEASE: ${{ matrix.release }}
+          HOST_COMMIT: ${{ matrix.commit }}
+        run: |
+          {
+            echo "Plugin commit: $(git rev-parse HEAD)"
+            echo "Harness channel: $HOST_CHANNEL"
+            echo "Harness release: $HOST_RELEASE"
+            echo "Expected Harness commit: $HOST_COMMIT"
+            echo "Actual Harness commit: $(git -C harness rev-parse HEAD)"
+          } >> "$GITHUB_STEP_SUMMARY"
