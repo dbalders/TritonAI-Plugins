@@ -72,6 +72,22 @@ contents. `readiness:local` additionally checks the caller-supplied trusted Harn
 exact supplied commit, binds the server's installed Effect package to its catalog, lockfile patch,
 snapshot, and pnpm realpath identity, and reports the commit used for the proof.
 
+CI runs the same `contract:harness` proof for both reviewed release commits pinned in
+`.github/workflows/ci.yml`: stable `v0.3.7` at
+`65966171c1b6388d8bb6619369865ab2c8cf6ddb` and nightly `v0.3.8-nightly.20261014.78` at
+`ef03a9e243b17b682b29f117585db5278878a318`. Each job installs the selected host's locked server
+dependencies without lifecycle scripts and records the plugin and host commit identities in its
+run summary. These are compatibility baselines, not moving `latest` refs. Update each release label
+and full commit together after verifying the published tag resolves to that trusted commit; rerun
+the proof before accepting a new baseline. A newer host remains unverified until its pin advances.
+
+The regular test gate also exercises the packaged Jira provider through real local HTTP requests
+with separate READ-only and WRITE OAuth grants. The server enforces READ method restrictions, so
+a regression to POST-based search fails even when the same operation works with a WRITE grant.
+This proves the packaged provider's scoped HTTP behavior; it does not prove live tenant access,
+OAuth consent, or a released Harness connection. Live verification must use an existing authorized
+connection without printing credentials or creating production records.
+
 Publication, GitHub repository creation, tags, pushes, Harness composition, and releases remain
 explicit owner actions.
 
