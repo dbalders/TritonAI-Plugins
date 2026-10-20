@@ -70,6 +70,8 @@ const MAX_DRAFT_ATTACHMENT_BASE64_CHARS = 3_999_996;
 const MAX_DRAFT_REQUEST_BYTES = 4 * 1024 * 1024;
 // A reply draft's response repeats the quoted thread, and Graph ignores $select on createReply.
 const REPLY_DRAFT_RESPONSE_BYTES = 4 * 1024 * 1024;
+// The updated draft adds at most the escaped reply text to that thread.
+const REPLY_DRAFT_UPDATE_RESPONSE_BYTES = REPLY_DRAFT_RESPONSE_BYTES + 1024 * 1024;
 const MAX_CHAT_BODY_CHARS = 20_000;
 const MAX_CHAT_REQUEST_BYTES = 28 * 1024;
 // Base64 of this many bytes stays below the serialized host result ceiling.
@@ -1173,18 +1175,23 @@ function mailGetResult(value: Record<string, unknown>) {
   return boundedResult({ ...mailFields(value), body: projectedBody(value.body) });
 }
 
-// Microsoft documents that a reply comment may be left out of the draft body. Outlook re-encodes
-// the comment, so compare only its ASCII letters and digits with the returned body's visible text.
-function replyBodyIncludes(value: Record<string, unknown>, text: string) {
-  const expected = text.replace(/[^A-Za-z0-9]/gu, "");
-  if (expected === "") return true;
+// Graph creates the reply draft with the quoted history; the reply text is then written above it.
+// Microsoft documents that createReply's comment parameter isn't part of the draft body.
+function replyDraftBody(value: Record<string, unknown>, text: string) {
   const body = value.body === null || typeof value.body !== "object" ? {} : asRecord(value.body);
-  if (typeof body.content !== "string") return false;
-  return body.content
-    .replace(/<[^>]*>/gu, " ")
-    .replace(/&#?\w+;/gu, " ")
-    .replace(/[^A-Za-z0-9]/gu, "")
-    .includes(expected);
+  const content = body.content;
+  if (typeof content !== "string") return null;
+  if (body.contentType === "text") {
+    return { contentType: "text", content: `${text}\r\n\r\n${content}` };
+  }
+  if (body.contentType !== "html") return null;
+  const reply = `<div>${replyHtml(text)}</div><br>`;
+  const opening = /<body\b[^>]*>/iu.exec(content);
+  const index = opening === null ? 0 : opening.index + opening[0].length;
+  return {
+    contentType: "html",
+    content: `${content.slice(0, index)}${reply}${content.slice(index)}`,
+  };
 }
 
 function mailReplyDraftResult(value: Record<string, unknown>) {
@@ -1577,9 +1584,9 @@ function fileUpload(values: {
   };
 }
 
-// Graph treats a reply comment as HTML, so plain text is escaped and its line breaks, indentation,
-// and repeated spaces are kept.
-function replyComment(text: string) {
+// Plain reply text is escaped for an HTML draft body, keeping its line breaks, indentation, and
+// repeated spaces.
+function replyHtml(text: string) {
   return text
     .split(/\r\n?|\n/u)
     .map((line) =>
@@ -2616,36 +2623,48 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
       const action = values.replyAll === true ? "createReplyAll" : "createReply";
       const commitSignal = await this.#beginInvocationCommit(context);
       this.#assertInvocationCurrent(generation);
-      let result;
+      // Graph refusals are rethrown before a body is read, so any later failure leaves a draft
+      // behind; a retry would create a duplicate.
+      const draftExists = (problem: string) =>
+        new IntegrationProviderPublicError(
+          `Microsoft 365 created the reply draft, but ${problem}. Check Outlook Drafts before trying again.`,
+        );
+      let created;
       try {
-        result = await this.#graph(
+        created = await this.#graph(
           `/me/messages/${encodeURIComponent(values.messageId)}/${action}`,
           access.value,
           {
             method: "POST",
-            body: { comment: replyComment(values.body) },
+            body: {},
             signal: commitSignal,
             maximumResponseBytes: REPLY_DRAFT_RESPONSE_BYTES,
           },
         );
       } catch (error) {
-        // Graph refusals are rethrown before the body is read, so an oversized body means the
-        // draft exists; a retry would create a duplicate.
         if (error instanceof ResponseTooLargeError) {
-          throw new IntegrationProviderPublicError(
-            "Microsoft 365 created the reply draft, but its response was too large to read. Check Outlook Drafts before trying again.",
-          );
+          throw draftExists("its response was too large to read");
         }
         throw error;
       }
       this.#assertInvocationCurrent(generation);
-      const receipt = mailReplyDraftResult(result);
-      if (!replyBodyIncludes(result, values.body)) {
-        throw new IntegrationProviderPublicError(
-          "Microsoft 365 created the reply draft without the reply text. Check Outlook Drafts, then add the text there or delete that draft before trying again.",
-        );
+      mailReplyDraftResult(created);
+      const draftId = boundedString(created.id, 512);
+      const body = replyDraftBody(created, values.body);
+      if (body === null) throw draftExists("it returned no editable body for the reply text");
+      let updated;
+      try {
+        updated = await this.#graph(`/me/messages/${encodeURIComponent(draftId)}`, access.value, {
+          method: "PATCH",
+          body: { body },
+          signal: commitSignal,
+          maximumResponseBytes: REPLY_DRAFT_UPDATE_RESPONSE_BYTES,
+        });
+      } catch {
+        throw draftExists("the reply text could not be confirmed");
       }
-      return receipt;
+      this.#assertInvocationCurrent(generation);
+      return mailReplyDraftResult(updated);
     }
     if (toolName === "microsoft365.calendar.events") {
       this.#requireCapability(access, "calendar.read");

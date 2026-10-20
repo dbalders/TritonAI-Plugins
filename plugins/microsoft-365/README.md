@@ -28,15 +28,15 @@ Draft creation and mail organization remain separate product capabilities even t
 `Mail.ReadWrite`; selecting either one never enables the other.
 
 Reply drafts use Graph `createReply` or `createReplyAll`, which create the unsent draft inside the
-original message's conversation with Outlook's quoted history. Both actions need only
-`Mail.ReadWrite`. Graph treats the reply comment as HTML, so the provider escapes the plain-text body
-and keeps its line breaks, indentation, and repeated spaces. A reply draft's Graph response repeats
-the quoted thread and Graph ignores `$select` on these actions, so that one response may be up to
-4 MiB. If it is larger, the draft already exists and the tool reports that rather than inviting a
-duplicate retry. Microsoft documents that the reply comment can be left out of the draft body, so
-the provider confirms that the returned body contains the reply text and reports an error naming the
-existing draft when it does not. The receipt lists at most 50 addresses per recipient field and sets
-`recipientsTruncated` when a reply-all draft has more.
+original message's conversation with Outlook's quoted history. Microsoft documents that these
+actions' `comment` parameter isn't part of the draft body, so the provider sends no comment. Instead
+it updates the new draft's body, placing the escaped plain-text reply above the quoted history and
+keeping its line breaks, indentation, and repeated spaces. Both steps need only `Mail.ReadWrite`.
+Graph ignores `$select` on these actions and returns the quoted thread, so the create response may
+be up to 4 MiB and the update response up to 5 MiB. Once the draft exists, any failure to read it or
+add the text reports that the draft already exists rather than inviting a duplicate retry. The
+receipt lists at most 50 addresses per recipient field and sets `recipientsTruncated` when a
+reply-all draft has more.
 
 `chat.write` deliberately uses the tenant's already-approved `Chat.ReadWrite` delegated scope rather
 than introducing a new `ChatMessage.Send` approval. The capability and provider still expose only
@@ -54,6 +54,7 @@ The fixed endpoints follow the Microsoft Graph contracts for [reading a message]
 [creating a draft message](https://learn.microsoft.com/en-us/graph/api/user-post-messages?view=graph-rest-1.0),
 [creating a reply draft](https://learn.microsoft.com/en-us/graph/api/message-createreply?view=graph-rest-1.0),
 [creating a reply-all draft](https://learn.microsoft.com/en-us/graph/api/message-createreplyall?view=graph-rest-1.0),
+[updating a draft's body](https://learn.microsoft.com/en-us/graph/api/message-update?view=graph-rest-1.0),
 [listing mail folders](https://learn.microsoft.com/en-us/graph/api/user-list-mailfolders?view=graph-rest-1.0),
 [creating a mail folder](https://learn.microsoft.com/en-us/graph/api/user-post-mailfolders?view=graph-rest-1.0),
 [moving or archiving a message](https://learn.microsoft.com/en-us/graph/api/message-move?view=graph-rest-1.0),
