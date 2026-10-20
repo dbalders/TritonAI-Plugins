@@ -68,6 +68,10 @@ const MAX_ATTACHMENT_CONTENT_BASE64_BYTES = 350 * 1024;
 const MAX_RESULT_BYTES = 384 * 1024;
 const MAX_DRAFT_ATTACHMENT_BASE64_CHARS = 3_999_996;
 const MAX_DRAFT_REQUEST_BYTES = 4 * 1024 * 1024;
+// A reply draft's response repeats the quoted thread, and Graph ignores $select on createReply.
+const REPLY_DRAFT_RESPONSE_BYTES = 4 * 1024 * 1024;
+// The updated draft adds at most the escaped reply text to that thread.
+const REPLY_DRAFT_UPDATE_RESPONSE_BYTES = REPLY_DRAFT_RESPONSE_BYTES + 1024 * 1024;
 const MAX_CHAT_BODY_CHARS = 20_000;
 const MAX_CHAT_REQUEST_BYTES = 28 * 1024;
 // Base64 of this many bytes stays below the serialized host result ceiling.
@@ -250,6 +254,24 @@ const MailDraftCreateInput = Schema.Struct({
   attachments: Schema.optionalKey(
     DraftFileAttachmentList.annotate({
       description: "Optional file attachments included with the unsent draft.",
+    }),
+  ),
+});
+
+const MailDraftReplyInput = Schema.Struct({
+  messageId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+    description: "Exact Microsoft 365 identifier of the message being replied to.",
+  }),
+  body: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(MAX_INPUT_BODY_CHARS),
+  ).annotate({
+    description: "Plain-text reply placed above the quoted original message.",
+  }),
+  replyAll: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description:
+        "Address the reply to the sender and every original recipient. Defaults to the sender only.",
     }),
   ),
 });
@@ -442,6 +464,7 @@ const decodeCalendarEventGetInput = Schema.decodeUnknownPromise(CalendarEventGet
 const decodeCalendarAttachmentListInput = Schema.decodeUnknownPromise(CalendarAttachmentListInput);
 const decodeCalendarAttachmentGetInput = Schema.decodeUnknownPromise(CalendarAttachmentGetInput);
 const decodeMailDraftCreateInput = Schema.decodeUnknownPromise(MailDraftCreateInput);
+const decodeMailDraftReplyInput = Schema.decodeUnknownPromise(MailDraftReplyInput);
 const decodeCalendarEventCreateInput = Schema.decodeUnknownPromise(CalendarEventCreateInput);
 const decodeCalendarEventUpdateInput = Schema.decodeUnknownPromise(CalendarEventUpdateInput);
 const decodeChatListInput = Schema.decodeUnknownPromise(ChatListInput);
@@ -510,6 +533,16 @@ export const MICROSOFT_GRAPH_TOOLS = [
     description:
       "Create one unsent Microsoft 365 mail draft with a plain-text body and optional file attachments through a fixed endpoint.",
     input: MailDraftCreateInput,
+    readOnly: false,
+    destructive: false,
+    idempotent: false,
+    openWorld: true,
+  },
+  {
+    name: "microsoft365.mail.draft.reply",
+    description:
+      "Create one unsent Microsoft 365 reply or reply-all draft inside an existing message's conversation, with a plain-text body above the quoted original.",
+    input: MailDraftReplyInput,
     readOnly: false,
     destructive: false,
     idempotent: false,
@@ -994,10 +1027,16 @@ async function readJson(
   }
 }
 
+class ResponseTooLargeError extends Error {
+  constructor() {
+    super("Microsoft response exceeded the allowed size.");
+  }
+}
+
 async function readBytes(response: Response, maximumBytes: number): Promise<Uint8Array> {
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
-    throw new Error("Microsoft response exceeded the allowed size.");
+    throw new ResponseTooLargeError();
   }
   const reader = response.body?.getReader();
   if (!reader) throw new Error("Microsoft returned an empty response.");
@@ -1010,7 +1049,7 @@ async function readBytes(response: Response, maximumBytes: number): Promise<Uint
       total += value.byteLength;
       if (total > maximumBytes) {
         await reader.cancel().catch(() => undefined);
-        throw new Error("Microsoft response exceeded the allowed size.");
+        throw new ResponseTooLargeError();
       }
       chunks.push(value);
     }
@@ -1052,6 +1091,18 @@ function graphRecipients(value: unknown): ReadonlyArray<ReturnType<typeof graphE
     throw new Error("Microsoft Graph returned an invalid recipient response.");
   }
   return value.map((raw) => graphEmailAddress(asRecord(raw).emailAddress));
+}
+
+// Reply-all copies every original recipient, so a receipt keeps a bounded sample instead of
+// failing after Graph has already created the draft.
+function graphRecipientSample(value: unknown) {
+  if (!Array.isArray(value)) {
+    throw new Error("Microsoft Graph returned an invalid recipient response.");
+  }
+  return {
+    recipients: value.slice(0, 50).map((raw) => graphEmailAddress(asRecord(raw).emailAddress)),
+    truncated: value.length > 50,
+  };
 }
 
 function graphSender(value: unknown) {
@@ -1122,6 +1173,44 @@ function mailSearchResult(value: Record<string, unknown>, limit: number) {
 
 function mailGetResult(value: Record<string, unknown>) {
   return boundedResult({ ...mailFields(value), body: projectedBody(value.body) });
+}
+
+// Graph creates the reply draft with the quoted history; the reply text is then written above it.
+// Microsoft documents that createReply's comment parameter isn't part of the draft body.
+function replyDraftBody(value: Record<string, unknown>, text: string) {
+  const body = value.body === null || typeof value.body !== "object" ? {} : asRecord(value.body);
+  const content = body.content;
+  if (typeof content !== "string") return null;
+  if (body.contentType === "text") {
+    return { contentType: "text", content: `${text}\r\n\r\n${content}` };
+  }
+  if (body.contentType !== "html") return null;
+  const reply = `<div>${replyHtml(text)}</div><br>`;
+  const opening = /<body\b[^>]*>/iu.exec(content);
+  const index = opening === null ? 0 : opening.index + opening[0].length;
+  return {
+    contentType: "html",
+    content: `${content.slice(0, index)}${reply}${content.slice(index)}`,
+  };
+}
+
+function mailReplyDraftResult(value: Record<string, unknown>) {
+  if (value.isDraft !== true) {
+    throw new Error("Microsoft Graph did not return an unsent mail draft.");
+  }
+  const to = graphRecipientSample(value.toRecipients);
+  const cc = graphRecipientSample(value.ccRecipients);
+  const bcc = graphRecipientSample(value.bccRecipients);
+  return boundedResult({
+    id: boundedString(value.id, 512),
+    subject: boundedOptionalString(value.subject, 998),
+    to: to.recipients,
+    cc: cc.recipients,
+    bcc: bcc.recipients,
+    recipientsTruncated: to.truncated || cc.truncated || bcc.truncated,
+    isDraft: true,
+    webLink: boundedOptionalHttpsUrl(value.webLink, 2_048, OUTLOOK_WEB_HOSTS),
+  });
 }
 
 function mailDraftResult(value: Record<string, unknown>) {
@@ -1493,6 +1582,24 @@ function fileUpload(values: {
       text && contentType.startsWith("text/") ? `${contentType}; charset=utf-8` : contentType,
     bytes,
   };
+}
+
+// Plain reply text is escaped for an HTML draft body, keeping its line breaks, indentation, and
+// repeated spaces.
+function replyHtml(text: string) {
+  return text
+    .split(/\r\n?|\n/u)
+    .map((line) =>
+      line
+        .replace(/&/gu, "&amp;")
+        .replace(/</gu, "&lt;")
+        .replace(/>/gu, "&gt;")
+        .replace(/"/gu, "&quot;")
+        .replace(/'/gu, "&#39;")
+        .replace(/\t/gu, "    ")
+        .replace(/^ +| {2,}/gu, (spaces) => "&nbsp;".repeat(spaces.length)),
+    )
+    .join("<br>");
 }
 
 function recipients(addresses: ReadonlyArray<string>) {
@@ -2506,6 +2613,61 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
       });
       this.#assertInvocationCurrent(generation);
       return mailDraftResult(result);
+    }
+    if (toolName === "microsoft365.mail.draft.reply") {
+      this.#requireCapability(access, "mail.draft.create");
+      const values = await decodeMailDraftReplyInput(input, {
+        errors: "all",
+        onExcessProperty: "error",
+      });
+      const action = values.replyAll === true ? "createReplyAll" : "createReply";
+      const commitSignal = await this.#beginInvocationCommit(context);
+      this.#assertInvocationCurrent(generation);
+      // Only a Graph refusal proves nothing was created; after any other failure a draft may exist
+      // and a retry would create a duplicate.
+      const draftExists = (problem: string) =>
+        new IntegrationProviderPublicError(
+          `Microsoft 365 created the reply draft, but ${problem}. Check Outlook Drafts before trying again.`,
+        );
+      let created;
+      try {
+        created = await this.#graph(
+          `/me/messages/${encodeURIComponent(values.messageId)}/${action}`,
+          access.value,
+          {
+            method: "POST",
+            body: {},
+            signal: commitSignal,
+            maximumResponseBytes: REPLY_DRAFT_RESPONSE_BYTES,
+          },
+        );
+      } catch (error) {
+        if (error instanceof IntegrationProviderPublicError && error.unchanged) throw error;
+        if (error instanceof ResponseTooLargeError) {
+          throw draftExists("its response was too large to read");
+        }
+        throw new IntegrationProviderPublicError(
+          "Microsoft 365 may have created the reply draft, but its response could not be read. Check Outlook Drafts before trying again.",
+        );
+      }
+      this.#assertInvocationCurrent(generation);
+      mailReplyDraftResult(created);
+      const draftId = boundedString(created.id, 512);
+      const body = replyDraftBody(created, values.body);
+      if (body === null) throw draftExists("it returned no editable body for the reply text");
+      let updated;
+      try {
+        updated = await this.#graph(`/me/messages/${encodeURIComponent(draftId)}`, access.value, {
+          method: "PATCH",
+          body: { body },
+          signal: commitSignal,
+          maximumResponseBytes: REPLY_DRAFT_UPDATE_RESPONSE_BYTES,
+        });
+      } catch {
+        throw draftExists("the reply text could not be confirmed");
+      }
+      this.#assertInvocationCurrent(generation);
+      return mailReplyDraftResult(updated);
     }
     if (toolName === "microsoft365.calendar.events") {
       this.#requireCapability(access, "calendar.read");

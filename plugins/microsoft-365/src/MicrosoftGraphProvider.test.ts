@@ -221,6 +221,7 @@ describe("MicrosoftGraphProvider contract", () => {
         "microsoft365.mail.draft.create",
         { readOnly: false, destructive: false, idempotent: false },
       ],
+      ["microsoft365.mail.draft.reply", { readOnly: false, destructive: false, idempotent: false }],
       ["microsoft365.calendar.events", { readOnly: true, destructive: false, idempotent: true }],
       ["microsoft365.calendar.event.get", { readOnly: true, destructive: false, idempotent: true }],
       [
@@ -460,6 +461,11 @@ describe("MicrosoftGraphProvider contract", () => {
         "mail.organize",
         "microsoft365.mail.draft.create",
         { to: ["person@example.edu"], subject: "Review", body: "Please review." },
+      ],
+      [
+        "mail.organize",
+        "microsoft365.mail.draft.reply",
+        { messageId: "message-1", body: "Thanks" },
       ],
     ] as const) {
       const secrets = memorySecrets();
@@ -1980,6 +1986,264 @@ describe("MicrosoftGraphProvider tools", () => {
     });
   });
 
+  function replyGraph(
+    respond: (call: {
+      readonly url: string;
+      readonly init?: RequestInit;
+    }) => Response | Promise<Response>,
+  ) {
+    const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      graphCalls.push({ url, init });
+      return respond({ url, init });
+    }) as typeof fetch;
+    return { graph: provider(memorySecrets().service, fetchImplementation), graphCalls };
+  }
+
+  function replyDraft(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "reply/1",
+      subject: "RE: Budget",
+      toRecipients: [{ emailAddress: { name: "Sender", address: "sender@example.edu" } }],
+      ccRecipients: [{ emailAddress: { address: "team@example.edu" } }],
+      bccRecipients: [],
+      isDraft: true,
+      conversationId: "conversation-1",
+      webLink: "https://outlook.office365.com/owa/?ItemID=reply-1",
+      ...overrides,
+    };
+  }
+
+  it("creates a reply draft in the original conversation, then writes escaped text above the quote", async () => {
+    // Graph returns the whole quoted thread and ignores $select on these actions.
+    const quoted = `<hr><div id="divRplyFwdMsg">From: Sender</div>${"x".repeat(2 * 1024 * 1024)}`;
+    const { graph, graphCalls } = replyGraph(({ init }) =>
+      init?.method === "PATCH"
+        ? jsonResponse({ ...replyDraft(), body: JSON.parse(String(init.body)).body })
+        : jsonResponse(
+            replyDraft({
+              body: {
+                contentType: "html",
+                content: `<html><body dir="ltr">${quoted}</body></html>`,
+              },
+            }),
+            201,
+          ),
+    );
+    await authorize(graph, ["mail.draft.create"]);
+
+    const receipt = {
+      id: "reply/1",
+      subject: "RE: Budget",
+      to: [{ name: "Sender", address: "sender@example.edu" }],
+      cc: [{ name: null, address: "team@example.edu" }],
+      bcc: [],
+      recipientsTruncated: false,
+      isDraft: true,
+      webLink: "https://outlook.office365.com/owa/?ItemID=reply-1",
+    };
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.draft.reply",
+        {
+          messageId: "message/1?x",
+          body: `Thanks & see <b>notes</b>.\r\nSecond "line".\n\nIt's <script>x</script>\n  - item\tvalue  end`,
+        },
+        invocation(),
+      ),
+    ).resolves.toEqual(receipt);
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.draft.reply",
+        { messageId: "message-1", body: "Agreed.", replyAll: true },
+        invocation(),
+      ),
+    ).resolves.toEqual(receipt);
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.draft.reply",
+        { messageId: "message-1", body: "Agreed.", replyAll: false },
+        invocation(),
+      ),
+    ).resolves.toEqual(receipt);
+
+    expect(graphCalls.map(({ url, init }) => [init?.method, url])).toEqual([
+      ["POST", "https://graph.microsoft.com/v1.0/me/messages/message%2F1%3Fx/createReply"],
+      ["PATCH", "https://graph.microsoft.com/v1.0/me/messages/reply%2F1"],
+      ["POST", "https://graph.microsoft.com/v1.0/me/messages/message-1/createReplyAll"],
+      ["PATCH", "https://graph.microsoft.com/v1.0/me/messages/reply%2F1"],
+      ["POST", "https://graph.microsoft.com/v1.0/me/messages/message-1/createReply"],
+      ["PATCH", "https://graph.microsoft.com/v1.0/me/messages/reply%2F1"],
+    ]);
+    expect(JSON.parse(String(graphCalls[0]?.init?.body))).toEqual({});
+    expect(JSON.parse(String(graphCalls[1]?.init?.body))).toEqual({
+      body: {
+        contentType: "html",
+        content:
+          '<html><body dir="ltr"><div>Thanks &amp; see &lt;b&gt;notes&lt;/b&gt;.<br>Second &quot;line&quot;.<br><br>It&#39;s &lt;script&gt;x&lt;/script&gt;<br>&nbsp;&nbsp;- item&nbsp;&nbsp;&nbsp;&nbsp;value&nbsp;&nbsp;end</div><br>' +
+          `${quoted}</body></html>`,
+      },
+    });
+  });
+
+  it("writes reply text above a plain-text or body-less quote", async () => {
+    const created = [
+      { contentType: "text", content: "> Original" },
+      { contentType: "html", content: "<p>Original</p>" },
+    ];
+    const { graph, graphCalls } = replyGraph(({ init }) =>
+      init?.method === "PATCH"
+        ? jsonResponse(replyDraft())
+        : jsonResponse(replyDraft({ body: created.shift() }), 201),
+    );
+    await authorize(graph, ["mail.draft.create"]);
+
+    for (let index = 0; index < 2; index += 1) {
+      await graph.invoke(
+        "microsoft365.mail.draft.reply",
+        { messageId: "message-1", body: "Thanks\nDavid" },
+        invocation(),
+      );
+    }
+    expect(JSON.parse(String(graphCalls[1]?.init?.body))).toEqual({
+      body: { contentType: "text", content: "Thanks\nDavid\r\n\r\n> Original" },
+    });
+    expect(JSON.parse(String(graphCalls[3]?.init?.body))).toEqual({
+      body: { contentType: "html", content: "<div>Thanks<br>David</div><br><p>Original</p>" },
+    });
+  });
+
+  it("keeps a reply-all receipt usable when the draft has many recipients", async () => {
+    const addresses = (count: number, domain: string) =>
+      Array.from({ length: count }, (_, index) => ({
+        emailAddress: { address: `person${index}@${domain}` },
+      }));
+    const draft = replyDraft({
+      toRecipients: addresses(2, "example.edu"),
+      ccRecipients: addresses(120, "example.org"),
+      body: { contentType: "html", content: "<body>Original</body>" },
+    });
+    const { graph } = replyGraph(({ init }) =>
+      jsonResponse(draft, init?.method === "PATCH" ? 200 : 201),
+    );
+    await authorize(graph, ["mail.draft.create"]);
+
+    const receipt = await graph.invoke(
+      "microsoft365.mail.draft.reply",
+      { messageId: "message-1", body: "Thanks, all.", replyAll: true },
+      invocation(),
+    );
+    expect(receipt).toMatchObject({ id: "reply/1", recipientsTruncated: true, isDraft: true });
+    expect((receipt as { readonly to: unknown[] }).to).toHaveLength(2);
+    expect((receipt as { readonly cc: unknown[] }).cc).toHaveLength(50);
+  });
+
+  it("reports the existing reply draft when the reply text cannot be added", async () => {
+    const cases: Array<{
+      readonly created: Response;
+      readonly updated?: Response;
+      readonly calls: number;
+    }> = [
+      {
+        created: jsonResponse(replyDraft({ body: { content: "x".repeat(4 * 1024 * 1024) } }), 201),
+        calls: 1,
+      },
+      { created: jsonResponse(replyDraft(), 201), calls: 1 },
+      {
+        created: jsonResponse(
+          replyDraft({ body: { contentType: "html", content: "<p>x</p>" } }),
+          201,
+        ),
+        updated: jsonResponse({ error: { code: "ErrorItemNotFound" } }, 404),
+        calls: 2,
+      },
+      {
+        created: jsonResponse(
+          replyDraft({ body: { contentType: "html", content: "<p>x</p>" } }),
+          201,
+        ),
+        updated: new Response("upstream", { status: 503 }),
+        calls: 2,
+      },
+    ];
+    for (const testCase of cases) {
+      const { graph, graphCalls } = replyGraph(({ init }) =>
+        init?.method === "PATCH" ? (testCase.updated as Response) : testCase.created,
+      );
+      await authorize(graph, ["mail.draft.create"]);
+
+      await expect(
+        graph.invoke(
+          "microsoft365.mail.draft.reply",
+          { messageId: "message-1", body: "Thanks" },
+          invocation(),
+        ),
+      ).rejects.toThrow(/created the reply draft, but .*Check Outlook Drafts before trying again/u);
+      expect(graphCalls).toHaveLength(testCase.calls);
+    }
+  });
+
+  it("separates refused reply drafts from ones that may exist", async () => {
+    const created = [
+      jsonResponse({ error: { code: "ErrorItemNotFound" } }, 404),
+      new Response("upstream", { status: 503 }),
+      new Response("{not json", { status: 201, headers: { "content-type": "application/json" } }),
+    ];
+    const { graph, graphCalls } = replyGraph(() => created.shift() as Response);
+    await authorize(graph, ["mail.draft.create"]);
+    const reply = () =>
+      graph.invoke(
+        "microsoft365.mail.draft.reply",
+        { messageId: "message-1", body: "Thanks" },
+        invocation(),
+      );
+
+    await expect(reply()).rejects.toMatchObject({
+      message: "The requested Microsoft 365 item was not found.",
+      unchanged: true,
+    });
+    for (let index = 0; index < 2; index += 1) {
+      await expect(reply()).rejects.toMatchObject({
+        message: expect.stringMatching(/may have created the reply draft.*Check Outlook Drafts/u),
+        unchanged: false,
+      });
+    }
+    expect(graphCalls).toHaveLength(3);
+  });
+
+  it("rejects reply drafts that are not unsent drafts or carry other fields", async () => {
+    const { graph, graphCalls } = replyGraph(() =>
+      jsonResponse({ id: "reply-1", isDraft: false }, 201),
+    );
+    await authorize(graph, ["mail.draft.create"]);
+
+    for (const input of [
+      { messageId: "", body: "x" },
+      { messageId: "message-1", body: "" },
+      { messageId: "message-1", body: "x".repeat(50_001) },
+      { messageId: "message-1", body: "x", replyAll: "yes" },
+      { messageId: "message-1", body: "x", send: true },
+      { messageId: "message-1", body: "x", to: ["person@example.edu"] },
+      { messageId: "message-1", body: "x", attachments: [] },
+    ]) {
+      await expect(
+        graph.invoke("microsoft365.mail.draft.reply", input, invocation()),
+      ).rejects.toBeDefined();
+    }
+    expect(graphCalls).toHaveLength(0);
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.draft.reply",
+        { messageId: "message-1", body: "x" },
+        invocation(),
+      ),
+    ).rejects.toThrow(/unsent mail draft/u);
+    expect(graphCalls).toHaveLength(1);
+  });
+
   it("lists and creates mail folders, then moves or archives an exact message", async () => {
     const secrets = memorySecrets();
     const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
@@ -2225,6 +2489,11 @@ describe("MicrosoftGraphProvider tools", () => {
           subject: "Review",
           body: "Please review this draft.",
         },
+      },
+      {
+        capability: "mail.draft.create",
+        toolName: "microsoft365.mail.draft.reply",
+        input: { messageId: "message-1", body: "Thanks", replyAll: true },
       },
       {
         capability: "mail.organize",

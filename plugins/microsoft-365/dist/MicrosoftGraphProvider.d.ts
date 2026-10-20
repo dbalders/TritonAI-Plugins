@@ -81,6 +81,18 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly idempotent: false;
     readonly openWorld: true;
 }, {
+    readonly name: "microsoft365.mail.draft.reply";
+    readonly description: "Create one unsent Microsoft 365 reply or reply-all draft inside an existing message's conversation, with a plain-text body above the quoted original.";
+    readonly input: Schema.Struct<{
+        readonly messageId: Schema.String;
+        readonly body: Schema.String;
+        readonly replyAll: Schema.optionalKey<Schema.Boolean>;
+    }>;
+    readonly readOnly: false;
+    readonly destructive: false;
+    readonly idempotent: false;
+    readonly openWorld: true;
+}, {
     readonly name: "microsoft365.mail.attachments.list";
     readonly description: "List attachments on one exact Microsoft 365 mail message.";
     readonly input: Schema.Struct<{
@@ -380,6 +392,18 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
                 readonly contentBytes: Schema.String;
                 readonly contentType: Schema.optionalKey<Schema.String>;
             }>>>;
+        }>;
+        readonly readOnly: false;
+        readonly destructive: false;
+        readonly idempotent: false;
+        readonly openWorld: true;
+    }, {
+        readonly name: "microsoft365.mail.draft.reply";
+        readonly description: "Create one unsent Microsoft 365 reply or reply-all draft inside an existing message's conversation, with a plain-text body above the quoted original.";
+        readonly input: Schema.Struct<{
+            readonly messageId: Schema.String;
+            readonly body: Schema.String;
+            readonly replyAll: Schema.optionalKey<Schema.Boolean>;
         }>;
         readonly readOnly: false;
         readonly destructive: false;

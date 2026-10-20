@@ -1,6 +1,6 @@
 ---
 name: outlook-mail
-description: Search or organize Outlook mail, or create an unsent draft through TritonAI Harness. Use when the user asks to review, search, triage, move, archive, or organize Outlook mail, or to prepare an email draft without sending it.
+description: Search or organize Outlook mail, or create an unsent draft or in-thread reply draft through TritonAI Harness. Use when the user asks to review, search, triage, move, archive, or organize Outlook mail, or to prepare an email or reply draft without sending it.
 ---
 
 # Outlook Mail
@@ -21,11 +21,19 @@ Use the narrow mail tool that matches the request:
   `microsoft365.mail.attachment.get` for the fixed, bounded projection of one exact attachment.
   Reference attachments return metadata only, and attachment get is not a general file-download or
   file-delivery surface.
-- Use `microsoft365.mail.draft.create` only when the user explicitly wants an unsent draft created.
-  Include any requested file attachments in that call as base64-encoded `contentBytes`.
+- Use `microsoft365.mail.draft.reply` with the exact message ID when the user wants a draft reply to
+  an existing message. It keeps the draft in that conversation with the quoted original, and Outlook
+  sets the recipients and subject. Set `replyAll` only when the user wants every original recipient
+  included. When `recipientsTruncated` is true, the receipt lists only some recipients. If the tool
+  reports that it created or may have created the draft, do not retry; ask the user to
+  check Outlook Drafts. Reply drafts cannot carry attachments; if the user needs one, say so.
+- Use `microsoft365.mail.draft.create` only when the user explicitly wants a new, unsent draft that
+  is not a reply. Include any requested file attachments in that call as base64-encoded
+  `contentBytes`.
 
 Before creating a draft, confirm the recipients, subject, body, and any attachments from the user's
-request. Before creating a folder or moving a message, confirm the exact message and destination
+request. Before creating a reply draft, confirm the exact message, whether to reply to all, and the
+body. Before creating a folder or moving a message, confirm the exact message and destination
 from the user's request. Creating a folder and moving a message are separate writes. The Harness
 obtains write approval before every invocation. Never claim that creating a draft sends mail.
 

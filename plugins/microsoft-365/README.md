@@ -10,7 +10,7 @@ capabilities.
 | Capability          | Access  | Delegated scope       | Fixed actions                                 |
 | ------------------- | ------- | --------------------- | --------------------------------------------- |
 | `mail.read`         | Default | `Mail.Read`           | Search and read messages and attachments      |
-| `mail.draft.create` | Opt-in  | `Mail.ReadWrite`      | Create an unsent draft with file attachments  |
+| `mail.draft.create` | Opt-in  | `Mail.ReadWrite`      | Create an unsent draft or in-thread reply     |
 | `mail.organize`     | Opt-in  | `Mail.ReadWrite`      | Create folders and move/archive messages      |
 | `calendar.read`     | Default | `Calendars.Read`      | Read calendar events and attachments          |
 | `calendar.write`    | Opt-in  | `Calendars.ReadWrite` | Create or edit an event                       |
@@ -27,6 +27,17 @@ client; those never become Harness capabilities.
 Draft creation and mail organization remain separate product capabilities even though both use
 `Mail.ReadWrite`; selecting either one never enables the other.
 
+Reply drafts use Graph `createReply` or `createReplyAll`, which create the unsent draft inside the
+original message's conversation with Outlook's quoted history. Microsoft documents that these
+actions' `comment` parameter isn't part of the draft body, so the provider sends no comment. Instead
+it updates the new draft's body, placing the escaped plain-text reply above the quoted history and
+keeping its line breaks, indentation, and repeated spaces. Both steps need only `Mail.ReadWrite`.
+Graph ignores `$select` on these actions and returns the quoted thread, so the create response may
+be up to 4 MiB and the update response up to 5 MiB. Only a Graph refusal proves no draft was created;
+any other failure reports that the draft exists or may exist rather than inviting a duplicate retry. The
+receipt lists at most 50 addresses per recipient field and sets `recipientsTruncated` when a
+reply-all draft has more.
+
 `chat.write` deliberately uses the tenant's already-approved `Chat.ReadWrite` delegated scope rather
 than introducing a new `ChatMessage.Send` approval. The capability and provider still expose only
 the fixed send-to-existing-chat action; the additional delegated authority has no generic endpoint
@@ -41,6 +52,9 @@ existing file; replacing content requires the exact item ID and the separate con
 
 The fixed endpoints follow the Microsoft Graph contracts for [reading a message](https://learn.microsoft.com/en-us/graph/api/message-get?view=graph-rest-1.0),
 [creating a draft message](https://learn.microsoft.com/en-us/graph/api/user-post-messages?view=graph-rest-1.0),
+[creating a reply draft](https://learn.microsoft.com/en-us/graph/api/message-createreply?view=graph-rest-1.0),
+[creating a reply-all draft](https://learn.microsoft.com/en-us/graph/api/message-createreplyall?view=graph-rest-1.0),
+[updating a draft's body](https://learn.microsoft.com/en-us/graph/api/message-update?view=graph-rest-1.0),
 [listing mail folders](https://learn.microsoft.com/en-us/graph/api/user-list-mailfolders?view=graph-rest-1.0),
 [creating a mail folder](https://learn.microsoft.com/en-us/graph/api/user-post-mailfolders?view=graph-rest-1.0),
 [moving or archiving a message](https://learn.microsoft.com/en-us/graph/api/message-move?view=graph-rest-1.0),
