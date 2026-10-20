@@ -2623,8 +2623,8 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
       const action = values.replyAll === true ? "createReplyAll" : "createReply";
       const commitSignal = await this.#beginInvocationCommit(context);
       this.#assertInvocationCurrent(generation);
-      // Graph refusals are rethrown before a body is read, so any later failure leaves a draft
-      // behind; a retry would create a duplicate.
+      // Only a Graph refusal proves nothing was created; after any other failure a draft may exist
+      // and a retry would create a duplicate.
       const draftExists = (problem: string) =>
         new IntegrationProviderPublicError(
           `Microsoft 365 created the reply draft, but ${problem}. Check Outlook Drafts before trying again.`,
@@ -2642,10 +2642,13 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
           },
         );
       } catch (error) {
+        if (error instanceof IntegrationProviderPublicError && error.unchanged) throw error;
         if (error instanceof ResponseTooLargeError) {
           throw draftExists("its response was too large to read");
         }
-        throw error;
+        throw new IntegrationProviderPublicError(
+          "Microsoft 365 may have created the reply draft, but its response could not be read. Check Outlook Drafts before trying again.",
+        );
       }
       this.#assertInvocationCurrent(generation);
       mailReplyDraftResult(created);

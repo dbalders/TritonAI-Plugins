@@ -2186,6 +2186,34 @@ describe("MicrosoftGraphProvider tools", () => {
     }
   });
 
+  it("separates refused reply drafts from ones that may exist", async () => {
+    const created = [
+      jsonResponse({ error: { code: "ErrorItemNotFound" } }, 404),
+      new Response("upstream", { status: 503 }),
+      new Response("{not json", { status: 201, headers: { "content-type": "application/json" } }),
+    ];
+    const { graph, graphCalls } = replyGraph(() => created.shift() as Response);
+    await authorize(graph, ["mail.draft.create"]);
+    const reply = () =>
+      graph.invoke(
+        "microsoft365.mail.draft.reply",
+        { messageId: "message-1", body: "Thanks" },
+        invocation(),
+      );
+
+    await expect(reply()).rejects.toMatchObject({
+      message: "The requested Microsoft 365 item was not found.",
+      unchanged: true,
+    });
+    for (let index = 0; index < 2; index += 1) {
+      await expect(reply()).rejects.toMatchObject({
+        message: expect.stringMatching(/may have created the reply draft.*Check Outlook Drafts/u),
+        unchanged: false,
+      });
+    }
+    expect(graphCalls).toHaveLength(3);
+  });
+
   it("rejects reply drafts that are not unsent drafts or carry other fields", async () => {
     const { graph, graphCalls } = replyGraph(() =>
       jsonResponse({ id: "reply-1", isDraft: false }, 201),

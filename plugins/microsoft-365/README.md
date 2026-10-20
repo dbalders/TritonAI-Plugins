@@ -33,8 +33,8 @@ actions' `comment` parameter isn't part of the draft body, so the provider sends
 it updates the new draft's body, placing the escaped plain-text reply above the quoted history and
 keeping its line breaks, indentation, and repeated spaces. Both steps need only `Mail.ReadWrite`.
 Graph ignores `$select` on these actions and returns the quoted thread, so the create response may
-be up to 4 MiB and the update response up to 5 MiB. Once the draft exists, any failure to read it or
-add the text reports that the draft already exists rather than inviting a duplicate retry. The
+be up to 4 MiB and the update response up to 5 MiB. Only a Graph refusal proves no draft was created;
+any other failure reports that the draft exists or may exist rather than inviting a duplicate retry. The
 receipt lists at most 50 addresses per recipient field and sets `recipientsTruncated` when a
 reply-all draft has more.
 
