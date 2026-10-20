@@ -1994,6 +1994,7 @@ describe("MicrosoftGraphProvider tools", () => {
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
       if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
       graphCalls.push({ url, init });
+      const { comment } = JSON.parse(String(init?.body)) as { readonly comment: string };
       return jsonResponse(
         {
           id: "reply-1",
@@ -2004,7 +2005,10 @@ describe("MicrosoftGraphProvider tools", () => {
           isDraft: true,
           conversationId: "conversation-1",
           // Graph returns the whole quoted thread and ignores $select on createReply.
-          body: { contentType: "html", content: "x".repeat(2 * 1024 * 1024) },
+          body: {
+            contentType: "html",
+            content: `<html><body>${comment}<hr>${"x".repeat(2 * 1024 * 1024)}</body></html>`,
+          },
           webLink: "https://outlook.office365.com/owa/?ItemID=reply-1",
         },
         201,
@@ -2081,6 +2085,7 @@ describe("MicrosoftGraphProvider tools", () => {
           ccRecipients: addresses(120, "example.org"),
           bccRecipients: [],
           isDraft: true,
+          body: { contentType: "html", content: "<p>Thanks, all.</p><hr>Original" },
         },
         201,
       );
@@ -2096,6 +2101,41 @@ describe("MicrosoftGraphProvider tools", () => {
     expect(receipt).toMatchObject({ id: "reply-1", recipientsTruncated: true, isDraft: true });
     expect((receipt as { readonly to: unknown[] }).to).toHaveLength(2);
     expect((receipt as { readonly cc: unknown[] }).cc).toHaveLength(50);
+  });
+
+  it("reports a reply draft whose body Graph created without the reply text", async () => {
+    const secrets = memorySecrets();
+    const responses = [
+      // Outlook re-encodes the comment; letters and digits still identify it.
+      "<body><p>It&#8217;s 5 &lt;b&gt; o&#39;clock&nbsp;now</p><hr>Original</body>",
+      "<body><hr><div>From: Sender</div>Original</body>",
+    ];
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      return jsonResponse(
+        {
+          id: "reply-1",
+          isDraft: true,
+          toRecipients: [],
+          ccRecipients: [],
+          bccRecipients: [],
+          body: { contentType: "html", content: responses.shift() },
+        },
+        201,
+      );
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.draft.create"]);
+    const input = { messageId: "message-1", body: "It's 5 <b> o'clock now" };
+
+    await expect(
+      graph.invoke("microsoft365.mail.draft.reply", input, invocation()),
+    ).resolves.toMatchObject({ id: "reply-1", isDraft: true });
+    await expect(
+      graph.invoke("microsoft365.mail.draft.reply", input, invocation()),
+    ).rejects.toThrow(/created the reply draft without the reply text/u);
   });
 
   it("reports an existing reply draft when its response is too large to read", async () => {

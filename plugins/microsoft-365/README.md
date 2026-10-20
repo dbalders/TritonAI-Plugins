@@ -33,7 +33,9 @@ original message's conversation with Outlook's quoted history. Both actions need
 and keeps its line breaks, indentation, and repeated spaces. A reply draft's Graph response repeats
 the quoted thread and Graph ignores `$select` on these actions, so that one response may be up to
 4 MiB. If it is larger, the draft already exists and the tool reports that rather than inviting a
-duplicate retry. The receipt lists at most 50 addresses per recipient field and sets
+duplicate retry. Microsoft documents that the reply comment can be left out of the draft body, so
+the provider confirms that the returned body contains the reply text and reports an error naming the
+existing draft when it does not. The receipt lists at most 50 addresses per recipient field and sets
 `recipientsTruncated` when a reply-all draft has more.
 
 `chat.write` deliberately uses the tenant's already-approved `Chat.ReadWrite` delegated scope rather

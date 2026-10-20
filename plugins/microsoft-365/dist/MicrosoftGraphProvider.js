@@ -914,6 +914,21 @@ function mailSearchResult(value, limit) {
 function mailGetResult(value) {
     return boundedResult({ ...mailFields(value), body: projectedBody(value.body) });
 }
+// Microsoft documents that a reply comment may be left out of the draft body. Outlook re-encodes
+// the comment, so compare only its ASCII letters and digits with the returned body's visible text.
+function replyBodyIncludes(value, text) {
+    const expected = text.replace(/[^A-Za-z0-9]/gu, "");
+    if (expected === "")
+        return true;
+    const body = value.body === null || typeof value.body !== "object" ? {} : asRecord(value.body);
+    if (typeof body.content !== "string")
+        return false;
+    return body.content
+        .replace(/<[^>]*>/gu, " ")
+        .replace(/&#?\w+;/gu, " ")
+        .replace(/[^A-Za-z0-9]/gu, "")
+        .includes(expected);
+}
 function mailReplyDraftResult(value) {
     if (value.isDraft !== true) {
         throw new Error("Microsoft Graph did not return an unsent mail draft.");
@@ -2127,7 +2142,11 @@ export class MicrosoftGraphProvider {
                 throw error;
             }
             this.#assertInvocationCurrent(generation);
-            return mailReplyDraftResult(result);
+            const receipt = mailReplyDraftResult(result);
+            if (!replyBodyIncludes(result, values.body)) {
+                throw new IntegrationProviderPublicError("Microsoft 365 created the reply draft without the reply text. Check Outlook Drafts, then add the text there or delete that draft before trying again.");
+            }
+            return receipt;
         }
         if (toolName === "microsoft365.calendar.events") {
             this.#requireCapability(access, "calendar.read");
