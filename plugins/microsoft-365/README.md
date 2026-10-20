@@ -30,9 +30,11 @@ Draft creation and mail organization remain separate product capabilities even t
 Reply drafts use Graph `createReply` or `createReplyAll`, which create the unsent draft inside the
 original message's conversation with Outlook's quoted history. Both actions need only
 `Mail.ReadWrite`. Graph treats the reply comment as HTML, so the provider escapes the plain-text body
-and converts its line breaks before sending it. A reply draft's Graph response repeats the quoted
-thread and Graph ignores `$select` on these actions, so that one response may be up to 4 MiB before
-the provider projects the usual draft receipt.
+and keeps its line breaks, indentation, and repeated spaces. A reply draft's Graph response repeats
+the quoted thread and Graph ignores `$select` on these actions, so that one response may be up to
+4 MiB. If it is larger, the draft already exists and the tool reports that rather than inviting a
+duplicate retry. The receipt lists at most 50 addresses per recipient field and sets
+`recipientsTruncated` when a reply-all draft has more.
 
 `chat.write` deliberately uses the tenant's already-approved `Chat.ReadWrite` delegated scope rather
 than introducing a new `ChatMessage.Send` approval. The capability and provider still expose only

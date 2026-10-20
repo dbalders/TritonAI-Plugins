@@ -2019,6 +2019,7 @@ describe("MicrosoftGraphProvider tools", () => {
       to: [{ name: "Sender", address: "sender@example.edu" }],
       cc: [{ name: null, address: "team@example.edu" }],
       bcc: [],
+      recipientsTruncated: false,
       isDraft: true,
       webLink: "https://outlook.office365.com/owa/?ItemID=reply-1",
     };
@@ -2042,7 +2043,7 @@ describe("MicrosoftGraphProvider tools", () => {
     await expect(
       graph.invoke(
         "microsoft365.mail.draft.reply",
-        { messageId: "message-1", body: "Agreed.", replyAll: false },
+        { messageId: "message-1", body: " Lead\n  - item\tvalue  end", replyAll: false },
         invocation(),
       ),
     ).resolves.toEqual(receipt);
@@ -2057,6 +2058,70 @@ describe("MicrosoftGraphProvider tools", () => {
         "Thanks &amp; see &lt;b&gt;notes&lt;/b&gt;.<br>Second &quot;line&quot;.<br><br>It&#39;s &lt;script&gt;x&lt;/script&gt;",
     });
     expect(JSON.parse(String(graphCalls[1]?.init?.body))).toEqual({ comment: "Agreed." });
+    expect(JSON.parse(String(graphCalls[2]?.init?.body))).toEqual({
+      comment: "&nbsp;Lead<br>&nbsp;&nbsp;- item&nbsp;&nbsp;&nbsp;&nbsp;value&nbsp;&nbsp;end",
+    });
+  });
+
+  it("keeps a reply-all receipt usable when the draft has many recipients", async () => {
+    const secrets = memorySecrets();
+    const addresses = (count: number, domain: string) =>
+      Array.from({ length: count }, (_, index) => ({
+        emailAddress: { address: `person${index}@${domain}` },
+      }));
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      return jsonResponse(
+        {
+          id: "reply-1",
+          subject: "RE: All staff",
+          toRecipients: addresses(2, "example.edu"),
+          ccRecipients: addresses(120, "example.org"),
+          bccRecipients: [],
+          isDraft: true,
+        },
+        201,
+      );
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.draft.create"]);
+
+    const receipt = await graph.invoke(
+      "microsoft365.mail.draft.reply",
+      { messageId: "message-1", body: "Thanks, all.", replyAll: true },
+      invocation(),
+    );
+    expect(receipt).toMatchObject({ id: "reply-1", recipientsTruncated: true, isDraft: true });
+    expect((receipt as { readonly to: unknown[] }).to).toHaveLength(2);
+    expect((receipt as { readonly cc: unknown[] }).cc).toHaveLength(50);
+  });
+
+  it("reports an existing reply draft when its response is too large to read", async () => {
+    const secrets = memorySecrets();
+    let graphCalls = 0;
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      graphCalls += 1;
+      return jsonResponse(
+        { id: "reply-1", isDraft: true, body: { content: "x".repeat(4 * 1024 * 1024) } },
+        201,
+      );
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.draft.create"]);
+
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.draft.reply",
+        { messageId: "message-1", body: "Thanks" },
+        invocation(),
+      ),
+    ).rejects.toThrow(/created the reply draft.*Check Outlook Drafts before trying again/u);
+    expect(graphCalls).toBe(1);
   });
 
   it("rejects reply drafts that are not unsent drafts or carry other fields", async () => {

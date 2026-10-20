@@ -778,10 +778,15 @@ async function readJson(response, maximumBytes) {
         throw new Error("Microsoft returned invalid JSON.");
     }
 }
+class ResponseTooLargeError extends Error {
+    constructor() {
+        super("Microsoft response exceeded the allowed size.");
+    }
+}
 async function readBytes(response, maximumBytes) {
     const declaredLength = Number(response.headers.get("content-length"));
     if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
-        throw new Error("Microsoft response exceeded the allowed size.");
+        throw new ResponseTooLargeError();
     }
     const reader = response.body?.getReader();
     if (!reader)
@@ -796,7 +801,7 @@ async function readBytes(response, maximumBytes) {
             total += value.byteLength;
             if (total > maximumBytes) {
                 await reader.cancel().catch(() => undefined);
-                throw new Error("Microsoft response exceeded the allowed size.");
+                throw new ResponseTooLargeError();
             }
             chunks.push(value);
         }
@@ -834,6 +839,17 @@ function graphRecipients(value) {
         throw new Error("Microsoft Graph returned an invalid recipient response.");
     }
     return value.map((raw) => graphEmailAddress(asRecord(raw).emailAddress));
+}
+// Reply-all copies every original recipient, so a receipt keeps a bounded sample instead of
+// failing after Graph has already created the draft.
+function graphRecipientSample(value) {
+    if (!Array.isArray(value)) {
+        throw new Error("Microsoft Graph returned an invalid recipient response.");
+    }
+    return {
+        recipients: value.slice(0, 50).map((raw) => graphEmailAddress(asRecord(raw).emailAddress)),
+        truncated: value.length > 50,
+    };
 }
 function graphSender(value) {
     const from = value === null || value === undefined ? null : asRecord(value);
@@ -897,6 +913,24 @@ function mailSearchResult(value, limit) {
 }
 function mailGetResult(value) {
     return boundedResult({ ...mailFields(value), body: projectedBody(value.body) });
+}
+function mailReplyDraftResult(value) {
+    if (value.isDraft !== true) {
+        throw new Error("Microsoft Graph did not return an unsent mail draft.");
+    }
+    const to = graphRecipientSample(value.toRecipients);
+    const cc = graphRecipientSample(value.ccRecipients);
+    const bcc = graphRecipientSample(value.bccRecipients);
+    return boundedResult({
+        id: boundedString(value.id, 512),
+        subject: boundedOptionalString(value.subject, 998),
+        to: to.recipients,
+        cc: cc.recipients,
+        bcc: bcc.recipients,
+        recipientsTruncated: to.truncated || cc.truncated || bcc.truncated,
+        isDraft: true,
+        webLink: boundedOptionalHttpsUrl(value.webLink, 2_048, OUTLOOK_WEB_HOSTS),
+    });
 }
 function mailDraftResult(value) {
     if (value.isDraft !== true) {
@@ -1227,15 +1261,20 @@ function fileUpload(values) {
         bytes,
     };
 }
-// Graph treats a reply comment as HTML, so plain text is escaped and its line breaks kept.
+// Graph treats a reply comment as HTML, so plain text is escaped and its line breaks, indentation,
+// and repeated spaces are kept.
 function replyComment(text) {
     return text
+        .split(/\r\n?|\n/u)
+        .map((line) => line
         .replace(/&/gu, "&amp;")
         .replace(/</gu, "&lt;")
         .replace(/>/gu, "&gt;")
         .replace(/"/gu, "&quot;")
         .replace(/'/gu, "&#39;")
-        .replace(/\r\n?|\n/gu, "<br>");
+        .replace(/\t/gu, "    ")
+        .replace(/^ +| {2,}/gu, (spaces) => "&nbsp;".repeat(spaces.length)))
+        .join("<br>");
 }
 function recipients(addresses) {
     return addresses.map((address) => ({ emailAddress: { address } }));
@@ -2070,14 +2109,25 @@ export class MicrosoftGraphProvider {
             const action = values.replyAll === true ? "createReplyAll" : "createReply";
             const commitSignal = await this.#beginInvocationCommit(context);
             this.#assertInvocationCurrent(generation);
-            const result = await this.#graph(`/me/messages/${encodeURIComponent(values.messageId)}/${action}`, access.value, {
-                method: "POST",
-                body: { comment: replyComment(values.body) },
-                signal: commitSignal,
-                maximumResponseBytes: REPLY_DRAFT_RESPONSE_BYTES,
-            });
+            let result;
+            try {
+                result = await this.#graph(`/me/messages/${encodeURIComponent(values.messageId)}/${action}`, access.value, {
+                    method: "POST",
+                    body: { comment: replyComment(values.body) },
+                    signal: commitSignal,
+                    maximumResponseBytes: REPLY_DRAFT_RESPONSE_BYTES,
+                });
+            }
+            catch (error) {
+                // Graph refusals are rethrown before the body is read, so an oversized body means the
+                // draft exists; a retry would create a duplicate.
+                if (error instanceof ResponseTooLargeError) {
+                    throw new IntegrationProviderPublicError("Microsoft 365 created the reply draft, but its response was too large to read. Check Outlook Drafts before trying again.");
+                }
+                throw error;
+            }
             this.#assertInvocationCurrent(generation);
-            return mailDraftResult(result);
+            return mailReplyDraftResult(result);
         }
         if (toolName === "microsoft365.calendar.events") {
             this.#requireCapability(access, "calendar.read");

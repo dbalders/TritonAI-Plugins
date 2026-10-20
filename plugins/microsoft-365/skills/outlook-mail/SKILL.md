@@ -24,7 +24,9 @@ Use the narrow mail tool that matches the request:
 - Use `microsoft365.mail.draft.reply` with the exact message ID when the user wants a draft reply to
   an existing message. It keeps the draft in that conversation with the quoted original, and Outlook
   sets the recipients and subject. Set `replyAll` only when the user wants every original recipient
-  included. Reply drafts cannot carry attachments; if the user needs one, say so.
+  included. When `recipientsTruncated` is true, the receipt lists only some recipients. If the tool
+  reports that it created the draft but could not read the response, do not retry; ask the user to
+  check Outlook Drafts. Reply drafts cannot carry attachments; if the user needs one, say so.
 - Use `microsoft365.mail.draft.create` only when the user explicitly wants a new, unsent draft that
   is not a reply. Include any requested file attachments in that call as base64-encoded
   `contentBytes`.
