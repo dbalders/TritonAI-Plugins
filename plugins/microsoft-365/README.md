@@ -10,7 +10,7 @@ capabilities.
 | Capability          | Access  | Delegated scope       | Fixed actions                                 |
 | ------------------- | ------- | --------------------- | --------------------------------------------- |
 | `mail.read`         | Default | `Mail.Read`           | Search and read messages and attachments      |
-| `mail.draft.create` | Opt-in  | `Mail.ReadWrite`      | Create an unsent draft with file attachments  |
+| `mail.draft.create` | Opt-in  | `Mail.ReadWrite`      | Create an unsent draft or in-thread reply     |
 | `mail.organize`     | Opt-in  | `Mail.ReadWrite`      | Create folders and move/archive messages      |
 | `calendar.read`     | Default | `Calendars.Read`      | Read calendar events and attachments          |
 | `calendar.write`    | Opt-in  | `Calendars.ReadWrite` | Create or edit an event                       |
@@ -27,6 +27,13 @@ client; those never become Harness capabilities.
 Draft creation and mail organization remain separate product capabilities even though both use
 `Mail.ReadWrite`; selecting either one never enables the other.
 
+Reply drafts use Graph `createReply` or `createReplyAll`, which create the unsent draft inside the
+original message's conversation with Outlook's quoted history. Both actions need only
+`Mail.ReadWrite`. Graph treats the reply comment as HTML, so the provider escapes the plain-text body
+and converts its line breaks before sending it. A reply draft's Graph response repeats the quoted
+thread and Graph ignores `$select` on these actions, so that one response may be up to 4 MiB before
+the provider projects the usual draft receipt.
+
 `chat.write` deliberately uses the tenant's already-approved `Chat.ReadWrite` delegated scope rather
 than introducing a new `ChatMessage.Send` approval. The capability and provider still expose only
 the fixed send-to-existing-chat action; the additional delegated authority has no generic endpoint
@@ -41,6 +48,8 @@ existing file; replacing content requires the exact item ID and the separate con
 
 The fixed endpoints follow the Microsoft Graph contracts for [reading a message](https://learn.microsoft.com/en-us/graph/api/message-get?view=graph-rest-1.0),
 [creating a draft message](https://learn.microsoft.com/en-us/graph/api/user-post-messages?view=graph-rest-1.0),
+[creating a reply draft](https://learn.microsoft.com/en-us/graph/api/message-createreply?view=graph-rest-1.0),
+[creating a reply-all draft](https://learn.microsoft.com/en-us/graph/api/message-createreplyall?view=graph-rest-1.0),
 [listing mail folders](https://learn.microsoft.com/en-us/graph/api/user-list-mailfolders?view=graph-rest-1.0),
 [creating a mail folder](https://learn.microsoft.com/en-us/graph/api/user-post-mailfolders?view=graph-rest-1.0),
 [moving or archiving a message](https://learn.microsoft.com/en-us/graph/api/message-move?view=graph-rest-1.0),

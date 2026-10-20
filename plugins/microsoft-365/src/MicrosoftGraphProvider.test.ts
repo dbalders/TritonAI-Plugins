@@ -221,6 +221,7 @@ describe("MicrosoftGraphProvider contract", () => {
         "microsoft365.mail.draft.create",
         { readOnly: false, destructive: false, idempotent: false },
       ],
+      ["microsoft365.mail.draft.reply", { readOnly: false, destructive: false, idempotent: false }],
       ["microsoft365.calendar.events", { readOnly: true, destructive: false, idempotent: true }],
       ["microsoft365.calendar.event.get", { readOnly: true, destructive: false, idempotent: true }],
       [
@@ -460,6 +461,11 @@ describe("MicrosoftGraphProvider contract", () => {
         "mail.organize",
         "microsoft365.mail.draft.create",
         { to: ["person@example.edu"], subject: "Review", body: "Please review." },
+      ],
+      [
+        "mail.organize",
+        "microsoft365.mail.draft.reply",
+        { messageId: "message-1", body: "Thanks" },
       ],
     ] as const) {
       const secrets = memorySecrets();
@@ -1980,6 +1986,115 @@ describe("MicrosoftGraphProvider tools", () => {
     });
   });
 
+  it("creates reply drafts inside the original conversation from escaped plain text", async () => {
+    const secrets = memorySecrets();
+    const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fetchImplementation = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      graphCalls.push({ url, init });
+      return jsonResponse(
+        {
+          id: "reply-1",
+          subject: "RE: Budget",
+          toRecipients: [{ emailAddress: { name: "Sender", address: "sender@example.edu" } }],
+          ccRecipients: [{ emailAddress: { address: "team@example.edu" } }],
+          bccRecipients: [],
+          isDraft: true,
+          conversationId: "conversation-1",
+          // Graph returns the whole quoted thread and ignores $select on createReply.
+          body: { contentType: "html", content: "x".repeat(2 * 1024 * 1024) },
+          webLink: "https://outlook.office365.com/owa/?ItemID=reply-1",
+        },
+        201,
+      );
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.draft.create"]);
+
+    const receipt = {
+      id: "reply-1",
+      subject: "RE: Budget",
+      to: [{ name: "Sender", address: "sender@example.edu" }],
+      cc: [{ name: null, address: "team@example.edu" }],
+      bcc: [],
+      isDraft: true,
+      webLink: "https://outlook.office365.com/owa/?ItemID=reply-1",
+    };
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.draft.reply",
+        {
+          messageId: "message/1?x",
+          body: `Thanks & see <b>notes</b>.\r\nSecond "line".\n\nIt's <script>x</script>`,
+        },
+        invocation(),
+      ),
+    ).resolves.toEqual(receipt);
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.draft.reply",
+        { messageId: "message-1", body: "Agreed.", replyAll: true },
+        invocation(),
+      ),
+    ).resolves.toEqual(receipt);
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.draft.reply",
+        { messageId: "message-1", body: "Agreed.", replyAll: false },
+        invocation(),
+      ),
+    ).resolves.toEqual(receipt);
+
+    expect(graphCalls.map(({ url, init }) => [init?.method, url])).toEqual([
+      ["POST", "https://graph.microsoft.com/v1.0/me/messages/message%2F1%3Fx/createReply"],
+      ["POST", "https://graph.microsoft.com/v1.0/me/messages/message-1/createReplyAll"],
+      ["POST", "https://graph.microsoft.com/v1.0/me/messages/message-1/createReply"],
+    ]);
+    expect(JSON.parse(String(graphCalls[0]?.init?.body))).toEqual({
+      comment:
+        "Thanks &amp; see &lt;b&gt;notes&lt;/b&gt;.<br>Second &quot;line&quot;.<br><br>It&#39;s &lt;script&gt;x&lt;/script&gt;",
+    });
+    expect(JSON.parse(String(graphCalls[1]?.init?.body))).toEqual({ comment: "Agreed." });
+  });
+
+  it("rejects reply drafts that are not unsent drafts or carry other fields", async () => {
+    const secrets = memorySecrets();
+    let graphCalls = 0;
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Mail.ReadWrite"));
+      graphCalls += 1;
+      return jsonResponse({ id: "reply-1", isDraft: false }, 201);
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["mail.draft.create"]);
+
+    for (const input of [
+      { messageId: "", body: "x" },
+      { messageId: "message-1", body: "" },
+      { messageId: "message-1", body: "x".repeat(50_001) },
+      { messageId: "message-1", body: "x", replyAll: "yes" },
+      { messageId: "message-1", body: "x", send: true },
+      { messageId: "message-1", body: "x", to: ["person@example.edu"] },
+      { messageId: "message-1", body: "x", attachments: [] },
+    ]) {
+      await expect(
+        graph.invoke("microsoft365.mail.draft.reply", input, invocation()),
+      ).rejects.toBeDefined();
+    }
+    expect(graphCalls).toBe(0);
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.draft.reply",
+        { messageId: "message-1", body: "x" },
+        invocation(),
+      ),
+    ).rejects.toThrow(/unsent mail draft/u);
+  });
+
   it("lists and creates mail folders, then moves or archives an exact message", async () => {
     const secrets = memorySecrets();
     const graphCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
@@ -2225,6 +2340,11 @@ describe("MicrosoftGraphProvider tools", () => {
           subject: "Review",
           body: "Please review this draft.",
         },
+      },
+      {
+        capability: "mail.draft.create",
+        toolName: "microsoft365.mail.draft.reply",
+        input: { messageId: "message-1", body: "Thanks", replyAll: true },
       },
       {
         capability: "mail.organize",

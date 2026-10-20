@@ -54,6 +54,8 @@ const MAX_ATTACHMENT_CONTENT_BASE64_BYTES = 350 * 1024;
 const MAX_RESULT_BYTES = 384 * 1024;
 const MAX_DRAFT_ATTACHMENT_BASE64_CHARS = 3_999_996;
 const MAX_DRAFT_REQUEST_BYTES = 4 * 1024 * 1024;
+// A reply draft's response repeats the quoted thread, and Graph ignores $select on createReply.
+const REPLY_DRAFT_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_CHAT_BODY_CHARS = 20_000;
 const MAX_CHAT_REQUEST_BYTES = 28 * 1024;
 // Base64 of this many bytes stays below the serialized host result ceiling.
@@ -169,6 +171,17 @@ const MailDraftCreateInput = Schema.Struct({
     body: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_INPUT_BODY_CHARS)).annotate({ description: "Plain-text draft body." }),
     attachments: Schema.optionalKey(DraftFileAttachmentList.annotate({
         description: "Optional file attachments included with the unsent draft.",
+    })),
+});
+const MailDraftReplyInput = Schema.Struct({
+    messageId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512)).annotate({
+        description: "Exact Microsoft 365 identifier of the message being replied to.",
+    }),
+    body: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_INPUT_BODY_CHARS)).annotate({
+        description: "Plain-text reply placed above the quoted original message.",
+    }),
+    replyAll: Schema.optionalKey(Schema.Boolean.annotate({
+        description: "Address the reply to the sender and every original recipient. Defaults to the sender only.",
     })),
 });
 const Attendee = Schema.Struct({
@@ -297,6 +310,7 @@ const decodeCalendarEventGetInput = Schema.decodeUnknownPromise(CalendarEventGet
 const decodeCalendarAttachmentListInput = Schema.decodeUnknownPromise(CalendarAttachmentListInput);
 const decodeCalendarAttachmentGetInput = Schema.decodeUnknownPromise(CalendarAttachmentGetInput);
 const decodeMailDraftCreateInput = Schema.decodeUnknownPromise(MailDraftCreateInput);
+const decodeMailDraftReplyInput = Schema.decodeUnknownPromise(MailDraftReplyInput);
 const decodeCalendarEventCreateInput = Schema.decodeUnknownPromise(CalendarEventCreateInput);
 const decodeCalendarEventUpdateInput = Schema.decodeUnknownPromise(CalendarEventUpdateInput);
 const decodeChatListInput = Schema.decodeUnknownPromise(ChatListInput);
@@ -359,6 +373,15 @@ export const MICROSOFT_GRAPH_TOOLS = [
         name: "microsoft365.mail.draft.create",
         description: "Create one unsent Microsoft 365 mail draft with a plain-text body and optional file attachments through a fixed endpoint.",
         input: MailDraftCreateInput,
+        readOnly: false,
+        destructive: false,
+        idempotent: false,
+        openWorld: true,
+    },
+    {
+        name: "microsoft365.mail.draft.reply",
+        description: "Create one unsent Microsoft 365 reply or reply-all draft inside an existing message's conversation, with a plain-text body above the quoted original.",
+        input: MailDraftReplyInput,
         readOnly: false,
         destructive: false,
         idempotent: false,
@@ -1204,6 +1227,16 @@ function fileUpload(values) {
         bytes,
     };
 }
+// Graph treats a reply comment as HTML, so plain text is escaped and its line breaks kept.
+function replyComment(text) {
+    return text
+        .replace(/&/gu, "&amp;")
+        .replace(/</gu, "&lt;")
+        .replace(/>/gu, "&gt;")
+        .replace(/"/gu, "&quot;")
+        .replace(/'/gu, "&#39;")
+        .replace(/\r\n?|\n/gu, "<br>");
+}
 function recipients(addresses) {
     return addresses.map((address) => ({ emailAddress: { address } }));
 }
@@ -2024,6 +2057,24 @@ export class MicrosoftGraphProvider {
                 method: "POST",
                 body,
                 signal: commitSignal,
+            });
+            this.#assertInvocationCurrent(generation);
+            return mailDraftResult(result);
+        }
+        if (toolName === "microsoft365.mail.draft.reply") {
+            this.#requireCapability(access, "mail.draft.create");
+            const values = await decodeMailDraftReplyInput(input, {
+                errors: "all",
+                onExcessProperty: "error",
+            });
+            const action = values.replyAll === true ? "createReplyAll" : "createReply";
+            const commitSignal = await this.#beginInvocationCommit(context);
+            this.#assertInvocationCurrent(generation);
+            const result = await this.#graph(`/me/messages/${encodeURIComponent(values.messageId)}/${action}`, access.value, {
+                method: "POST",
+                body: { comment: replyComment(values.body) },
+                signal: commitSignal,
+                maximumResponseBytes: REPLY_DRAFT_RESPONSE_BYTES,
             });
             this.#assertInvocationCurrent(generation);
             return mailDraftResult(result);
