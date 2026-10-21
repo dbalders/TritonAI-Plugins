@@ -5,11 +5,12 @@ import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 
 import { discoverPluginDirectories } from "./plugin-directories.mjs";
-import { assertTrustedHarnessCheckout, verifyHarnessEffectRuntime } from "./harness-contract.mjs";
 import {
-  assertProviderRuntimeDependencies,
-  PROVIDER_EFFECT_PEER_RANGE,
-} from "./provider-runtime-dependencies.mjs";
+  assertHarnessEffectPeerContract,
+  assertTrustedHarnessCheckout,
+  verifyHarnessEffectRuntime,
+} from "./harness-contract.mjs";
+import { assertProviderRuntimeDependencies } from "./provider-runtime-dependencies.mjs";
 
 const harnessRoot = process.env.TRITONAI_HARNESS_ROOT;
 const expectedHarnessCommit = process.env.TRITONAI_HARNESS_COMMIT;
@@ -82,10 +83,7 @@ const manifestModule = await import(
 const hostRuntimeModule = await import(
   pathToFileURL(Path.join(harness, "packages/shared/src/pluginHostRuntime.ts")).href
 );
-assert(
-  hostRuntimeModule.EFFECT_HOST_PEER_RANGE === PROVIDER_EFFECT_PEER_RANGE,
-  "Plugins and Harness disagree on the canonical Effect peer contract.",
-);
+assertHarnessEffectPeerContract(hostRuntimeModule.EFFECT_HOST_PEER_RANGE);
 const frameworkProbe = {
   apiVersion: "tritonai.harness/v2",
   kind: "IntegrationPlugin",

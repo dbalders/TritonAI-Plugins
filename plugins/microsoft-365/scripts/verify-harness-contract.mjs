@@ -5,8 +5,10 @@ import { spawnSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 
-import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
+import {
+  stageProviderHostRuntime,
+  verifyProviderHostRuntime,
+} from "../../../scripts/provider-host-runtime.mjs";
 
 import { assertTrustedHarnessCheckout } from "../../../scripts/harness-contract.mjs";
 import { assertProviderRuntimeDependencies } from "../../../scripts/provider-runtime-dependencies.mjs";
@@ -28,135 +30,149 @@ function isPromiseLike(value) {
 }
 
 const { actualHead, harness } = assertTrustedHarnessCheckout(harnessRoot, expectedHarnessCommit);
-
-const manifest = JSON.parse(
-  await Fs.readFile(Path.join(packageRoot, ".tritonai-plugin", "plugin.json"), "utf8"),
-);
-const packageJson = JSON.parse(await Fs.readFile(Path.join(packageRoot, "package.json"), "utf8"));
-const manifestModule = await import(
-  pathToFileURL(Path.join(harness, "apps/server/src/integrations/manifest.ts")).href
-);
-const validatedManifest = manifestModule.validateIntegrationManifest(manifest);
-assertProviderRuntimeDependencies(validatedManifest.id, packageJson, validatedManifest);
-
-const providerModule = await import(pathToFileURL(Path.join(packageRoot, "dist/index.js")).href);
-assert(
-  isDeepStrictEqual(providerModule.manifest, validatedManifest),
-  "Compiled provider manifest differs from the exact Harness-validated manifest.",
-);
-assert(
-  typeof providerModule.createIntegrationProvider === "function",
-  "Compiled provider factory is missing.",
-);
-const provider = providerModule.createIntegrationProvider({
-  secrets: {
-    get: () => Effect.succeed(Option.none()),
-    set: () => Effect.void,
-    remove: () => Effect.void,
-  },
-  configuration: {
-    clientId: "11111111-1111-4111-8111-111111111111",
-    tenantId: "22222222-2222-4222-8222-222222222222",
-  },
-});
-assert(!isPromiseLike(provider), "Compiled provider factory must return synchronously.");
-assert(
-  provider !== null && typeof provider === "object" && provider.id === validatedManifest.provider,
-  "Compiled provider factory output differs from the manifest provider.",
-);
-assert(
-  Array.isArray(providerModule.MICROSOFT_GRAPH_TOOLS),
-  "Compiled tool definitions are missing.",
-);
-const declaredToolNames = validatedManifest.tools.map(({ name }) => name).toSorted();
-const exportedToolNames = providerModule.MICROSOFT_GRAPH_TOOLS.map(({ name }) => name).toSorted();
-assert(
-  isDeepStrictEqual(exportedToolNames, declaredToolNames),
-  "Compiled provider tool set differs from the manifest tool set.",
-);
-for (const tool of providerModule.MICROSOFT_GRAPH_TOOLS) {
-  const manifestTool = validatedManifest.tools.find(({ name }) => name === tool.name);
-  assert(
-    manifestTool !== undefined &&
-      typeof tool.description === "string" &&
-      ((typeof tool.input === "object" && tool.input !== null) ||
-        typeof tool.input === "function") &&
-      tool.readOnly === (manifestTool.effect !== "write") &&
-      typeof tool.destructive === "boolean" &&
-      typeof tool.idempotent === "boolean" &&
-      tool.openWorld === true,
-    `Compiled tool ${String(tool.name)} does not satisfy its Harness effect boundary.`,
-  );
-}
-
-const probeDirectory = await Fs.mkdtemp(Path.join(Os.tmpdir(), "tritonai-graph-contract-"));
+const probe = await stageProviderHostRuntime(packageRoot, harness);
 try {
-  const probe = Path.join(probeDirectory, "provider-contract.ts");
-  const consumerProbe = Path.join(probeDirectory, "package-consumer.ts");
-  const harnessRegistry = Path.join(harness, "apps/server/src/integrations/IntegrationRegistry.ts");
-  const harnessSecrets = Path.join(harness, "apps/server/src/auth/ServerSecretStore.ts");
-  const providerTypes = Path.join(packageRoot, "dist/index.js");
-  const compiler = Path.join(repositoryRoot, "node_modules/.bin/tsc");
-  const compilerOptions = [
-    "--noEmit",
-    "--ignoreConfig",
-    "--strict",
-    "--skipLibCheck",
-    "--target",
-    "ES2024",
-    "--module",
-    "NodeNext",
-    "--moduleResolution",
-    "NodeNext",
-    "--types",
-    "node",
-  ];
-  await Fs.writeFile(
-    consumerProbe,
-    [
-      `import { createIntegrationProvider, type IntegrationProvider, type IntegrationProviderFactoryContext } from ${JSON.stringify(providerTypes)};`,
-      "declare const context: IntegrationProviderFactoryContext;",
-      "const packageConsumer: IntegrationProvider = createIntegrationProvider(context);",
-      "void packageConsumer;",
-      "",
-    ].join("\n"),
-  );
-  const consumerCompile = spawnSync(compiler, [...compilerOptions, consumerProbe], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-  });
-  assert(
-    consumerCompile.status === 0,
-    `Published declarations do not resolve for an ordinary TypeScript consumer:\n${consumerCompile.stdout}${consumerCompile.stderr}`,
-  );
-  await Fs.writeFile(
-    probe,
-    [
-      `import type { IntegrationProvider as HarnessProvider } from ${JSON.stringify(harnessRegistry)};`,
-      `import type * as HarnessSecretStore from ${JSON.stringify(harnessSecrets)};`,
-      `import { createIntegrationProvider, type IntegrationProviderFactoryContext, type IntegrationSecretStore as PluginSecretStore } from ${JSON.stringify(providerTypes)};`,
-      "declare const secrets: HarnessSecretStore.ServerSecretStore['Service'];",
-      "const secretCompatibility: PluginSecretStore = secrets;",
-      "const factoryContext: IntegrationProviderFactoryContext = {",
-      "  secrets: secretCompatibility,",
-      "  configuration: {},",
-      "};",
-      "const providerCompatibility: HarnessProvider = createIntegrationProvider(factoryContext);",
-      "void providerCompatibility;",
-      "void secretCompatibility;",
-      "",
-    ].join("\n"),
-  );
-  const compile = spawnSync(compiler, [...compilerOptions, "--allowImportingTsExtensions", probe], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-  });
-  assert(
-    compile.status === 0,
-    `Compiled provider is not structurally assignable to exact Harness v2:\n${compile.stdout}${compile.stderr}`,
-  );
-} finally {
-  await Fs.rm(probeDirectory, { recursive: true, force: true });
-}
+  const { providerModule, providerTypes, Effect, Option } = probe;
 
-console.log(`Microsoft 365 provider contract passed at Harness ${actualHead}`);
+  const manifest = JSON.parse(
+    await Fs.readFile(Path.join(packageRoot, ".tritonai-plugin", "plugin.json"), "utf8"),
+  );
+  const packageJson = JSON.parse(await Fs.readFile(Path.join(packageRoot, "package.json"), "utf8"));
+  const manifestModule = await import(
+    pathToFileURL(Path.join(harness, "apps/server/src/integrations/manifest.ts")).href
+  );
+  const validatedManifest = manifestModule.validateIntegrationManifest(manifest);
+  assertProviderRuntimeDependencies(validatedManifest.id, packageJson, validatedManifest);
+
+  assert(
+    isDeepStrictEqual(providerModule.manifest, validatedManifest),
+    "Compiled provider manifest differs from the exact Harness-validated manifest.",
+  );
+  assert(
+    typeof providerModule.createIntegrationProvider === "function",
+    "Compiled provider factory is missing.",
+  );
+  const provider = providerModule.createIntegrationProvider({
+    secrets: {
+      get: () => Effect.succeed(Option.none()),
+      set: () => Effect.void,
+      remove: () => Effect.void,
+    },
+    configuration: {
+      clientId: "11111111-1111-4111-8111-111111111111",
+      tenantId: "22222222-2222-4222-8222-222222222222",
+    },
+  });
+  assert(!isPromiseLike(provider), "Compiled provider factory must return synchronously.");
+  assert(
+    provider !== null && typeof provider === "object" && provider.id === validatedManifest.provider,
+    "Compiled provider factory output differs from the manifest provider.",
+  );
+  assert(
+    Array.isArray(providerModule.MICROSOFT_GRAPH_TOOLS),
+    "Compiled tool definitions are missing.",
+  );
+  const declaredToolNames = validatedManifest.tools.map(({ name }) => name).toSorted();
+  const exportedToolNames = providerModule.MICROSOFT_GRAPH_TOOLS.map(({ name }) => name).toSorted();
+  assert(
+    isDeepStrictEqual(exportedToolNames, declaredToolNames),
+    "Compiled provider tool set differs from the manifest tool set.",
+  );
+  for (const tool of providerModule.MICROSOFT_GRAPH_TOOLS) {
+    const manifestTool = validatedManifest.tools.find(({ name }) => name === tool.name);
+    assert(
+      manifestTool !== undefined &&
+        typeof tool.description === "string" &&
+        ((typeof tool.input === "object" && tool.input !== null) ||
+          typeof tool.input === "function") &&
+        tool.readOnly === (manifestTool.effect !== "write") &&
+        typeof tool.destructive === "boolean" &&
+        typeof tool.idempotent === "boolean" &&
+        tool.openWorld === true,
+      `Compiled tool ${String(tool.name)} does not satisfy its Harness effect boundary.`,
+    );
+  }
+
+  const probeDirectory = await Fs.mkdtemp(Path.join(Os.tmpdir(), "tritonai-graph-contract-"));
+  try {
+    const probe = Path.join(probeDirectory, "provider-contract.ts");
+    const consumerProbe = Path.join(probeDirectory, "package-consumer.ts");
+    const harnessRegistry = Path.join(
+      harness,
+      "apps/server/src/integrations/IntegrationRegistry.ts",
+    );
+    const harnessSecrets = Path.join(harness, "apps/server/src/auth/ServerSecretStore.ts");
+
+    const compiler = Path.join(repositoryRoot, "node_modules/.bin/tsc");
+    const compilerOptions = [
+      "--noEmit",
+      "--ignoreConfig",
+      "--strict",
+      "--skipLibCheck",
+      "--target",
+      "ES2024",
+      "--module",
+      "NodeNext",
+      "--moduleResolution",
+      "NodeNext",
+      "--types",
+      "node",
+    ];
+    await Fs.writeFile(
+      consumerProbe,
+      [
+        `import { createIntegrationProvider, type IntegrationProvider, type IntegrationProviderFactoryContext } from ${JSON.stringify(providerTypes)};`,
+        "declare const context: IntegrationProviderFactoryContext;",
+        "const packageConsumer: IntegrationProvider = createIntegrationProvider(context);",
+        "void packageConsumer;",
+        "",
+      ].join("\n"),
+    );
+    const consumerCompile = spawnSync(compiler, [...compilerOptions, consumerProbe], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+    });
+    assert(
+      consumerCompile.status === 0,
+      `Published declarations do not resolve for an ordinary TypeScript consumer:\n${consumerCompile.stdout}${consumerCompile.stderr}`,
+    );
+    await Fs.writeFile(
+      probe,
+      [
+        `import type { IntegrationProvider as HarnessProvider } from ${JSON.stringify(harnessRegistry)};`,
+        `import type * as HarnessSecretStore from ${JSON.stringify(harnessSecrets)};`,
+        `import { createIntegrationProvider, type IntegrationProviderFactoryContext, type IntegrationSecretStore as PluginSecretStore } from ${JSON.stringify(providerTypes)};`,
+        "declare const secrets: HarnessSecretStore.ServerSecretStore['Service'];",
+        "const secretCompatibility: PluginSecretStore = secrets;",
+        "const factoryContext: IntegrationProviderFactoryContext = {",
+        "  secrets: secretCompatibility,",
+        "  configuration: {},",
+        "};",
+        "const providerCompatibility: HarnessProvider = createIntegrationProvider(factoryContext);",
+        "void providerCompatibility;",
+        "void secretCompatibility;",
+        "",
+      ].join("\n"),
+    );
+    const compile = spawnSync(
+      compiler,
+      [...compilerOptions, "--allowImportingTsExtensions", probe],
+      {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+      },
+    );
+    assert(
+      compile.status === 0,
+      `Compiled provider is not structurally assignable to exact Harness v2:\n${compile.stdout}${compile.stderr}`,
+    );
+  } finally {
+    await Fs.rm(probeDirectory, { recursive: true, force: true });
+  }
+
+  console.log(`Microsoft 365 provider contract passed at Harness ${actualHead}`);
+
+  await verifyProviderHostRuntime(provider, probe);
+} finally {
+  await probe.close();
+}
