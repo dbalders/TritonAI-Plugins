@@ -87,12 +87,33 @@ upstream preview is semantically partial. Unknown Graph fields and server-provid
 URLs are not included. Chat messages with no returned content use `body: null`; oversized chat
 collections retain the leading projected messages that fit and set `hasMore`.
 
-Attachment list tools request metadata only so file bytes cannot make the list unusable. The matching
-single-attachment tool temporarily preserves validated, bounded Graph `contentBytes` for a small
-file or a fixed projection of an attached Outlook item under a sub-512 KiB serialized result
-ceiling. Reference attachments return metadata only. This compatibility path does not expose
-arbitrary attachment fields or provide file-system delivery; attachment-file delivery requires a
-separate Harness-owned surface.
+Attachment list tools request metadata only so file bytes cannot make the list unusable; each file
+also gets a `category` from its name and declared type. The single-attachment tools read metadata
+first, then download a file's raw bytes (`$value`) only when it is at most 4 MiB and its name and type
+do not already identify an executable. The file is then classified by name, declared type, and
+content signature; any signal can only make the result more cautious, so a renamed executable or a
+misleading type cannot make it readable:
+
+- PDF and Word (DOCX) files return bounded extracted text in `content`. The Harness performs the
+  extraction in a separate process with a time limit and a JavaScript heap cap (`extractDocumentText` on the
+  invocation context); Harness builds without it get an explicit unsupported result.
+- UTF-8 text files return bounded text. PNG, JPEG, GIF, WebP, BMP, TIFF, and HEIC/HEIF images of at most
+  256 KiB keep the base64 `contentBytes` field, with the media type taken from the file's signature.
+- Executables, scripts, macro or web content, archives, other Office formats, and unrecognized binary
+  files return metadata, a `classification`, and a withheld or unsupported `content` result. Graph's
+  base64 `contentBytes` is never forwarded for them. A script or web file's source is returned as
+  inert text only when the caller sets `reviewSourceAsText`.
+
+Failed, withheld, and unsupported results are marked `retryable: false` and tell the agent not to
+improvise another way to read the file. Attached Outlook items return a fixed projection, and
+reference attachments return metadata only. Attachment tools do not provide file-system delivery.
+
+Mail reads include `mailbox`, which identifies the connected account from the Microsoft-issued
+access token used for that request (accepted only for Microsoft Graph in the configured tenant), and
+the connection status reports the same sign-in name as its account label. Every mail route is the
+signed-in `/me` mailbox, so the label cannot describe another person's mailbox. A result that
+finishes after the connection changes, including a refreshed token naming a different account, is
+rejected instead of being attributed to the new account.
 
 OneDrive item tools return a fixed metadata projection whose `webUrl` must be on a
 `*.sharepoint.com` host. The content read tool accepts files of at most 256 KiB. It reads the item's

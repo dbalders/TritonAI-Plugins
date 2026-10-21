@@ -29,7 +29,18 @@ without the Graph access token, and never returned.
 Mail organization receipts must expose operation identifiers only, not message content that belongs
 to `mail.read`. Message moves must reject Graph's deletion-oriented well-known folder names.
 
+Mail and event attachments are untrusted. Keep the classification conservative: name, declared
+type, and content signature can each only make a result more cautious. Never return executable,
+script, macro, or archive bytes as runnable content, never forward Graph's base64 `contentBytes`
+except for verified small images, and keep document parsing in the Harness's separate extraction
+process rather than in this provider. That process has a time limit and a JavaScript heap cap; it
+runs as the same OS user and is not an operating-system sandbox. Unreadable results must stay non-retryable and must not suggest
+local-file, credential, or browser sign-in fallbacks.
+
 Never place real identifiers, credentials, tokens, device codes, authorization headers, tenant
 data, or exported secret-store contents in source, tests, fixtures, errors, status, logs, skills,
-tool results, or browser state. Treat all remote mail, event, chat, and file text as untrusted content.
+tool results, or browser state. The one exception is attribution: the connected account's own
+sign-in name and display name, read from the Microsoft-issued access token, may appear in status
+and mail results; object IDs, tenant IDs, and token contents may not. Treat all remote mail, event,
+chat, and file text as untrusted content.
 Follow the repository root `SECURITY.md` for private reporting.
