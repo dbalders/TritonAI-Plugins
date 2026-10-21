@@ -804,10 +804,11 @@ function parseCredential(bytes) {
     }
     const value = asRecord(parsed);
     const isLegacy = value.version === 1;
-    if ((value.version !== 1 && value.version !== 2) ||
-        !exactKeys(value, new Set(isLegacy
-            ? ["version", "refreshToken", "grantedScopes", "updatedAt"]
-            : ["version", "refreshToken", "grantedScopes", "grantedCapabilities", "updatedAt"])) ||
+    const keys = isLegacy
+        ? ["version", "refreshToken", "grantedScopes", "updatedAt"]
+        : ["version", "refreshToken", "grantedScopes", "grantedCapabilities", "updatedAt"];
+    if ((value.version !== 1 && value.version !== 2 && value.version !== 3) ||
+        !exactKeys(value, new Set(value.version === 3 ? [...keys, "account"] : keys)) ||
         !Array.isArray(value.grantedScopes) ||
         value.grantedScopes.length === 0 ||
         value.grantedScopes.some((scope) => typeof scope !== "string" || !Object.values(CAPABILITY_SCOPES).includes(scope)) ||
@@ -819,14 +820,45 @@ function parseCredential(bytes) {
     const refreshToken = boundedString(value.refreshToken, MAX_TOKEN_CHARS);
     const grantedScopes = [...value.grantedScopes].toSorted();
     return {
-        version: 2,
+        version: 3,
         refreshToken,
         grantedScopes,
         grantedCapabilities: isLegacy
             ? legacyCapabilitiesFromScopes(grantedScopes)
             : canonicalCapabilities(value.grantedCapabilities, grantedScopes),
         updatedAt: value.updatedAt,
+        account: value.version === 3 ? parseStoredAccount(value.account) : null,
     };
+}
+function parseStoredAccount(value) {
+    if (value === null)
+        return null;
+    const account = asRecord(value);
+    if (!exactKeys(account, new Set(["tenantId", "objectId", "address", "displayName"]))) {
+        throw new Error("Stored Microsoft credential is invalid.");
+    }
+    const tenantId = identityText(account.tenantId, 64);
+    const objectId = identityText(account.objectId, 64);
+    const address = account.address === null ? null : identityText(account.address, 320);
+    const displayName = account.displayName === null ? null : identityText(account.displayName, 256);
+    if (tenantId === null ||
+        !ENTRA_IDENTIFIER.test(tenantId) ||
+        objectId === null ||
+        !ENTRA_IDENTIFIER.test(objectId) ||
+        (account.address !== null && (address === null || !/^[^\s@]+@[^\s@]+$/u.test(address))) ||
+        (account.displayName !== null && displayName === null)) {
+        throw new Error("Stored Microsoft credential is invalid.");
+    }
+    return {
+        tenantId: tenantId.toLowerCase(),
+        objectId: objectId.toLowerCase(),
+        address,
+        displayName,
+    };
+}
+/** Saves the verified account with the credential issued alongside it, never the token itself. */
+function storedAccountOf(account, tenantId) {
+    return account ? { tenantId: tenantId.toLowerCase(), ...account } : null;
 }
 async function readJson(response, maximumBytes) {
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
@@ -1593,7 +1625,10 @@ export class MicrosoftGraphProvider {
                     message: "The Microsoft sign-in expired. Disconnect and reconnect Microsoft 365.",
                 };
             }
-            const account = this.#accessToken?.account;
+            // The in-memory token names who this connection currently is. Before the first refresh after
+            // a restart, the account saved with this credential does, if it belongs to this tenant.
+            const saved = credential.account?.tenantId === this.#tenantId.toLowerCase() ? credential.account : null;
+            const account = this.#accessToken ? this.#accessToken.account : saved;
             return {
                 state: "connected",
                 accountLabel: account?.address ?? account?.displayName ?? null,
@@ -1750,12 +1785,14 @@ export class MicrosoftGraphProvider {
             const refreshToken = boundedString(json.refresh_token, MAX_TOKEN_CHARS);
             const grantedScopes = canonicalScopes(json.scope, flow.requestedScopes);
             const expiresInSeconds = boundedInteger(json.expires_in, 60, 86_400);
+            const account = connectedAccountFromAccessToken(accessToken, this.#tenantId);
             const credential = {
-                version: 2,
+                version: 3,
                 refreshToken,
                 grantedScopes,
                 grantedCapabilities: flow.requestedCapabilities,
                 updatedAt: new Date().toISOString(),
+                account: storedAccountOf(account, this.#tenantId),
             };
             await this.#serializeCredential(async () => {
                 if (this.#closed ||
@@ -1776,7 +1813,7 @@ export class MicrosoftGraphProvider {
                     expiresAt: Date.now() + expiresInSeconds * 1_000,
                     grantedScopes,
                     grantedCapabilities: flow.requestedCapabilities,
-                    account: connectedAccountFromAccessToken(accessToken, this.#tenantId),
+                    account,
                 };
             });
             this.#pending.delete(flowId);
@@ -1836,15 +1873,17 @@ export class MicrosoftGraphProvider {
             const rotatedValue = boundedString(json[REFRESH_TOKEN_FIELD] ?? credential.refreshToken, MAX_TOKEN_CHARS);
             const grantedScopes = canonicalScopes(json.scope, credential.grantedScopes);
             const expiresInSeconds = boundedInteger(json.expires_in, 60, 86_400);
+            const account = connectedAccountFromAccessToken(accessToken, this.#tenantId);
             const commitSignal = await this.#beginCommit(context);
             let saved = true;
             try {
                 await this.#writeCredential({
-                    version: 2,
+                    version: 3,
                     [refreshValueField]: rotatedValue,
                     grantedScopes,
                     grantedCapabilities: credential.grantedCapabilities,
                     updatedAt: new Date().toISOString(),
+                    account: storedAccountOf(account, this.#tenantId),
                 }, commitSignal);
             }
             catch (error) {
@@ -1859,7 +1898,6 @@ export class MicrosoftGraphProvider {
             this.#credentialSaveFailed = !saved;
             this.#credentialRevision += 1;
             this.#signInExpired = false;
-            const account = connectedAccountFromAccessToken(accessToken, this.#tenantId);
             // A refreshed grant should name the same account. If it does not, work started under the
             // earlier identity must not finish and be attributed to the new one.
             if (access?.account && account && access.account.objectId !== account.objectId) {

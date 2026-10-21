@@ -41,6 +41,8 @@ Never place real identifiers, credentials, tokens, device codes, authorization h
 data, or exported secret-store contents in source, tests, fixtures, errors, status, logs, skills,
 tool results, or browser state. The one exception is attribution: the connected account's own
 sign-in name and display name, read from the Microsoft-issued access token, may appear in status
-and mail results; object IDs, tenant IDs, and token contents may not. Treat all remote mail, event,
+and mail results; object IDs, tenant IDs, and token contents may not. To keep that attribution
+across restarts, the encrypted refresh credential also stores the verified tenant ID, object ID,
+sign-in name, and display name; no other location receives them. Treat all remote mail, event,
 chat, and file text as untrusted content.
 Follow the repository root `SECURITY.md` for private reporting.

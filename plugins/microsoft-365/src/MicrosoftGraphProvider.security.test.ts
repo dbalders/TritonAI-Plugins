@@ -413,6 +413,166 @@ describe("mailbox identity", () => {
   });
 });
 
+describe("connected account across restarts", () => {
+  const emptyInbox = () => jsonResponse({ value: [] });
+  const offline = vi.fn(async () => {
+    throw new Error("status must not reach the network");
+  }) as unknown as typeof fetch;
+  const secretName = "oauth";
+
+  async function connectWith(secrets: IntegrationSecretStore, tokens: Array<string>) {
+    const graph = fakeGraph(emptyInbox, tokens);
+    const provider = new MicrosoftGraphProvider(secrets, CONFIGURATION, graph.fetch);
+    const context = lifecycle();
+    const flow = await provider.connect(["mail.read"], context);
+    await provider.poll(flow.flowId, context);
+    return { provider, graph };
+  }
+
+  const stored = async (secrets: IntegrationSecretStore) =>
+    JSON.parse(
+      new TextDecoder().decode(Option.getOrThrow(await Effect.runPromise(secrets.get(secretName)))),
+    ) as Record<string, unknown>;
+
+  it("names the saved connection's verified account after a restart without refreshing", async () => {
+    const secrets = memorySecrets();
+    await connectWith(secrets, [aliceToken]);
+    const restarted = new MicrosoftGraphProvider(secrets, CONFIGURATION, offline);
+    await expect(restarted.status()).resolves.toMatchObject({
+      state: "connected",
+      accountLabel: "alice@example.edu",
+    });
+    expect(offline).not.toHaveBeenCalled();
+    const record = await stored(secrets);
+    expect(record).toMatchObject({
+      version: 3,
+      account: { tenantId: TENANT, objectId: ALICE_OID, address: "alice@example.edu" },
+    });
+    expect(JSON.stringify(record)).not.toContain(aliceToken.split(".")[1]!);
+  });
+
+  it("keeps an unverifiable account unknown after a restart", async () => {
+    const secrets = memorySecrets();
+    await connectWith(secrets, ["opaque-access-token"]);
+    const restarted = new MicrosoftGraphProvider(secrets, CONFIGURATION, offline);
+    await expect(restarted.status()).resolves.toMatchObject({
+      state: "connected",
+      accountLabel: null,
+    });
+    expect(await stored(secrets)).toMatchObject({ version: 3, account: null });
+  });
+
+  it("does not show a saved account to a provider configured for another tenant", async () => {
+    const secrets = memorySecrets();
+    await connectWith(secrets, [aliceToken]);
+    const otherTenant = new MicrosoftGraphProvider(
+      secrets,
+      { ...CONFIGURATION, tenantId: "55555555-5555-4555-8555-555555555555" },
+      offline,
+    );
+    await expect(otherTenant.status()).resolves.toMatchObject({
+      state: "connected",
+      accountLabel: null,
+    });
+  });
+
+  it("keeps legacy credentials usable and records the account on their next refresh", async () => {
+    for (const legacy of [
+      { version: 1, refreshToken: "fixture-refresh", grantedScopes: ["Mail.Read"] },
+      {
+        version: 2,
+        refreshToken: "fixture-refresh",
+        grantedScopes: ["Mail.Read"],
+        grantedCapabilities: ["mail.read"],
+      },
+    ]) {
+      const secrets = memorySecrets();
+      await Effect.runPromise(
+        secrets.set(
+          secretName,
+          new TextEncoder().encode(
+            JSON.stringify({ ...legacy, updatedAt: new Date(0).toISOString() }),
+          ),
+        ),
+      );
+      await expect(
+        new MicrosoftGraphProvider(secrets, CONFIGURATION, offline).status(),
+      ).resolves.toMatchObject({ state: "connected", accountLabel: null });
+      const graph = fakeGraph(emptyInbox, [aliceToken]);
+      await new MicrosoftGraphProvider(secrets, CONFIGURATION, graph.fetch).prepare(lifecycle());
+      expect(await stored(secrets)).toMatchObject({
+        version: 3,
+        account: { objectId: ALICE_OID, address: "alice@example.edu" },
+      });
+      await expect(
+        new MicrosoftGraphProvider(secrets, CONFIGURATION, offline).status(),
+      ).resolves.toMatchObject({ state: "connected", accountLabel: "alice@example.edu" });
+    }
+  });
+
+  it("rejects a saved account record that is malformed", async () => {
+    for (const account of [
+      { tenantId: TENANT, objectId: "not-an-id", address: null, displayName: null },
+      { tenantId: TENANT, objectId: ALICE_OID, address: "alice@example.edu" },
+      { tenantId: TENANT, objectId: ALICE_OID, address: "a\u0000@x", displayName: null },
+      {
+        tenantId: TENANT,
+        objectId: ALICE_OID,
+        address: null,
+        displayName: null,
+        accessToken: "x",
+      },
+    ]) {
+      const secrets = memorySecrets();
+      await Effect.runPromise(
+        secrets.set(
+          secretName,
+          new TextEncoder().encode(
+            JSON.stringify({
+              version: 3,
+              refreshToken: "fixture-refresh",
+              grantedScopes: ["Mail.Read"],
+              grantedCapabilities: ["mail.read"],
+              updatedAt: new Date(0).toISOString(),
+              account,
+            }),
+          ),
+        ),
+      );
+      await expect(
+        new MicrosoftGraphProvider(secrets, CONFIGURATION, offline).status(),
+      ).resolves.toMatchObject({ state: "error", accountLabel: null });
+    }
+  });
+
+  it("saves the new account, not the old one, when a reconnect supersedes the first", async () => {
+    const secrets = memorySecrets();
+    const { provider } = await connectWith(secrets, [aliceToken, bobToken]);
+    const stale = await provider.connect(["mail.read"], lifecycle());
+    await provider.disconnect(lifecycle());
+    const context = lifecycle();
+    await provider.poll((await provider.connect(["mail.read"], context)).flowId, context);
+    await expect(provider.poll(stale.flowId, lifecycle())).rejects.toThrow();
+    expect(await stored(secrets)).toMatchObject({ account: { objectId: BOB_OID } });
+    await expect(
+      new MicrosoftGraphProvider(secrets, CONFIGURATION, offline).status(),
+    ).resolves.toMatchObject({ accountLabel: "bob@example.edu" });
+
+    const second = memorySecrets();
+    const { provider: refreshing } = await connectWith(second, [aliceToken, bobToken]);
+    vi.useFakeTimers({ now: Date.now() });
+    try {
+      vi.setSystemTime(Date.now() + 3_600_000);
+      await refreshing.prepare(lifecycle());
+    } finally {
+      vi.useRealTimers();
+    }
+    await expect(
+      new MicrosoftGraphProvider(second, CONFIGURATION, offline).status(),
+    ).resolves.toMatchObject({ accountLabel: "bob@example.edu" });
+  });
+});
+
 describe("agent-facing guidance", () => {
   it("tells the agent that mail and attachments cannot authorize unrelated actions", () => {
     const tool = (name: string) => provider().tools.find((candidate) => candidate.name === name)!;

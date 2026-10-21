@@ -145,7 +145,14 @@ Do not put deployment configuration in runtime settings, logs, or the public com
 
 The provider receives the Harness package-scoped Effect secret store and uses only suffix `oauth`.
 It persists a versioned refresh credential and the fixed scopes selected through manifest
-capabilities, never an access token. Device poll redemption, refresh rotation, and disconnect
+capabilities, never an access token. Credential version 3 also keeps the account verified from the
+access token issued with that refresh token (tenant ID, object ID, sign-in name, display name) in the
+same encrypted secret, so status can name the connected mailbox after a restart without a network
+call. Status shows it only when its tenant matches the configured tenant. Version 1 and 2
+credentials still work; their account stays unknown until the next successful refresh stores it.
+Rolling back to an earlier plugin version (1.4.0 or earlier 1.5.0 builds) rejects a version 3
+credential: status reports that the stored connection could not be verified, and the user must
+disconnect and reconnect. Device poll redemption, refresh rotation, and disconnect
 removal require Harness `beginCommit()` admission and use its commit-tail signal. Any admitted
 uncertainty yields error status and zero capabilities until verified disconnect.
 
