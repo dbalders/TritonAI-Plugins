@@ -84,6 +84,18 @@ importers:
 
   plugins/tableau: {}
 
+  plugins/ucsd-assistant:
+    devDependencies:
+      '@tritonai/plugin-sdk':
+        specifier: workspace:^
+        version: link:../../packages/plugin-sdk
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+      parse5:
+        specifier: 8.0.1
+        version: 8.0.1
+
 packages:
 
   '@babel/code-frame@7.29.7':
@@ -897,6 +909,10 @@ packages:
   effect@4.0.0-rc.115:
     resolution: {integrity: sha512-ogYulZ5ffeOzrJqQrG0XOkDO5lKn2s9KNHhoxJy/6wKUkF0i12dlVXWA9TgsgQ+zV/JzizyG0+XMPepZEQX6vw==}
 
+  entities@8.1.0:
+    resolution: {integrity: sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA==}
+    engines: {node: '>=20.19.0'}
+
   es-module-lexer@2.3.1:
     resolution: {integrity: sha512-shc1dbU90Yl/xq1QrC7QRtfcwURZuVRfPhZbDoldJ1cn1gzDvBaBWlv0eFolj5+0znnPJz5TXLxsN77X/12KTA==}
 
@@ -1076,6 +1092,9 @@ packages:
         optional: true
       vite-plus:
         optional: true
+
+  parse5@8.0.1:
+    resolution: {integrity: sha512-z1e/HMG90obSGeidlli3hj7cbocou0/wa5HacvI3ASx34PecNjNQeaHNo5WIZpWofN9kgkqV1q5YvXe3F0FoPw==}
 
   pathe@2.0.3:
     resolution: {integrity: sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==}
@@ -1802,6 +1821,8 @@ snapshots:
 
   effect@4.0.0-rc.115: {}
 
+  entities@8.1.0: {}
+
   es-module-lexer@2.3.1: {}
 
   esbuild@0.28.2:
@@ -1999,6 +2020,10 @@ snapshots:
       '@oxlint/binding-win32-x64-msvc': 1.70.0
       oxlint-tsgolint: 0.23.0
       vite-plus: 0.2.1(@types/node@24.12.4)(esbuild@0.28.2)(typescript@6.0.3)(vite@8.1.4(@types/node@24.12.4)(esbuild@0.28.2)(yaml@2.9.0))(yaml@2.9.0)
+
+  parse5@8.0.1:
+    dependencies:
+      entities: 8.1.0
 
   pathe@2.0.3: {}
 

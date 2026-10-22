@@ -1,7 +1,7 @@
 import { defineConfig } from "vite-plus";
 
 // Paused plugins are kept byte-for-byte for restoration and are not built or checked.
-const reviewedDistributionFiles = ["plugins/*/dist/**", "paused/**"];
+const reviewedDistributionFiles = ["plugins/*/dist/**", "artifacts/**", "paused/**"];
 
 export default defineConfig({
   fmt: {

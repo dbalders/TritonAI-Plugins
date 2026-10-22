@@ -6,4 +6,7 @@ plugins/n8n/.tritonai-plugin/plugin.json
 plugins/jira-data-center/.tritonai-plugin/plugin.json
 plugins/tableau/.tritonai-plugin/plugin.json
 plugins/lucid/.tritonai-plugin/plugin.json
+plugins/ucsd-assistant/.tritonai-plugin/plugin.json
+# Exact public upstream receipt fixture.
+plugins/ucsd-assistant/src/fixtures/campus-map/route-metadata.json
 artifacts/
