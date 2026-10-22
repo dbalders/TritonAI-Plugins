@@ -11,7 +11,35 @@ export interface IntegrationInvocationContext {
   readonly signal: AbortSignal;
   readonly writeApproved?: boolean;
   beginCommit?(): Promise<AbortSignal>;
+  /**
+   * Harness builds that offer it extract bounded PDF or DOCX text in a separate process with a
+   * time limit and a JavaScript heap cap, bound to this invocation. Older hosts omit it.
+   */
+  extractDocumentText?(request: DocumentTextRequest): Promise<DocumentTextResult>;
 }
+
+export interface DocumentTextRequest {
+  readonly format: "pdf" | "docx";
+  readonly bytes: Uint8Array;
+  readonly maxCharacters?: number;
+}
+
+export type DocumentTextResult =
+  | {
+      readonly status: "extracted";
+      readonly format: "pdf" | "docx";
+      readonly text: string;
+      readonly truncated: boolean;
+      readonly pageCount?: number;
+      readonly pagesRead?: number;
+      readonly containsMacros?: boolean;
+    }
+  | {
+      readonly status: "failed";
+      readonly format: "pdf" | "docx";
+      readonly reason: string;
+      readonly message: string;
+    };
 
 export interface IntegrationLifecycleContext extends IntegrationInvocationContext {
   beginCommit(): Promise<AbortSignal>;

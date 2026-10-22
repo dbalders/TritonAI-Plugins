@@ -20,6 +20,8 @@ const TEST_CONFIGURATION = {
 } as const;
 
 const value = (kind: string) => ["fixture", kind].join("-");
+// Fixture access tokens are opaque, so no account can be verified from them.
+const UNKNOWN_MAILBOX = { owner: "connected-account", address: null, displayName: null } as const;
 const storedFixtureValue = value("refresh-stored");
 const accessField = ["access", "token"].join("_");
 const refreshField = ["refresh", "token"].join("_");
@@ -740,6 +742,7 @@ describe("MicrosoftGraphProvider contract", () => {
 
     await graph.prepare(lifecycle());
     await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toEqual({
+      mailbox: UNKNOWN_MAILBOX,
       messages: [],
       hasMore: false,
     });
@@ -760,6 +763,7 @@ describe("MicrosoftGraphProvider contract", () => {
       message: expect.stringMatching(/could not be saved/u),
     });
     await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toEqual({
+      mailbox: UNKNOWN_MAILBOX,
       messages: [],
       hasMore: false,
     });
@@ -806,6 +810,7 @@ describe("MicrosoftGraphProvider contract", () => {
     await expect(graph.status()).resolves.toMatchObject({ state: "connected" });
     await graph.prepare(lifecycle());
     await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toEqual({
+      mailbox: UNKNOWN_MAILBOX,
       messages: [],
       hasMore: false,
     });
@@ -1120,6 +1125,7 @@ describe("MicrosoftGraphProvider tools", () => {
     await expect(graph.invoke("microsoft365.mail.search", {})).rejects.toThrow(/session expired/u);
     await graph.prepare(lifecycle());
     await expect(graph.invoke("microsoft365.mail.search", {})).resolves.toEqual({
+      mailbox: UNKNOWN_MAILBOX,
       messages: [],
       hasMore: false,
     });
@@ -1284,7 +1290,11 @@ describe("MicrosoftGraphProvider tools", () => {
       vi.setSystemTime(Date.now() + 3_550_000);
       await graph.prepare(lifecycle());
       releaseGraph();
-      await expect(invocation).resolves.toEqual({ messages: [], hasMore: false });
+      await expect(invocation).resolves.toEqual({
+        mailbox: UNKNOWN_MAILBOX,
+        messages: [],
+        hasMore: false,
+      });
     } finally {
       releaseGraph?.();
       vi.useRealTimers();
@@ -1382,6 +1392,7 @@ describe("MicrosoftGraphProvider tools", () => {
       limit: 5,
     });
     expect(result).toEqual({
+      mailbox: UNKNOWN_MAILBOX,
       messages: [
         {
           id: "message-1",
@@ -1409,6 +1420,7 @@ describe("MicrosoftGraphProvider tools", () => {
     await expect(
       graph.invoke("microsoft365.mail.get", { messageId: "message/id?fixture" }),
     ).resolves.toEqual({
+      mailbox: UNKNOWN_MAILBOX,
       id: "message-1",
       subject: "Budget",
       from: { name: "Person", address: "person@example.edu" },
@@ -1553,7 +1565,7 @@ describe("MicrosoftGraphProvider tools", () => {
     expect(calls.at(-1)).toBe("https://graph.microsoft.com/v1.0/me/events/event%2Fid%3Ffixture");
   });
 
-  it("projects attachment metadata and bounded content under the existing read capabilities", async () => {
+  it("projects attachment metadata and readable content under the existing read capabilities", async () => {
     const secrets = memorySecrets();
     const graphCalls: string[] = [];
     const attachment = {
@@ -1567,6 +1579,26 @@ describe("MicrosoftGraphProvider tools", () => {
       contentBytes: "cmV2aWV3",
       fixtureProperty: { preserved: true },
     };
+    const itemAttachment = {
+      "@odata.type": "microsoft.graph.itemAttachment",
+      id: "attachment/id?fixture",
+      name: "Attached event",
+      contentType: null,
+      size: 1_024,
+      isInline: false,
+      lastModifiedDateTime: "2026-07-15T13:00:00Z",
+      item: {
+        "@odata.type": "microsoft.graph.event",
+        id: "attached-event",
+        subject: "Full attached event",
+        start: { dateTime: "2026-07-16T09:00:00", timeZone: "UTC" },
+        end: { dateTime: "2026-07-16T10:00:00", timeZone: "UTC" },
+        location: { displayName: "Room 1" },
+        body: { contentType: "html", content: "<p>Attached event body</p>" },
+        fixtureProperty: { preserved: true },
+      },
+      fixtureProperty: { preserved: true },
+    };
     const fetchImplementation = (async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
@@ -1574,60 +1606,20 @@ describe("MicrosoftGraphProvider tools", () => {
         return jsonResponse(tokenBody("offline_access Mail.Read Calendars.Read"));
       }
       graphCalls.push(url);
-      if (url.includes("/events/") && url.includes("$expand=")) {
+      if (url.includes("/attachments?")) {
         return jsonResponse({
-          "@odata.type": "microsoft.graph.itemAttachment",
-          id: "attachment/id?fixture",
-          name: "Attached event",
-          contentType: null,
-          size: 1_024,
-          isInline: false,
-          lastModifiedDateTime: "2026-07-15T13:00:00Z",
-          item: {
-            "@odata.type": "microsoft.graph.event",
-            id: "attached-event",
-            subject: "Full attached event",
-            start: { dateTime: "2026-07-16T09:00:00", timeZone: "UTC" },
-            end: { dateTime: "2026-07-16T10:00:00", timeZone: "UTC" },
-            location: { displayName: "Room 1" },
-            body: { contentType: "html", content: "<p>Attached event body</p>" },
-            fixtureProperty: { preserved: true },
-          },
-          fixtureProperty: { preserved: true },
+          value: [attachment],
+          "@odata.nextLink": "https://example.invalid/next",
         });
       }
-      return url.includes("/attachments?")
-        ? jsonResponse({ value: [attachment], "@odata.nextLink": "https://example.invalid/next" })
-        : jsonResponse(attachment);
+      if (url.includes("/events/")) return jsonResponse(itemAttachment);
+      if (url.endsWith("/$value")) return new Response("review");
+      return jsonResponse(attachment);
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
     await authorize(graph, ["mail.read", "calendar.read"]);
 
-    await expect(
-      graph.invoke("microsoft365.mail.attachments.list", {
-        messageId: "message/id?fixture",
-        limit: 3,
-      }),
-    ).resolves.toEqual({
-      attachments: [
-        {
-          kind: "file",
-          id: "attachment/id?fixture",
-          name: "review.txt",
-          contentType: "text/plain",
-          size: 6,
-          isInline: false,
-          lastModifiedDateTime: "2026-07-15T12:00:00Z",
-        },
-      ],
-      hasMore: true,
-    });
-    await expect(
-      graph.invoke("microsoft365.mail.attachment.get", {
-        messageId: "message/id?fixture",
-        attachmentId: "attachment/id?fixture",
-      }),
-    ).resolves.toEqual({
+    const listedFile = {
       kind: "file",
       id: "attachment/id?fixture",
       name: "review.txt",
@@ -1635,27 +1627,37 @@ describe("MicrosoftGraphProvider tools", () => {
       size: 6,
       isInline: false,
       lastModifiedDateTime: "2026-07-15T12:00:00Z",
-      contentBytes: "cmV2aWV3",
+      category: "text",
+    };
+    await expect(
+      graph.invoke("microsoft365.mail.attachments.list", {
+        messageId: "message/id?fixture",
+        limit: 3,
+      }),
+    ).resolves.toEqual({ mailbox: UNKNOWN_MAILBOX, attachments: [listedFile], hasMore: true });
+    await expect(
+      graph.invoke("microsoft365.mail.attachment.get", {
+        messageId: "message/id?fixture",
+        attachmentId: "attachment/id?fixture",
+      }),
+    ).resolves.toEqual({
+      mailbox: UNKNOWN_MAILBOX,
+      kind: "file",
+      id: "attachment/id?fixture",
+      name: "review.txt",
+      contentType: "text/plain",
+      size: 6,
+      isInline: false,
+      lastModifiedDateTime: "2026-07-15T12:00:00Z",
+      classification: { category: "text", reasons: [".txt name"] },
+      content: { status: "text", text: "review", truncated: false },
     });
     await expect(
       graph.invoke("microsoft365.calendar.event.attachments.list", {
         eventId: "event/id?fixture",
         limit: 4,
       }),
-    ).resolves.toEqual({
-      attachments: [
-        {
-          kind: "file",
-          id: "attachment/id?fixture",
-          name: "review.txt",
-          contentType: "text/plain",
-          size: 6,
-          isInline: false,
-          lastModifiedDateTime: "2026-07-15T12:00:00Z",
-        },
-      ],
-      hasMore: true,
-    });
+    ).resolves.toEqual({ attachments: [listedFile], hasMore: true });
     await expect(
       graph.invoke("microsoft365.calendar.event.attachment.get", {
         eventId: "event/id?fixture",
@@ -1684,10 +1686,14 @@ describe("MicrosoftGraphProvider tools", () => {
       },
     });
 
+    const metadataQuery =
+      "?%24select=id%2Cname%2CcontentType%2Csize%2CisInline%2ClastModifiedDateTime";
     expect(graphCalls).toEqual([
       "https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture/attachments?%24top=3&%24select=id%2Cname%2CcontentType%2Csize%2CisInline%2ClastModifiedDateTime",
-      "https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture/attachments/attachment%2Fid%3Ffixture?$expand=microsoft.graph.itemattachment/item",
+      `https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture/attachments/attachment%2Fid%3Ffixture${metadataQuery}`,
+      "https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture/attachments/attachment%2Fid%3Ffixture/$value",
       "https://graph.microsoft.com/v1.0/me/events/event%2Fid%3Ffixture/attachments?%24top=4&%24select=id%2Cname%2CcontentType%2Csize%2CisInline%2ClastModifiedDateTime",
+      `https://graph.microsoft.com/v1.0/me/events/event%2Fid%3Ffixture/attachments/attachment%2Fid%3Ffixture${metadataQuery}`,
       "https://graph.microsoft.com/v1.0/me/events/event%2Fid%3Ffixture/attachments/attachment%2Fid%3Ffixture?$expand=microsoft.graph.itemattachment/item",
     ]);
   });
@@ -1728,26 +1734,38 @@ describe("MicrosoftGraphProvider tools", () => {
     const graph = provider(secrets.service, fetchImplementation);
     await authorize(graph, ["mail.read", "calendar.read"]);
 
+    // Graph's base64 contentBytes is never forwarded; an unrecognized binary is metadata only.
+    const unreadable = {
+      ...metadata,
+      classification: { category: "other", reasons: ["application/octet-stream type"] },
+      content: {
+        status: "unsupported",
+        reason: "This file type cannot be read here (application/octet-stream type).",
+        retryable: false,
+        note: expect.stringContaining("Do not decode"),
+      },
+    };
+    const listed = { ...metadata, category: "other" };
     const reads = [
       {
         tool: "microsoft365.mail.attachments.list",
         input: { messageId: "message-1", limit: 1 },
-        expected: { attachments: [metadata], hasMore: false },
+        expected: { mailbox: UNKNOWN_MAILBOX, attachments: [listed], hasMore: false },
       },
       {
         tool: "microsoft365.mail.attachment.get",
         input: { messageId: "message-1", attachmentId: "attachment-1" },
-        expected: { ...metadata, contentBytes: "eA==" },
+        expected: { mailbox: UNKNOWN_MAILBOX, ...unreadable },
       },
       {
         tool: "microsoft365.calendar.event.attachments.list",
         input: { eventId: "event-1", limit: 1 },
-        expected: { attachments: [metadata], hasMore: false },
+        expected: { attachments: [listed], hasMore: false },
       },
       {
         tool: "microsoft365.calendar.event.attachment.get",
         input: { eventId: "event-1", attachmentId: "attachment-1" },
-        expected: { ...metadata, contentBytes: "eA==" },
+        expected: unreadable,
       },
     ] as const;
     for (attachmentType of ["#microsoft.graph.fileAttachment", "microsoft.graph.fileAttachment"]) {
@@ -1790,6 +1808,7 @@ describe("MicrosoftGraphProvider tools", () => {
     await authorize(graph);
 
     const projectedAttachment = {
+      mailbox: UNKNOWN_MAILBOX,
       kind: "item",
       id: "attachment-1",
       name: "Meeting request",
@@ -1861,6 +1880,7 @@ describe("MicrosoftGraphProvider tools", () => {
         attachmentId: "attachment-1",
       }),
     ).resolves.toEqual({
+      mailbox: UNKNOWN_MAILBOX,
       kind: "item",
       id: "attachment-1",
       name: "Contact",
@@ -2294,6 +2314,7 @@ describe("MicrosoftGraphProvider tools", () => {
     await authorize(graph, ["mail.read", "mail.organize"]);
 
     await expect(graph.invoke("microsoft365.mail.folders.list", { limit: 5 })).resolves.toEqual({
+      mailbox: UNKNOWN_MAILBOX,
       items: [{ id: "folder/id?fixture", displayName: "Receipts", totalItemCount: 4 }],
       hasMore: false,
     });
@@ -2303,6 +2324,7 @@ describe("MicrosoftGraphProvider tools", () => {
         limit: 2,
       }),
     ).resolves.toEqual({
+      mailbox: UNKNOWN_MAILBOX,
       items: [{ id: "folder/id?fixture", displayName: "Receipts", totalItemCount: 4 }],
       hasMore: false,
     });
@@ -3198,6 +3220,7 @@ describe("MicrosoftGraphProvider tools", () => {
 
     const result = await graph.invoke("microsoft365.mail.get", { messageId: "message-1" });
     expect(result).toEqual({
+      mailbox: UNKNOWN_MAILBOX,
       id: "message-1",
       subject: "Future property",
       from: { name: "Person", address: "person@example.edu" },
@@ -3359,41 +3382,12 @@ describe("MicrosoftGraphProvider tools", () => {
       lastModifiedDateTime: "2026-07-15T12:00:00Z",
     };
     remoteResponse = { ...attachment, contentBytes: "not base64" };
-    await expect(
-      graph.invoke("microsoft365.mail.attachment.get", {
-        messageId: "message-1",
-        attachmentId: "attachment-1",
-      }),
-    ).rejects.toThrow(/invalid attachment content/u);
-    const nearLimitContent = "A".repeat(350 * 1_024);
-    remoteResponse = { ...attachment, contentBytes: nearLimitContent };
-    const nearLimitResult = (await graph.invoke("microsoft365.mail.attachment.get", {
+    const result = (await graph.invoke("microsoft365.mail.attachment.get", {
       messageId: "message-1",
       attachmentId: "attachment-1",
     })) as Record<string, unknown>;
-    expect(Object.keys(nearLimitResult).toSorted()).toEqual(
-      [
-        "kind",
-        "id",
-        "name",
-        "contentType",
-        "size",
-        "isInline",
-        "lastModifiedDateTime",
-        "contentBytes",
-      ].toSorted(),
-    );
-    expect(nearLimitResult.contentBytes).toBe(nearLimitContent);
-    expect(new TextEncoder().encode(JSON.stringify(nearLimitResult)).byteLength).toBeLessThan(
-      512 * 1_024,
-    );
-    remoteResponse = { ...attachment, contentBytes: "A".repeat(350 * 1_024 + 4) };
-    await expect(
-      graph.invoke("microsoft365.mail.attachment.get", {
-        messageId: "message-1",
-        attachmentId: "attachment-1",
-      }),
-    ).rejects.toThrow(/invalid attachment content/u);
+    expect(result).not.toHaveProperty("contentBytes");
+    expect(result.content).toMatchObject({ status: "unsupported", retryable: false });
     remoteResponse = { ...attachment, "@odata.type": "#microsoft.graph.futureAttachment" };
     await expect(
       graph.invoke("microsoft365.mail.attachment.get", {
@@ -3431,6 +3425,7 @@ describe("MicrosoftGraphProvider tools", () => {
         attachmentId: "attachment-1",
       }),
     ).resolves.toEqual({
+      mailbox: UNKNOWN_MAILBOX,
       kind: "reference",
       id: "attachment-1",
       name: "Cloud file",
