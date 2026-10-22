@@ -1100,6 +1100,7 @@ var MAX_RESULTS = 25;
 var MAX_CLASSES = 100;
 var MAX_DIRECTIONS = 100;
 var MAX_POINTS = 2e3;
+var MAX_PATH_POINTS = 1024;
 var BUILDING_FIELDS = "OBJECTID,FacilityLongName,BuildingAliases,StreetAddress,Longitude,Latitude";
 var POI_FIELDS = "OBJECTID,UpdatedName,Class,Subclass,FacilityLongName,ClassroomCodes,URL";
 var pointSchema = {
@@ -1541,6 +1542,7 @@ async function walkingRoute(input, signal) {
       return [finite(pair[0], -180, 180), finite(pair[1], -90, 90)];
     })
   );
+  const geometryOmitted = pointCount > MAX_POINTS || geometry.some((path) => path.length > MAX_PATH_POINTS);
   const directionSets = array(result.data.directions, 1);
   if (directionSets.length !== 1) unavailable("The route source returned no directions.");
   const steps = array(record2(directionSets[0]).features, 2e3);
@@ -1566,8 +1568,8 @@ async function walkingRoute(input, signal) {
     modeledMinutes: finite(a.Total_WalkingMinutes),
     stops,
     maximumSnapDistanceMeters: 50,
-    paths: pointCount > MAX_POINTS ? null : geometry,
-    geometryOmitted: pointCount > MAX_POINTS,
+    paths: geometryOmitted ? null : geometry,
+    geometryOmitted,
     spatialReference: 4326,
     directions,
     directionsTruncated: steps.length > MAX_DIRECTIONS,

@@ -23,6 +23,7 @@ const MAX_RESULTS = 25;
 const MAX_CLASSES = 100;
 const MAX_DIRECTIONS = 100;
 const MAX_POINTS = 2000;
+const MAX_PATH_POINTS = 1024; // The host SDK bounds each JSON array independently.
 const BUILDING_FIELDS =
   "OBJECTID,FacilityLongName,BuildingAliases,StreetAddress,Longitude,Latitude";
 const POI_FIELDS = "OBJECTID,UpdatedName,Class,Subclass,FacilityLongName,ClassroomCodes,URL";
@@ -548,6 +549,8 @@ async function walkingRoute(input: unknown, signal: AbortSignal): Promise<JsonOb
       return [finite(pair[0], -180, 180), finite(pair[1], -90, 90)];
     }),
   );
+  const geometryOmitted =
+    pointCount > MAX_POINTS || geometry.some((path) => path.length > MAX_PATH_POINTS);
   const directionSets = array(result.data.directions, 1);
   if (directionSets.length !== 1) unavailable("The route source returned no directions.");
   const steps = array(record(directionSets[0]).features, 2000);
@@ -573,8 +576,8 @@ async function walkingRoute(input: unknown, signal: AbortSignal): Promise<JsonOb
     modeledMinutes: finite(a.Total_WalkingMinutes),
     stops,
     maximumSnapDistanceMeters: 50,
-    paths: pointCount > MAX_POINTS ? null : geometry,
-    geometryOmitted: pointCount > MAX_POINTS,
+    paths: geometryOmitted ? null : geometry,
+    geometryOmitted,
     spatialReference: 4326,
     directions,
     directionsTruncated: steps.length > MAX_DIRECTIONS,

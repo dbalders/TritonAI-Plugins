@@ -276,11 +276,62 @@ describe("public campus map contracts", () => {
     },
   );
 
-  it("omits oversized route geometry and bounds direction output explicitly", async () => {
+  it.each([
+    { lengths: [1024], geometryOmitted: false },
+    { lengths: [1025], geometryOmitted: true },
+    { lengths: [1024, 976], geometryOmitted: false },
+  ])(
+    "preserves route details with path lengths $lengths (geometryOmitted: $geometryOmitted)",
+    async ({ lengths, geometryOmitted }) => {
+      const body = routeReply();
+      const paths = lengths.map((length) =>
+        Array.from({ length }, (_, index) => [
+          from.longitude + (to.longitude - from.longitude) * (index / (length - 1)),
+          from.latitude + (to.latitude - from.latitude) * (index / (length - 1)),
+        ]),
+      );
+      body.routes.features[0]!.geometry.paths = paths;
+      reply(routeMetadata);
+      reply(body);
+      const result = await invoke("map_walking_route", { from, to, mode: "walking" });
+      expect(result.paths).toEqual(geometryOmitted ? null : paths);
+      expect(result).toMatchObject({
+        geometryOmitted,
+        from,
+        to,
+        mode: "walking",
+        advertisedTravelMode: { name: "Walking", itemId: "1" },
+        networkBuildAt: "2026-10-08T17:32:21.000Z",
+        lengthFeet: 976.6768165055435,
+        modeledMinutes: 4.883312073501409,
+        stops: [
+          { sequence: 1, point: from, status: 7, distanceToNetworkMeters: 5 },
+          { sequence: 2, point: to, status: 0, distanceToNetworkMeters: 5 },
+        ],
+        directions: [
+          {
+            text: "Start at Geisel Library",
+            lengthFeet: 0,
+            modeledMinutes: 0,
+            maneuverType: "esriDMTDepart",
+          },
+        ],
+        directionsTruncated: false,
+        messages: [{ code: -2147200756 }],
+        messagesTruncated: false,
+        source: { httpDate: "Thu, 22 Oct 2026 20:10:25 GMT" },
+        metadataSource: { httpDate: "Thu, 22 Oct 2026 20:10:25 GMT" },
+      });
+      expect(result.directions).toHaveLength(body.directions[0]!.features.length);
+      expect(result.stops).toHaveLength(body.stops.features.length);
+    },
+  );
+
+  it("omits geometry above 2000 total points and bounds direction output explicitly", async () => {
     const body = routeReply();
-    body.routes.features[0]!.geometry.paths = [
-      Array.from({ length: 2001 }, () => [from.longitude, from.latitude]),
-    ];
+    body.routes.features[0]!.geometry.paths = [1024, 977].map((length) =>
+      Array.from({ length }, () => [from.longitude, from.latitude]),
+    );
     body.directions[0]!.features = Array.from(
       { length: 101 },
       () => body.directions[0]!.features[0]!,
