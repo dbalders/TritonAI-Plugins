@@ -1,6 +1,6 @@
 import { request, Agent } from "node:https";
 import type { ClientRequest, IncomingMessage } from "node:http";
-import { pluginFailure } from "@tritonai/plugin-sdk";
+import { pluginFailure, type PluginFailure } from "@tritonai/plugin-sdk";
 
 const SOURCE_URL = "https://waitz.io/live/ucsd-geisel";
 const OFFICIAL_CLIENT_URL = "https://library.ucsd.edu/assets/availability/mobile/index.html";
@@ -8,11 +8,15 @@ const MAX_BYTES = 512 * 1024;
 const MAX_SOURCE_LOCATIONS = 64;
 const MAX_SUB_LOCATIONS = 32;
 const TIMEOUT_MS = 10_000;
+const TIMEOUT = Symbol("campus busyness deadline");
 
 class CampusBusynessError extends Error {
-  constructor(message: string) {
+  readonly failure: PluginFailure;
+
+  constructor(code: string, message: string, retryable = false) {
     super(message);
     this.name = "CampusBusynessError";
+    this.failure = pluginFailure(code, message, { retryable });
   }
 }
 
@@ -100,7 +104,10 @@ function parseInput(input: unknown): { location: string; limit: number } {
 }
 
 function schemaError(): never {
-  throw new CampusBusynessError("The campus busyness source returned an unsupported data format.");
+  throw new CampusBusynessError(
+    "campus_busyness_schema_error",
+    "The campus busyness source returned an unsupported data format.",
+  );
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -183,31 +190,40 @@ function locations(value: unknown): CampusBusyness["locations"] {
 }
 
 function cancelled(signal: AbortSignal): CampusBusynessError {
-  return new CampusBusynessError(
-    signal.reason instanceof CampusBusynessError
-      ? signal.reason.message
-      : "Campus busyness request cancelled.",
-  );
+  return signal.reason === TIMEOUT
+    ? new CampusBusynessError(
+        "campus_busyness_timeout",
+        "Campus busyness request timed out after 10 seconds.",
+        true,
+      )
+    : new CampusBusynessError("campus_busyness_cancelled", "Campus busyness request cancelled.");
 }
 
 async function readResponse(response: IncomingMessage, signal: AbortSignal) {
   const status = response.statusCode ?? 0;
   if (status >= 300 && status < 400) {
     throw new CampusBusynessError(
+      "campus_busyness_redirect",
       "The campus busyness source returned a redirect; redirects are not allowed.",
     );
   }
   if (status === 401 || status === 403 || response.headers["www-authenticate"] !== undefined) {
     throw new CampusBusynessError(
+      "campus_busyness_auth_required",
       "The campus busyness source requires sign-in or denies anonymous access.",
     );
   }
   if (status < 200 || status >= 300) {
-    throw new CampusBusynessError(`The campus busyness source returned HTTP ${status}.`);
+    throw new CampusBusynessError(
+      "campus_busyness_http_error",
+      `The campus busyness source returned HTTP ${status}.`,
+      status === 429 || (status >= 500 && status < 600),
+    );
   }
   const encoding = response.headers["content-encoding"]?.trim().toLowerCase();
   if (encoding && encoding !== "identity") {
     throw new CampusBusynessError(
+      "campus_busyness_unsupported_content",
       "The campus busyness source returned unsupported content encoding.",
     );
   }
@@ -217,11 +233,15 @@ async function readResponse(response: IncomingMessage, signal: AbortSignal) {
     contentType.split(";", 1)[0]!.trim().toLowerCase() !== "application/json" ||
     (charset !== undefined && !/^utf-?8$/iu.test(charset))
   ) {
-    throw new CampusBusynessError("The campus busyness source did not return UTF-8 JSON.");
+    throw new CampusBusynessError(
+      "campus_busyness_unsupported_content",
+      "The campus busyness source did not return UTF-8 JSON.",
+    );
   }
   const length = response.headers["content-length"];
   if (length !== undefined && (!/^\d+$/u.test(length) || Number(length) > MAX_BYTES)) {
     throw new CampusBusynessError(
+      "campus_busyness_response_too_large",
       "The campus busyness response exceeds the 512 KiB download limit.",
     );
   }
@@ -233,6 +253,7 @@ async function readResponse(response: IncomingMessage, signal: AbortSignal) {
     bytesRead += bytes.length;
     if (bytesRead > MAX_BYTES) {
       throw new CampusBusynessError(
+        "campus_busyness_response_too_large",
         "The campus busyness response exceeds the 512 KiB download limit.",
       );
     }
@@ -245,7 +266,10 @@ async function readResponse(response: IncomingMessage, signal: AbortSignal) {
       new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, bytesRead)),
     );
   } catch {
-    throw new CampusBusynessError("The campus busyness source returned invalid JSON.");
+    throw new CampusBusynessError(
+      "campus_busyness_schema_error",
+      "The campus busyness source returned invalid JSON.",
+    );
   }
   const date = response.headers.date;
   const httpDate =
@@ -298,6 +322,13 @@ async function fetchBusyness(signal: AbortSignal) {
       req.on("error", reject);
       req.end();
     });
+  } catch (error) {
+    if (error instanceof CampusBusynessError) throw error;
+    throw new CampusBusynessError(
+      "campus_busyness_network_error",
+      "Unable to retrieve anonymous campus busyness. Try again later.",
+      true,
+    );
   } finally {
     if (cancel) signal.removeEventListener("abort", cancel);
     response?.destroy();
@@ -313,13 +344,7 @@ export async function getCampusBusyness(
 ): Promise<CampusBusyness> {
   const filter = parseInput(input);
   const deadline = new AbortController();
-  const timer = setTimeout(
-    () =>
-      deadline.abort(
-        new CampusBusynessError("Campus busyness request timed out after 10 seconds."),
-      ),
-    TIMEOUT_MS,
-  );
+  const timer = setTimeout(() => deadline.abort(TIMEOUT), TIMEOUT_MS);
   timer.unref();
   const signal = AbortSignal.any([externalSignal, deadline.signal]);
   try {
@@ -359,9 +384,12 @@ export async function getCampusBusyness(
       untrustedContent: true,
     };
   } catch (error) {
-    if (signal.aborted) throw cancelled(signal);
-    if (error instanceof CampusBusynessError) throw error;
-    throw new CampusBusynessError("Unable to retrieve anonymous campus busyness. Try again later.");
+    if (signal.aborted) throw cancelled(signal).failure;
+    if (error instanceof CampusBusynessError) throw error.failure;
+    throw pluginFailure(
+      "campus_busyness_unavailable",
+      "Unable to retrieve anonymous campus busyness. Try again later.",
+    );
   } finally {
     clearTimeout(timer);
   }

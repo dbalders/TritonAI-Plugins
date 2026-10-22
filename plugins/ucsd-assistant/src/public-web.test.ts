@@ -24,6 +24,7 @@ vi.mock("node:https", () => ({
 }));
 
 import { checkPublicPageUrl, readPublicPage } from "./public-web.ts";
+import { createIntegrationProvider } from "./index.js";
 
 interface Reply {
   status?: number;
@@ -127,9 +128,76 @@ describe("public page URL boundary", () => {
     expect(checkPublicPageUrl(input).href).toBe(sourceUrl);
     expect(input.hash).toBe("#section");
   });
+
+  it("tags initial URL validation failures without exposing the supplied URL", async () => {
+    await expect(readPublicPage("https://example.invalid/?token=secret", signal())).rejects.toEqual(
+      {
+        _tag: "PluginFailure",
+        code: "public_page_url_not_allowed",
+        message: "This host is not an allowed official public campus source.",
+        retryable: false,
+      },
+    );
+    await expect(readPublicPage("not a url", signal())).rejects.toMatchObject({
+      _tag: "PluginFailure",
+      code: "public_page_invalid_url",
+      retryable: false,
+    });
+    expect(network.lookup).not.toHaveBeenCalled();
+    expect(network.request).not.toHaveBeenCalled();
+  });
 });
 
 describe("one bounded public original page", () => {
+  it.each([
+    [401, "public_page_auth_required", false],
+    [403, "public_page_auth_required", false],
+    [404, "public_page_http_error", false],
+    [429, "public_page_http_error", true],
+    [500, "public_page_http_error", true],
+    [503, "public_page_http_error", true],
+  ] as const)("tags HTTP %i with the appropriate retry policy", async (status, code, retryable) => {
+    replies.push({ status, body: "private upstream body token=secret" });
+    const error = await readPublicPage(sourceUrl, signal()).catch((error: unknown) => error);
+    expect(error).toMatchObject({ _tag: "PluginFailure", code, retryable });
+    expect(JSON.stringify(error)).not.toMatch(/private|secret|token/u);
+  });
+
+  it("preserves vetted failures through the provider and sanitizes unexpected failures", async () => {
+    const provider = createIntegrationProvider({
+      configuration: {},
+      secrets: { get: async () => null, set: async () => {}, remove: async () => {} },
+    });
+    const context = {
+      signal: signal(),
+      writeApproved: false,
+      beginCommit: async () => {
+        throw new Error("A public read must not cross the write boundary.");
+      },
+    };
+    replies.push({ status: 403, body: "private provider body" });
+    await expect(provider.invoke("ucsd.read_page", { url: sourceUrl }, context)).rejects.toEqual({
+      _tag: "PluginFailure",
+      code: "public_page_auth_required",
+      message: "The source requires sign-in or denies public access.",
+      retryable: false,
+    });
+    replies.push({ body: "Readable public policy.", headers: { "content-type": "text/plain" } });
+    const unexpected = vi.spyOn(Date.prototype, "toISOString").mockImplementationOnce(() => {
+      throw new Error("private unexpected details");
+    });
+    try {
+      await expect(provider.invoke("ucsd.read_page", { url: sourceUrl }, context)).rejects.toEqual({
+        _tag: "PluginFailure",
+        code: "public_page_unavailable",
+        message: "Unable to read the public source. Check the URL or try again later.",
+        retryable: false,
+      });
+    } finally {
+      unexpected.mockRestore();
+    }
+  });
+
   it("extracts titles, headings and meaningful links while excluding hidden and executable content", async () => {
     replies.push({
       body: `<!doctype html><html><head><title>Travel &amp; policy</title>
@@ -451,7 +519,12 @@ describe("one bounded public original page", () => {
     expect(Buffer.byteLength(body)).toBeLessThan(1024 * 1024);
     replies.push({ body });
     const started = performance.now();
-    await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/HTML.*limit/u);
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toMatchObject({
+      _tag: "PluginFailure",
+      code: "public_page_html_limit",
+      retryable: false,
+      message: expect.stringMatching(/HTML.*limit/u),
+    });
     expect(performance.now() - started).toBeLessThan(2_000);
   });
 
@@ -501,9 +574,12 @@ describe("one bounded public original page", () => {
     "refuses non-page content type: %s",
     async (contentType) => {
       replies.push({ headers: { "content-type": contentType } });
-      await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(
-        /not an HTML or plain-text page/u,
-      );
+      await expect(readPublicPage(sourceUrl, signal())).rejects.toMatchObject({
+        _tag: "PluginFailure",
+        code: "public_page_unsupported_content",
+        retryable: false,
+        message: expect.stringMatching(/not an HTML or plain-text page/u),
+      });
       expect(streams[0]?.destroyed).toBe(true);
     },
   );
@@ -518,7 +594,11 @@ describe("one bounded public original page", () => {
 
   it("checks declared bytes before reading and streamed bytes without Content-Length", async () => {
     replies.push({ headers: { "content-length": String(2 * 1024 * 1024 + 1) }, holdOpen: true });
-    await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/2 MiB/u);
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toMatchObject({
+      _tag: "PluginFailure",
+      code: "public_page_response_too_large",
+      retryable: false,
+    });
     replies.push({
       headers: { "content-type": "text/plain" },
       body: [Buffer.alloc(1024 * 1024, "x"), Buffer.alloc(1024 * 1024 + 1, "x")],
@@ -667,10 +747,13 @@ describe("one bounded public original page", () => {
 
   it("cancels before lookup and while DNS is pending without starting a connection", async () => {
     const first = new AbortController();
-    first.abort(new Error("secret abort reason"));
-    await expect(readPublicPage(sourceUrl, first.signal)).rejects.toThrow(
-      "Public page read cancelled.",
-    );
+    first.abort({ _tag: "PluginFailure", message: "secret abort reason" });
+    await expect(readPublicPage(sourceUrl, first.signal)).rejects.toEqual({
+      _tag: "PluginFailure",
+      code: "public_page_cancelled",
+      message: "Public page read cancelled.",
+      retryable: false,
+    });
     expect(network.lookup).not.toHaveBeenCalled();
     let finishLookup!: (value: { address: string; family: number }[]) => void;
     network.lookup.mockImplementation(
@@ -703,9 +786,12 @@ describe("one bounded public original page", () => {
     vi.useFakeTimers();
     network.lookup.mockImplementation(() => new Promise(() => undefined));
     const pending = readPublicPage(sourceUrl, signal());
-    const assertion = expect(pending).rejects.toThrow(
-      "Public page read timed out after 20 seconds.",
-    );
+    const assertion = expect(pending).rejects.toEqual({
+      _tag: "PluginFailure",
+      code: "public_page_timeout",
+      message: "Public page read timed out after 20 seconds.",
+      retryable: true,
+    });
     await vi.advanceTimersByTimeAsync(20_000);
     await assertion;
     expect(network.request).not.toHaveBeenCalled();
@@ -731,16 +817,21 @@ describe("one bounded public original page", () => {
   });
 
   it("sanitizes DNS and transport failures instead of echoing upstream details", async () => {
-    network.lookup.mockRejectedValueOnce(new Error("secret dns details"));
-    await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(
-      "Unable to read the public source.",
-    );
+    network.lookup.mockRejectedValueOnce({ _tag: "PluginFailure", message: "secret dns details" });
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toEqual({
+      _tag: "PluginFailure",
+      code: "public_page_network_error",
+      message: "Unable to read the public source. Check the URL or try again later.",
+      retryable: true,
+    });
     network.request.mockImplementationOnce(() => {
       throw new Error("secret transport details");
     });
-    await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(
-      "Unable to read the public source.",
-    );
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toMatchObject({
+      _tag: "PluginFailure",
+      code: "public_page_network_error",
+      retryable: true,
+    });
     expect(network.destroyAgent).toHaveBeenCalledTimes(1);
   });
 });

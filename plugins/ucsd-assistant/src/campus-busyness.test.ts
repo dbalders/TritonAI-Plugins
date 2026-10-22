@@ -23,6 +23,7 @@ vi.mock("node:https", () => ({
 }));
 
 import { getCampusBusyness } from "./campus-busyness.js";
+import { createIntegrationProvider } from "./index.js";
 
 function space(overrides: Record<string, unknown> = {}) {
   return {
@@ -318,7 +319,11 @@ describe("anonymous direct campus busyness", () => {
     { [Symbol("location")]: "Geisel" },
   ];
   it.each(invalidInputs)("rejects invalid input before networking: %j", async (input) => {
-    await expect(getCampusBusyness(input, signal())).rejects.toThrow();
+    await expect(getCampusBusyness(input, signal())).rejects.toMatchObject({
+      _tag: "PluginFailure",
+      code: "invalid_input",
+      retryable: false,
+    });
     expect(network.request).not.toHaveBeenCalled();
   });
 
@@ -371,17 +376,29 @@ describe("anonymous direct campus busyness", () => {
         headers: { location: "https://signin.example/?secret=x" },
         body: "private provider body",
       });
-      await expect(getCampusBusyness({}, signal())).rejects.toThrow("redirects are not allowed");
+      await expect(getCampusBusyness({}, signal())).rejects.toMatchObject({
+        _tag: "PluginFailure",
+        code: "campus_busyness_redirect",
+        retryable: false,
+        message: expect.stringContaining("redirects are not allowed"),
+      });
       expect(network.request).toHaveBeenCalledTimes(1);
       expect(streams[0].destroyed).toBe(true);
     },
   );
 
-  it.each([401, 403, 429, 500])("returns a sanitized HTTP %i error", async (status) => {
+  it.each([
+    [401, "campus_busyness_auth_required", false],
+    [403, "campus_busyness_auth_required", false],
+    [400, "campus_busyness_http_error", false],
+    [429, "campus_busyness_http_error", true],
+    [500, "campus_busyness_http_error", true],
+    [503, "campus_busyness_http_error", true],
+  ] as const)("returns a sanitized SDK HTTP %i failure", async (status, code, retryable) => {
     replies.push({ status, body: "secret token=private-provider-value" });
     const error = await getCampusBusyness({}, signal()).catch((error: unknown) => error);
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).not.toMatch(/secret|token|private-provider/);
+    expect(error).toMatchObject({ _tag: "PluginFailure", code, retryable });
+    expect(JSON.stringify(error)).not.toMatch(/secret|token|private-provider/);
   });
 
   it.each([
@@ -400,7 +417,12 @@ describe("anonymous direct campus busyness", () => {
   it("bounds actual bytes with missing or dishonest Content-Length", async () => {
     for (const headers of [{}, { "content-length": "1" }]) {
       replies.push({ headers, body: [" ".repeat(512 * 1024), "é"] });
-      await expect(getCampusBusyness({}, signal())).rejects.toThrow("512 KiB");
+      await expect(getCampusBusyness({}, signal())).rejects.toMatchObject({
+        _tag: "PluginFailure",
+        code: "campus_busyness_response_too_large",
+        retryable: false,
+        message: expect.stringContaining("512 KiB"),
+      });
     }
   });
 
@@ -408,7 +430,12 @@ describe("anonymous direct campus busyness", () => {
     "sanitizes invalid JSON or UTF-8",
     async (body) => {
       replies.push({ body });
-      await expect(getCampusBusyness({}, signal())).rejects.toThrow("returned invalid JSON");
+      await expect(getCampusBusyness({}, signal())).rejects.toMatchObject({
+        _tag: "PluginFailure",
+        code: "campus_busyness_schema_error",
+        retryable: false,
+        message: expect.stringContaining("returned invalid JSON"),
+      });
     },
   );
 
@@ -473,19 +500,66 @@ describe("anonymous direct campus busyness", () => {
   );
 
   it("sanitizes transport errors and destroys the private agent", async () => {
-    replies.push({ error: new Error("token=secret tls certificate connection details") });
-    await expect(getCampusBusyness({}, signal())).rejects.toThrow(
-      "Unable to retrieve anonymous campus busyness. Try again later.",
-    );
+    replies.push({
+      error: Object.assign(new Error("token=secret tls certificate connection details"), {
+        _tag: "PluginFailure",
+        code: "forged_failure",
+        retryable: false,
+      }),
+    });
+    await expect(getCampusBusyness({}, signal())).rejects.toEqual({
+      _tag: "PluginFailure",
+      code: "campus_busyness_network_error",
+      message: "Unable to retrieve anonymous campus busyness. Try again later.",
+      retryable: true,
+    });
     expect(network.destroyAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves vetted failures through the provider and sanitizes unexpected failures", async () => {
+    const provider = createIntegrationProvider({
+      configuration: {},
+      secrets: { get: async () => null, set: async () => {}, remove: async () => {} },
+    });
+    const context = {
+      signal: signal(),
+      writeApproved: false,
+      beginCommit: async () => {
+        throw new Error("A public read must not cross the write boundary.");
+      },
+    };
+    replies.push({ payload: { error: "private provider body" } });
+    await expect(provider.invoke("ucsd.get_campus_busyness", {}, context)).rejects.toEqual({
+      _tag: "PluginFailure",
+      code: "campus_busyness_schema_error",
+      message: "The campus busyness source returned an unsupported data format.",
+      retryable: false,
+    });
+    replies.push({});
+    const unexpected = vi.spyOn(Date.prototype, "toISOString").mockImplementationOnce(() => {
+      throw new Error("private unexpected details");
+    });
+    try {
+      await expect(provider.invoke("ucsd.get_campus_busyness", {}, context)).rejects.toEqual({
+        _tag: "PluginFailure",
+        code: "campus_busyness_unavailable",
+        message: "Unable to retrieve anonymous campus busyness. Try again later.",
+        retryable: false,
+      });
+    } finally {
+      unexpected.mockRestore();
+    }
   });
 
   it("does not issue a request with a pre-aborted signal or expose its reason", async () => {
     const controller = new AbortController();
-    controller.abort(new Error("secret cancellation reason"));
-    await expect(getCampusBusyness({}, controller.signal)).rejects.toThrow(
-      "Campus busyness request cancelled.",
-    );
+    controller.abort({ _tag: "PluginFailure", message: "secret cancellation reason" });
+    await expect(getCampusBusyness({}, controller.signal)).rejects.toEqual({
+      _tag: "PluginFailure",
+      code: "campus_busyness_cancelled",
+      message: "Campus busyness request cancelled.",
+      retryable: false,
+    });
     expect(network.request).not.toHaveBeenCalled();
   });
 
@@ -511,7 +585,12 @@ describe("anonymous direct campus busyness", () => {
       vi.useFakeTimers();
       replies.push({ holdHeaders, holdBody: true, body: '{"data":[' });
       const pending = getCampusBusyness({}, signal());
-      const rejection = expect(pending).rejects.toThrow("timed out after 10 seconds");
+      const rejection = expect(pending).rejects.toEqual({
+        _tag: "PluginFailure",
+        code: "campus_busyness_timeout",
+        message: "Campus busyness request timed out after 10 seconds.",
+        retryable: true,
+      });
       await vi.advanceTimersByTimeAsync(10_000);
       await rejection;
       expect(streams[0].destroyed).toBe(true);

@@ -12,7 +12,7 @@ export const createIntegrationProvider: CreateIntegrationProvider = ({ configura
   return {
     id: "ucsd-assistant",
     async status({ signal }) {
-      signal.throwIfAborted();
+      if (signal.aborted) throw pluginFailure("cancelled", "UCSD Assistant request cancelled.");
       return {
         state: "connected",
         accountLabel: "Public UCSD sources",
@@ -21,7 +21,7 @@ export const createIntegrationProvider: CreateIntegrationProvider = ({ configura
       };
     },
     async invoke(name, input, { signal }) {
-      signal.throwIfAborted();
+      if (signal.aborted) throw pluginFailure("cancelled", "UCSD Assistant request cancelled.");
       if (isCampusMapTool(name)) return await invokeCampusMapTool(name, input, signal);
       if (name === "ucsd.get_campus_busyness") return await getCampusBusyness(input, signal);
       if (name === "ucsd.search_public_kb")

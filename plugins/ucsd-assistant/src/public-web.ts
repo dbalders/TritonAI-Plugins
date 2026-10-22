@@ -2,6 +2,7 @@ import { lookup } from "node:dns/promises";
 import { Agent, request } from "node:https";
 import { isIP } from "node:net";
 import type { IncomingMessage } from "node:http";
+import { pluginFailure, type PluginFailure } from "@tritonai/plugin-sdk";
 import { defaultTreeAdapter, type DefaultTreeAdapterTypes } from "parse5";
 import { HtmlLimitError, htmlBudget, parseBoundedHtml, type HtmlBudget } from "./bounded-html.js";
 
@@ -10,6 +11,7 @@ const MAX_TEXT = 20_000;
 const MAX_LINKS = 40;
 const MAX_REDIRECTS = 4;
 const TIMEOUT_MS = 20_000;
+const TIMEOUT = Symbol("public page deadline");
 
 // Deliberately not caller-configurable. Add only independently verified official source hosts.
 const OFFICIAL_HOSTS = Object.freeze([
@@ -27,14 +29,26 @@ const AUTH_QUERY =
   /^(?:access_token|id_token|refresh_token|token|api[_-]?key|authorization|password|passwd|credential|sessionid|samlrequest|samlresponse|ticket)$/iu;
 
 class PublicPageError extends Error {
-  constructor(message: string) {
+  readonly failure: PluginFailure;
+
+  constructor(code: string, message: string, retryable = false) {
     super(message);
     this.name = "PublicPageError";
+    this.failure = pluginFailure(code, message, { retryable });
   }
 }
 
 /** Syntactic/host policy only; readPublicPage also validates DNS before every connection. */
 export function checkPublicPageUrl(value: string | URL): URL {
+  try {
+    return validatePublicPageUrl(value);
+  } catch (error) {
+    if (error instanceof PublicPageError) throw error.failure;
+    throw pluginFailure("public_page_invalid_url", "Provide a valid public HTTPS page URL.");
+  }
+}
+
+function validatePublicPageUrl(value: string | URL): URL {
   let url: URL;
   try {
     const raw = typeof value === "string" ? value : value.href;
@@ -42,17 +56,24 @@ export function checkPublicPageUrl(value: string | URL): URL {
     if (raw.length > 8_192 || /[\u0000-\u0020\u007f\\]/u.test(raw)) throw new Error();
     url = new URL(raw);
   } catch {
-    throw new PublicPageError("Provide a valid public HTTPS page URL.");
+    throw new PublicPageError("public_page_invalid_url", "Provide a valid public HTTPS page URL.");
   }
   if (url.protocol !== "https:" || (url.port !== "" && url.port !== "443")) {
-    throw new PublicPageError("Public pages must use HTTPS on port 443.");
+    throw new PublicPageError(
+      "public_page_url_not_allowed",
+      "Public pages must use HTTPS on port 443.",
+    );
   }
   if (url.username || url.password) {
-    throw new PublicPageError("URLs containing credentials are not allowed.");
+    throw new PublicPageError(
+      "public_page_url_not_allowed",
+      "URLs containing credentials are not allowed.",
+    );
   }
   const host = url.hostname;
   if (["tritongpt.ucsd.edu", "tritongpt-stage.ucsd.edu", "tritongpt-dev.ucsd.edu"].includes(host)) {
     throw new PublicPageError(
+      "public_page_url_not_allowed",
       "Use an original public source page; this reader does not connect to Onyx.",
     );
   }
@@ -60,26 +81,35 @@ export function checkPublicPageUrl(value: string | URL): URL {
     !(host === "ucsd.edu" || host.endsWith(".ucsd.edu") || OFFICIAL_HOSTS.includes(host)) ||
     isIP(host) !== 0
   ) {
-    throw new PublicPageError("This host is not an allowed official public campus source.");
+    throw new PublicPageError(
+      "public_page_url_not_allowed",
+      "This host is not an allowed official public campus source.",
+    );
   }
   let path: string;
   try {
     path = decodeURIComponent(url.pathname);
   } catch {
-    throw new PublicPageError("The page URL has an invalid path.");
+    throw new PublicPageError("public_page_invalid_url", "The page URL has an invalid path.");
   }
   if (
     host === "secure4.compliancebridge.com" &&
     (!path.startsWith("/ucsd/public/") || /\\|(?:^|\/)\.{1,2}(?:\/|$)|%/u.test(path))
   ) {
-    throw new PublicPageError("Only the UCSD public policy directory is supported on this host.");
+    throw new PublicPageError(
+      "public_page_url_not_allowed",
+      "Only the UCSD public policy directory is supported on this host.",
+    );
   }
   if (
     AUTH_HOST.test(host) ||
     AUTH_PATH.test(path) ||
     [...url.searchParams.keys()].some((key) => AUTH_QUERY.test(key))
   ) {
-    throw new PublicPageError("Sign-in and authenticated page URLs are not supported.");
+    throw new PublicPageError(
+      "public_page_url_not_allowed",
+      "Sign-in and authenticated page URLs are not supported.",
+    );
   }
   url.hash = "";
   return url;
@@ -132,11 +162,13 @@ function publicAddress(address: string, family: number): boolean {
 }
 
 function aborted(signal: AbortSignal): PublicPageError {
-  return new PublicPageError(
-    signal.reason instanceof PublicPageError
-      ? signal.reason.message
-      : "Public page read cancelled.",
-  );
+  return signal.reason === TIMEOUT
+    ? new PublicPageError(
+        "public_page_timeout",
+        "Public page read timed out after 20 seconds.",
+        true,
+      )
+    : new PublicPageError("public_page_cancelled", "Public page read cancelled.");
 }
 
 /** DNS lookup itself cannot be cancelled, but a late answer must never start a request. */
@@ -166,31 +198,46 @@ async function readResponse(response: IncomingMessage, signal: AbortSignal): Pro
   const encoding = response.headers["content-encoding"]?.trim().toLowerCase();
   if (encoding && encoding !== "identity") {
     throw new PublicPageError(
+      "public_page_unsupported_content",
       "Compressed responses are not supported; the source must honor identity encoding.",
     );
   }
   if ([301, 302, 303, 307, 308].includes(status)) {
     const location = response.headers.location;
     if (!location)
-      throw new PublicPageError("The source returned a redirect without a destination.");
+      throw new PublicPageError(
+        "public_page_redirect",
+        "The source returned a redirect without a destination.",
+      );
     return { status, location };
   }
   if (status === 401 || status === 403 || response.headers["www-authenticate"]) {
-    throw new PublicPageError("The source requires sign-in or denies public access.");
+    throw new PublicPageError(
+      "public_page_auth_required",
+      "The source requires sign-in or denies public access.",
+    );
   }
   if (status < 200 || status >= 300) {
-    throw new PublicPageError(`The public source returned HTTP ${status}.`);
+    throw new PublicPageError(
+      "public_page_http_error",
+      `The public source returned HTTP ${status}.`,
+      status === 429 || (status >= 500 && status < 600),
+    );
   }
   const contentType = response.headers["content-type"] ?? "";
   const mediaType = contentType.split(";", 1)[0]!.trim().toLowerCase();
   if (!["text/html", "application/xhtml+xml", "text/plain"].includes(mediaType)) {
     throw new PublicPageError(
+      "public_page_unsupported_content",
       "This source is not an HTML or plain-text page; PDF and other downloads are not supported.",
     );
   }
   const length = response.headers["content-length"];
   if (length !== undefined && (!/^\d+$/u.test(length) || Number(length) > MAX_BYTES)) {
-    throw new PublicPageError("The public page exceeds the 2 MiB download limit.");
+    throw new PublicPageError(
+      "public_page_response_too_large",
+      "The public page exceeds the 2 MiB download limit.",
+    );
   }
   const chunks: Buffer[] = [];
   let size = 0;
@@ -199,20 +246,33 @@ async function readResponse(response: IncomingMessage, signal: AbortSignal): Pro
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
     size += bytes.length;
     if (size > MAX_BYTES)
-      throw new PublicPageError("The public page exceeds the 2 MiB download limit.");
+      throw new PublicPageError(
+        "public_page_response_too_large",
+        "The public page exceeds the 2 MiB download limit.",
+      );
     chunks.push(bytes);
   }
   return { status, contentType, bytes: Buffer.concat(chunks, size) };
 }
 
 async function fetchPage(url: URL, signal: AbortSignal): Promise<PageResponse> {
-  const addresses = await withAbort(lookup(url.hostname, { all: true, verbatim: true }), signal);
+  const addresses = await withAbort(
+    lookup(url.hostname, { all: true, verbatim: true }),
+    signal,
+  ).catch(() => {
+    throw new PublicPageError(
+      "public_page_network_error",
+      "Unable to read the public source. Check the URL or try again later.",
+      true,
+    );
+  });
   if (signal.aborted) throw aborted(signal);
   if (
     addresses.length === 0 ||
     addresses.some(({ address, family }) => !publicAddress(address, family))
   ) {
     throw new PublicPageError(
+      "public_page_dns_not_public",
       "The source does not resolve exclusively to public network addresses.",
     );
   }
@@ -254,6 +314,13 @@ async function fetchPage(url: URL, signal: AbortSignal): Promise<PageResponse> {
         req.end();
       }),
       signal,
+    );
+  } catch (error) {
+    if (error instanceof PublicPageError) throw error;
+    throw new PublicPageError(
+      "public_page_network_error",
+      "Unable to read the public source. Check the URL or try again later.",
+      true,
     );
   } finally {
     agent.destroy();
@@ -393,6 +460,7 @@ async function extractHtml(source: string, url: URL, budget: HtmlBudget) {
         (node.tagName === "meta" && attr(node, "http-equiv")?.toLowerCase() === "refresh")
       ) {
         throw new PublicPageError(
+          "public_page_interstitial",
           "The source is a sign-in or redirect interstitial, not a readable public page.",
         );
       }
@@ -492,16 +560,17 @@ export async function readPublicPage(
   const initial = checkPublicPageUrl(value);
   const expiresAt = performance.now() + TIMEOUT_MS;
   const deadline = new AbortController();
-  const timer = setTimeout(
-    () => deadline.abort(new PublicPageError("Public page read timed out after 20 seconds.")),
-    TIMEOUT_MS,
-  );
+  const timer = setTimeout(() => deadline.abort(TIMEOUT), TIMEOUT_MS);
   timer.unref();
   const signal = AbortSignal.any([externalSignal, deadline.signal]);
   const budget = htmlBudget(() => {
     if (signal.aborted) throw aborted(signal);
     if (performance.now() >= expiresAt)
-      throw new PublicPageError("Public page read timed out after 20 seconds.");
+      throw new PublicPageError(
+        "public_page_timeout",
+        "Public page read timed out after 20 seconds.",
+        true,
+      );
   });
   try {
     let url = initial;
@@ -510,11 +579,17 @@ export async function readPublicPage(
       const response = await fetchPage(url, signal);
       if (response.location !== undefined) {
         if (redirects === MAX_REDIRECTS)
-          throw new PublicPageError("The source exceeded the four-redirect limit.");
+          throw new PublicPageError(
+            "public_page_redirect",
+            "The source exceeded the four-redirect limit.",
+          );
         try {
           url = checkPublicPageUrl(new URL(response.location, url));
         } catch {
-          throw new PublicPageError("The source redirected to a disallowed or authenticated page.");
+          throw new PublicPageError(
+            "public_page_redirect",
+            "The source redirected to a disallowed or authenticated page.",
+          );
         }
         continue;
       }
@@ -526,11 +601,15 @@ export async function readPublicPage(
       try {
         source = new TextDecoder(charset, { fatal: true }).decode(bytes);
       } catch {
-        throw new PublicPageError("The source uses an unsupported or invalid text encoding.");
+        throw new PublicPageError(
+          "public_page_unsupported_content",
+          "The source uses an unsupported or invalid text encoding.",
+        );
       }
       // eslint-disable-next-line no-control-regex -- Refuse binary bytes mislabeled as a text page.
       if (/^\s*%PDF-/u.test(source) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/u.test(source)) {
         throw new PublicPageError(
+          "public_page_unsupported_content",
           "The source contains a download or binary data instead of a readable page.",
         );
       }
@@ -551,6 +630,7 @@ export async function readPublicPage(
         )
       ) {
         throw new PublicPageError(
+          "public_page_loading_shell",
           "The source returned an application loading shell. Use a browser to read the original page.",
         );
       }
@@ -560,6 +640,7 @@ export async function readPublicPage(
         (page.text.length < 1_500 && (INTERSTITIAL_TEXT.test(page.text) || page.signInPromptOnly))
       ) {
         throw new PublicPageError(
+          "public_page_interstitial",
           "The source is empty, requires sign-in, or presents a browser interstitial.",
         );
       }
@@ -580,12 +661,20 @@ export async function readPublicPage(
         untrustedContent: true,
       };
     }
-    throw new PublicPageError("The source exceeded the four-redirect limit.");
-  } catch (error) {
-    if (signal.aborted) throw aborted(signal);
-    if (error instanceof HtmlLimitError) throw new PublicPageError(error.message);
-    if (error instanceof PublicPageError) throw error;
     throw new PublicPageError(
+      "public_page_redirect",
+      "The source exceeded the four-redirect limit.",
+    );
+  } catch (error) {
+    if (signal.aborted) throw aborted(signal).failure;
+    if (error instanceof HtmlLimitError)
+      throw pluginFailure(
+        "public_page_html_limit",
+        "The source exceeds the HTML complexity limit.",
+      );
+    if (error instanceof PublicPageError) throw error.failure;
+    throw pluginFailure(
+      "public_page_unavailable",
       "Unable to read the public source. Check the URL or try again later.",
     );
   } finally {

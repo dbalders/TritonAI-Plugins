@@ -114,20 +114,59 @@ const EXCLUDED_HTML = new Set([
   "svg",
   "math",
 ]);
+const BLOCK_HTML = new Set([
+  "address",
+  "article",
+  "blockquote",
+  "br",
+  "dd",
+  "div",
+  "dl",
+  "dt",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "hr",
+  "li",
+  "main",
+  "ol",
+  "p",
+  "pre",
+  "section",
+  "table",
+  "td",
+  "th",
+  "tr",
+  "ul",
+]);
 
 async function textOnly(value: string, budget: HtmlBudget): Promise<string> {
-  const nodes: DefaultTreeAdapterTypes.Node[] = [await parseBoundedHtml(value, budget, true)];
+  const nodes: { node: DefaultTreeAdapterTypes.Node; end?: boolean }[] = [
+    { node: await parseBoundedHtml(value, budget, true) },
+  ];
   const parts: string[] = [];
   while (nodes.length) {
     budget.step();
-    const node = nodes.pop()!;
+    const { node, end } = nodes.pop()!;
+    if (end) {
+      parts.push(" ");
+      continue;
+    }
     if (node.nodeName === "#text") {
       parts.push((node as DefaultTreeAdapterTypes.TextNode).value);
     } else if (!("tagName" in node && EXCLUDED_HTML.has(node.tagName)) && "childNodes" in node) {
-      for (let i = node.childNodes.length - 1; i >= 0; i--) nodes.push(node.childNodes[i]);
+      if ("tagName" in node && BLOCK_HTML.has(node.tagName)) {
+        parts.push(" ");
+        nodes.push({ node, end: true });
+      }
+      for (let i = node.childNodes.length - 1; i >= 0; i--)
+        nodes.push({ node: node.childNodes[i] });
     }
   }
-  return parts.join(" ").replace(/\s+/gu, " ").trim();
+  return parts.join("").replace(/\s+/gu, " ").trim();
 }
 
 function changed() {
@@ -312,6 +351,7 @@ export async function searchPublicKnowledge(
     const results: PublicKnowledgeArticle[] = [];
     const seen = new Set<string>();
     for (const value of records) {
+      if (results.length >= limit) break;
       budget.step();
       if (!value || typeof value !== "object" || Array.isArray(value)) throw changed();
       const record = value as Record<string, unknown>;
@@ -334,7 +374,6 @@ export async function searchPublicKnowledge(
       }
       if (!title || (record.text !== undefined && typeof record.text !== "string")) throw changed();
       seen.add(number);
-      if (results.length >= limit) continue;
       const snippet = await textOnly(typeof record.text === "string" ? record.text : "", budget);
       results.push({
         number,

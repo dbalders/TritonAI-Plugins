@@ -142,6 +142,34 @@ describe("anonymous public knowledge search", () => {
     expect(result.results).toHaveLength(2);
   });
 
+  it.each([
+    [
+      "hostile title",
+      article("KB0032823", {
+        short_description: `${"<div>".repeat(300)}Surplus title${"</div>".repeat(300)}`,
+      }),
+    ],
+    [
+      "malformed article",
+      article("KB0032823", { short_description: null, primary: null, label: null, text: 12 }),
+    ],
+    ["malformed record", null],
+  ])("stops before parsing a surplus %s once the result limit is met", async (_, surplus) => {
+    fetcher.mockResolvedValue(
+      response([
+        article(),
+        article("KB0033306", { short_description: "Duplicate" }),
+        { table: "kb_category", label: "Travel category" },
+        article("KB0032591"),
+        surplus,
+      ]),
+    );
+    const result = await searchPublicKnowledge({ query: "travel", limit: 2 }, signal());
+    expect(result).toMatchObject({ receivedCount: 5, returnedCount: 2 });
+    expect(result.results.map((item) => item.number)).toEqual(["KB0033306", "KB0032591"]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("caps results at 20 and makes a single request", async () => {
     fetcher.mockResolvedValue(
       response(Array.from({ length: 25 }, (_, i) => article(`KB${String(i).padStart(7, "0")}`))),
@@ -170,6 +198,41 @@ describe("anonymous public knowledge search", () => {
     expect(result.results[0].snippet).toHaveLength(1500);
     expect(result.results[0].snippet).toMatch(/^Meal & lodging allowances/u);
     expect(result.results[0].snippet).not.toMatch(/hidden|<|attacker/u);
+  });
+
+  it.each(["strong", "mark", "em", "span"])(
+    "preserves adjacent inline text around <%s> highlights in titles and snippets",
+    async (tag) => {
+      fetcher.mockResolvedValue(
+        response([
+          article("KB0033306", {
+            short_description: `re<${tag}>imburse</${tag}>ment &amp; travel`,
+            text: `Request re<${tag}>imburse</${tag}>ment <a href='/'>here</a>.`,
+          }),
+        ]),
+      );
+      const result = await searchPublicKnowledge({ query: "reimbursement" }, signal());
+      expect(result.results[0]).toMatchObject({
+        title: "reimbursement & travel",
+        snippet: "Request reimbursement here.",
+      });
+    },
+  );
+
+  it.each([
+    ["paragraph", "before<p>re<strong>imburse</strong>ment</p>after"],
+    ["division", "before<div>re<strong>imburse</strong>ment</div>after"],
+    ["list", "before<ul><li>re<strong>imburse</strong>ment</li></ul>after"],
+    ["line break", "before<br>re<strong>imburse</strong>ment<br/>after"],
+  ])("preserves %s boundaries in titles and snippets", async (_, html) => {
+    fetcher.mockResolvedValue(
+      response([article("KB0033306", { short_description: html, text: html })]),
+    );
+    const result = await searchPublicKnowledge({ query: "reimbursement" }, signal());
+    expect(result.results[0]).toMatchObject({
+      title: "before reimbursement after",
+      snippet: "before reimbursement after",
+    });
   });
 
   it.each(["short_description", "text"])(

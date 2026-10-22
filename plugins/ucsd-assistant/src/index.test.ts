@@ -73,13 +73,44 @@ describe("UCSD Assistant plugin", () => {
     ).rejects.toMatchObject({ code: "invalid_input" });
   });
 
-  it("stops public operations on cancellation", async () => {
+  it.each([
+    ["ucsd.list_sources", {}],
+    ["ucsd.get_campus_busyness", {}],
+    ["ucsd.read_page", { url: "https://blink.ucsd.edu/" }],
+  ] as const)("sanitizes pre-aborted invocations of %s", async (name, input) => {
     const provider = createIntegrationProvider({ secrets, configuration: {} });
     const operation = context();
     const controller = new AbortController();
-    controller.abort();
+    controller.abort(new Error("private cancellation reason"));
     await expect(
-      provider.invoke("ucsd.list_sources", {}, { ...operation, signal: controller.signal }),
-    ).rejects.toBeTruthy();
+      provider.invoke(name, input, { ...operation, signal: controller.signal }),
+    ).rejects.toEqual({
+      _tag: "PluginFailure",
+      code: "cancelled",
+      message: "UCSD Assistant request cancelled.",
+      retryable: false,
+    });
+    await expect(provider.status({ signal: controller.signal })).rejects.toMatchObject({
+      _tag: "PluginFailure",
+      code: "cancelled",
+      retryable: false,
+    });
+  });
+
+  it("exposes only safe SDK failures for initial page validation", async () => {
+    const provider = createIntegrationProvider({ secrets, configuration: {} });
+    await expect(provider.invoke("ucsd.read_page", { url: "" }, context())).rejects.toMatchObject({
+      _tag: "PluginFailure",
+      code: "invalid_input",
+      retryable: false,
+    });
+    await expect(
+      provider.invoke("ucsd.read_page", { url: "https://user:secret@blink.ucsd.edu/" }, context()),
+    ).rejects.toEqual({
+      _tag: "PluginFailure",
+      code: "public_page_url_not_allowed",
+      message: "URLs containing credentials are not allowed.",
+      retryable: false,
+    });
   });
 });
