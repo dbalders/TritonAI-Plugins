@@ -24,8 +24,12 @@ try {
     Path.join(root, ".tritonai-plugin/plugin.json"),
     `${canonicalJson(manifest)}\n`,
   );
+  const notices = await Promise.all(
+    ["LICENSE", "THIRD_PARTY_NOTICES"].map((name) => Fs.readFile(Path.join(root, name), "utf8")),
+  );
   await build({
     entryPoints: [Path.join(root, "src/index.ts")],
+    banner: { js: `/*!\n${notices.join("\n")}*/` },
     bundle: true,
     platform: "node",
     format: "esm",

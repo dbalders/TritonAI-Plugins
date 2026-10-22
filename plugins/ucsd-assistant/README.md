@@ -47,5 +47,5 @@ alone does not prove that behavior on an older host.
 
 Run `pnpm --filter @tritonai/plugin-ucsd-assistant build`, focused tests, and repository
 `pnpm readiness`. The build generates the manifest and
-self-contained Node 24 bundle; `pnpm artifacts:sdk` seals the distributable artifact.
+self-contained Node 24 bundle with its bundled dependency notices; `pnpm artifacts:sdk` seals the distributable artifact.
 This source package does not publish or deploy a campus service.

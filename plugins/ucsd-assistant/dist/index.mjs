@@ -1,3 +1,65 @@
+/*!
+MIT License
+
+Copyright (c) 2026 The Regents of the University of California
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+parse5 8.0.1
+============
+
+Copyright (c) 2013-2019 Ivan Nikulin (ifaaan@gmail.com, https://github.com/inikulin)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+entities 8.1.0
+==============
+
+Copyright (c) Felix Böhm
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+THIS IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS,
+EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
+
 // ../../packages/plugin-sdk/index.mjs
 var MAX_JSON_NODES = 2e4;
 var MAX_SCHEMA_BYTES = 128 * 1024;
@@ -10293,7 +10355,8 @@ var BLOCK = /* @__PURE__ */ new Set([
   "ul"
 ]);
 var INTERSTITIAL_TITLE = /^(?:(?:uc san diego|ucsd|university of california)[\s:|–—-]+)?(?:sign[ -]?in|log[ -]?in|single sign[ -]?on|sso)(?:\s*[|:–—-]\s*(?:uc san diego|ucsd|university of california))?[.!…]*$|\b(?:access denied|authentication required|just a moment|attention required|checking your browser|verify (?:you are|you're) human)\b/iu;
-var INTERSTITIAL_TEXT = /(?:verify (?:that )?you are (?:a )?human|enable javascript and cookies|checking your browser)|^(?:please )?(?:sign[ -]?in|log[ -]?in) to continue[.!…]*$/iu;
+var INTERSTITIAL_TEXT = /(?:verify (?:that )?you are (?:a )?human|enable javascript and cookies|checking your browser)/iu;
+var SIGN_IN_PROMPT = /^(?:please )?(?:sign[ -]?in|log[ -]?in) to continue[.!…]*$/iu;
 var attr = (node, name) => node.attrs.find((item) => item.name === name)?.value;
 var normalize = (text3) => text3.replace(/[^\S\n]+/gu, " ").replace(/ *\n */gu, "\n").replace(/\n{3,}/gu, "\n\n").trim();
 function omitted(node) {
@@ -10321,6 +10384,7 @@ async function extractHtml(source, url, budget) {
   let title = "";
   let firstHeading = "";
   const pieces = [];
+  const nonHeadingPieces = [];
   const links = [];
   const seen = /* @__PURE__ */ new Set();
   let linksTruncated = false;
@@ -10358,22 +10422,27 @@ async function extractHtml(source, url, budget) {
   const stack = [{ node: document }];
   while (stack.length) {
     budget.step();
-    const { node, end } = stack.pop();
+    let { node, end, heading = false } = stack.pop();
     if (end) {
       pieces.push("\n");
+      nonHeadingPieces.push("\n");
       continue;
     }
     if (defaultTreeAdapter.isTextNode(node)) {
-      pieces.push(node.value.replace(/\s+/gu, " "));
+      const text4 = node.value.replace(/\s+/gu, " ");
+      pieces.push(text4);
+      if (!heading) nonHeadingPieces.push(text4);
       continue;
     }
     if (defaultTreeAdapter.isElementNode(node)) {
       if (omitted(node)) continue;
+      heading ||= /^h[1-6]$/u.test(node.tagName);
       if (node.tagName === "h1" && !firstHeading)
         firstHeading = nodeText(node, budget).slice(0, 500);
       if (BLOCK.has(node.tagName)) {
         pieces.push("\n");
-        stack.push({ node, end: true });
+        nonHeadingPieces.push("\n");
+        stack.push({ node, end: true, heading });
       }
       const href = node.tagName === "a" ? attr(node, "href") : void 0;
       if (href && !href.startsWith("#")) {
@@ -10393,13 +10462,17 @@ async function extractHtml(source, url, budget) {
     }
     if ("childNodes" in node) {
       for (let index = node.childNodes.length - 1; index >= 0; index -= 1) {
-        stack.push({ node: node.childNodes[index] });
+        stack.push({ node: node.childNodes[index], heading });
       }
     }
   }
+  const text3 = normalize(pieces.join(""));
   return {
     title: title || firstHeading || url.hostname,
-    text: normalize(pieces.join("")),
+    text: text3,
+    // Headings and omitted footer chrome may surround a gate, but explanatory
+    // body prose (including prose quoting a prompt) must remain readable.
+    signInPromptOnly: SIGN_IN_PROMPT.test(text3) || SIGN_IN_PROMPT.test(nonHeadingPieces.join("").replace(/\s+/gu, " ").trim()),
     links,
     linksTruncated
   };
@@ -10449,7 +10522,13 @@ async function readPublicPage(value, externalSignal) {
           "The source contains a download or binary data instead of a readable page."
         );
       }
-      const page = mediaType === "text/plain" ? { title: url.hostname, text: normalize(source), links: [], linksTruncated: false } : await extractHtml(source, url, budget);
+      const page = mediaType === "text/plain" ? {
+        title: url.hostname,
+        text: normalize(source),
+        signInPromptOnly: SIGN_IN_PROMPT.test(normalize(source)),
+        links: [],
+        linksTruncated: false
+      } : await extractHtml(source, url, budget);
       budget.check();
       if (/^(?:loading[.!…]*|please wait[.!…]*|(?:please )?enable javascript(?: to (?:continue|view (?:this (?:page|site)|the content)))?[.!…]*)$/iu.test(
         page.text
@@ -10458,7 +10537,7 @@ async function readPublicPage(value, externalSignal) {
           "The source returned an application loading shell. Use a browser to read the original page."
         );
       }
-      if (!page.text || INTERSTITIAL_TITLE.test(page.title) || page.text.length < 1500 && INTERSTITIAL_TEXT.test(page.text)) {
+      if (!page.text || INTERSTITIAL_TITLE.test(page.title) || page.text.length < 1500 && (INTERSTITIAL_TEXT.test(page.text) || page.signInPromptOnly)) {
         throw new PublicPageError(
           "The source is empty, requires sign-in, or presents a browser interstitial."
         );

@@ -546,6 +546,22 @@ describe("one bounded public original page", () => {
     await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/interstitial/u);
   });
 
+  it.each([
+    "<h1>Campus portal</h1><p>Sign in to continue.</p>",
+    "<h2>Campus portal</h2><div>Please log in to continue.</div><h3>Account access</h3>",
+    "<h1>Campus portal</h1><p>Please <strong>sign in</strong> to continue...</p>",
+    "<h1>Campus portal</h1><section><div><p>Sign in<br>to continue.</p></div></section>",
+    "<h1>Campus portal</h1><p>Sign in to continue.</p><footer>UC San Diego. All rights reserved.</footer>",
+    '<header><h1>Campus portal</h1></header><p>Log in to continue.</p><div role="contentinfo">UC San Diego</div>',
+  ])(
+    "refuses a standalone sign-in prompt surrounded by headings or footer text: %s",
+    async (body) => {
+      replies.push({ body: `<title>Campus portal</title><main>${body}</main>` });
+      await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/interstitial/u);
+      expect(network.request).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("rejects a branded sign-in gate even with a long body", async () => {
     replies.push({
       body: `<title>UC San Diego Sign In</title><main>Please sign in to continue.
@@ -602,6 +618,23 @@ describe("one bounded public original page", () => {
       title: "Campus account help",
       text: expect.stringContaining("This message appears"),
     });
+  });
+
+  it.each([
+    "<p>When the portal says <q>Sign in to continue.</q>, open the official campus service page.</p>",
+    "<p>Sign in to continue.</p><p>This message means the service needs a campus account.</p>",
+    "<p>This public guide explains a common account prompt.</p><p>Please log in to continue.</p>",
+    "<p>Sign in to continue reading this public guide about campus account setup.</p>",
+  ])("retains explanatory prose around a sign-in prompt: %s", async (body) => {
+    replies.push({
+      body: `<title>Campus account help</title><main><h1>Campus account help</h1>${body}</main>
+      <footer>UC San Diego</footer>`,
+    });
+    const page = await readPublicPage(sourceUrl, signal());
+    expect(page.title).toBe("Campus account help");
+    expect(page.text).toMatch(/(?:[Ss]ign|log) in to continue/u);
+    expect(page.text.length).toBeLessThan(1_500);
+    expect(network.request).toHaveBeenCalledTimes(1);
   });
 
   it.each(["Loading...", "Loading…", "Please wait.", "Please enable JavaScript to continue."])(

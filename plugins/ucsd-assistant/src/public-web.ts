@@ -312,7 +312,8 @@ const BLOCK = new Set([
 const INTERSTITIAL_TITLE =
   /^(?:(?:uc san diego|ucsd|university of california)[\s:|–—-]+)?(?:sign[ -]?in|log[ -]?in|single sign[ -]?on|sso)(?:\s*[|:–—-]\s*(?:uc san diego|ucsd|university of california))?[.!…]*$|\b(?:access denied|authentication required|just a moment|attention required|checking your browser|verify (?:you are|you're) human)\b/iu;
 const INTERSTITIAL_TEXT =
-  /(?:verify (?:that )?you are (?:a )?human|enable javascript and cookies|checking your browser)|^(?:please )?(?:sign[ -]?in|log[ -]?in) to continue[.!…]*$/iu;
+  /(?:verify (?:that )?you are (?:a )?human|enable javascript and cookies|checking your browser)/iu;
+const SIGN_IN_PROMPT = /^(?:please )?(?:sign[ -]?in|log[ -]?in) to continue[.!…]*$/iu;
 const attr = (node: HtmlElement, name: string) =>
   node.attrs.find((item) => item.name === name)?.value;
 const normalize = (text: string) =>
@@ -357,6 +358,7 @@ async function extractHtml(source: string, url: URL, budget: HtmlBudget) {
   let title = "";
   let firstHeading = "";
   const pieces: string[] = [];
+  const nonHeadingPieces: string[] = [];
   const links: { title: string; url: string }[] = [];
   const seen = new Set<string>();
   let linksTruncated = false;
@@ -401,25 +403,30 @@ async function extractHtml(source: string, url: URL, budget: HtmlBudget) {
       }
     }
   }
-  const stack: { node: HtmlNode; end?: boolean }[] = [{ node: document }];
+  const stack: { node: HtmlNode; end?: boolean; heading?: boolean }[] = [{ node: document }];
   while (stack.length) {
     budget.step();
-    const { node, end } = stack.pop()!;
+    let { node, end, heading = false } = stack.pop()!;
     if (end) {
       pieces.push("\n");
+      nonHeadingPieces.push("\n");
       continue;
     }
     if (defaultTreeAdapter.isTextNode(node)) {
-      pieces.push(node.value.replace(/\s+/gu, " "));
+      const text = node.value.replace(/\s+/gu, " ");
+      pieces.push(text);
+      if (!heading) nonHeadingPieces.push(text);
       continue;
     }
     if (defaultTreeAdapter.isElementNode(node)) {
       if (omitted(node)) continue;
+      heading ||= /^h[1-6]$/u.test(node.tagName);
       if (node.tagName === "h1" && !firstHeading)
         firstHeading = nodeText(node, budget).slice(0, 500);
       if (BLOCK.has(node.tagName)) {
         pieces.push("\n");
-        stack.push({ node, end: true });
+        nonHeadingPieces.push("\n");
+        stack.push({ node, end: true, heading });
       }
       const href = node.tagName === "a" ? attr(node, "href") : undefined;
       if (href && !href.startsWith("#")) {
@@ -443,13 +450,19 @@ async function extractHtml(source: string, url: URL, budget: HtmlBudget) {
     }
     if ("childNodes" in node) {
       for (let index = node.childNodes.length - 1; index >= 0; index -= 1) {
-        stack.push({ node: node.childNodes[index]! });
+        stack.push({ node: node.childNodes[index]!, heading });
       }
     }
   }
+  const text = normalize(pieces.join(""));
   return {
     title: title || firstHeading || url.hostname,
-    text: normalize(pieces.join("")),
+    text,
+    // Headings and omitted footer chrome may surround a gate, but explanatory
+    // body prose (including prose quoting a prompt) must remain readable.
+    signInPromptOnly:
+      SIGN_IN_PROMPT.test(text) ||
+      SIGN_IN_PROMPT.test(nonHeadingPieces.join("").replace(/\s+/gu, " ").trim()),
     links,
     linksTruncated,
   };
@@ -523,7 +536,13 @@ export async function readPublicPage(
       }
       const page =
         mediaType === "text/plain"
-          ? { title: url.hostname, text: normalize(source), links: [], linksTruncated: false }
+          ? {
+              title: url.hostname,
+              text: normalize(source),
+              signInPromptOnly: SIGN_IN_PROMPT.test(normalize(source)),
+              links: [],
+              linksTruncated: false,
+            }
           : await extractHtml(source, url, budget);
       budget.check();
       if (
@@ -538,7 +557,7 @@ export async function readPublicPage(
       if (
         !page.text ||
         INTERSTITIAL_TITLE.test(page.title) ||
-        (page.text.length < 1_500 && INTERSTITIAL_TEXT.test(page.text))
+        (page.text.length < 1_500 && (INTERSTITIAL_TEXT.test(page.text) || page.signInPromptOnly))
       ) {
         throw new PublicPageError(
           "The source is empty, requires sign-in, or presents a browser interstitial.",
