@@ -2006,6 +2006,78 @@ describe("MicrosoftGraphProvider tools", () => {
     });
   });
 
+  it("creates a recipient-free unsent draft through only the draft endpoint", async () => {
+    const { graph, graphCalls } = replyGraph(() =>
+      jsonResponse(
+        {
+          id: "recipient-free-draft",
+          subject: "[TritonAI QA] Connection check",
+          isDraft: true,
+          toRecipients: [],
+          ccRecipients: [],
+          bccRecipients: [],
+        },
+        201,
+      ),
+    );
+    await authorize(graph, ["mail.draft.create"]);
+
+    await expect(
+      graph.invoke(
+        "microsoft365.mail.draft.create",
+        {
+          to: [],
+          subject: "[TritonAI QA] Connection check",
+          body: "Unsent connection test.",
+        },
+        invocation(),
+      ),
+    ).resolves.toMatchObject({
+      id: "recipient-free-draft",
+      isDraft: true,
+      to: [],
+      cc: [],
+      bcc: [],
+    });
+    expect(graphCalls).toHaveLength(1);
+    expect(graphCalls[0]?.url).toBe("https://graph.microsoft.com/v1.0/me/messages");
+    expect(graphCalls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(graphCalls[0]?.init?.body))).toEqual({
+      subject: "[TritonAI QA] Connection check",
+      body: { contentType: "text", content: "Unsent connection test." },
+      toRecipients: [],
+      ccRecipients: [],
+      bccRecipients: [],
+    });
+  });
+
+  it("rejects invalid or oversized draft recipients before a Graph write", async () => {
+    const { graph, graphCalls } = replyGraph(() => {
+      throw new Error("Invalid draft input must not reach Graph");
+    });
+    await authorize(graph, ["mail.draft.create"]);
+    const tooMany = Array.from({ length: 26 }, (_, index) => `person${index}@example.edu`);
+    for (const recipients of [
+      {},
+      { to: ["not-an-email"] },
+      { to: tooMany },
+      { to: [], cc: ["not-an-email"] },
+      { to: [], bcc: ["not-an-email"] },
+      { to: [], cc: tooMany },
+      { to: [], bcc: tooMany },
+      { to: [], send: true },
+    ]) {
+      await expect(
+        graph.invoke(
+          "microsoft365.mail.draft.create",
+          { ...recipients, subject: "Review", body: "Unsent draft." },
+          invocation(),
+        ),
+      ).rejects.toBeDefined();
+    }
+    expect(graphCalls).toEqual([]);
+  });
+
   function replyGraph(
     respond: (call: {
       readonly url: string;
@@ -3021,7 +3093,6 @@ describe("MicrosoftGraphProvider tools", () => {
     ]);
 
     for (const input of [
-      { to: [], subject: "x", body: "x" },
       { to: ["not-an-email"], subject: "x", body: "x" },
       { to: ["person@example.edu"], subject: "x", body: "" },
       { to: ["person@example.edu"], subject: "x".repeat(256), body: "x" },

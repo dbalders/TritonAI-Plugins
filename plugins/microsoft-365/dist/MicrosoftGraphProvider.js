@@ -155,7 +155,6 @@ const CalendarAttachmentGetInput = Schema.Struct({
     })),
 });
 const EmailAddress = Schema.String.check(Schema.isMinLength(3), Schema.isMaxLength(320), Schema.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/u)).annotate({ description: "A single email address." });
-const RecipientList = Schema.Array(EmailAddress).check(Schema.isMinLength(1), Schema.isMaxLength(25));
 const OptionalRecipientList = Schema.Array(EmailAddress).check(Schema.isMaxLength(25));
 const DraftFileAttachment = Schema.Struct({
     name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255)).annotate({
@@ -170,7 +169,9 @@ const DraftFileAttachment = Schema.Struct({
 });
 const DraftFileAttachmentList = Schema.Array(DraftFileAttachment).check(Schema.isMaxLength(25));
 const MailDraftCreateInput = Schema.Struct({
-    to: RecipientList.annotate({ description: "Primary recipients (1-25)." }),
+    to: OptionalRecipientList.annotate({
+        description: "Primary recipients (0-25). Use an empty list for a draft without recipients.",
+    }),
     cc: Schema.optionalKey(OptionalRecipientList.annotate({ description: "CC recipients (0-25)." })),
     bcc: Schema.optionalKey(OptionalRecipientList.annotate({ description: "BCC recipients (0-25)." })),
     subject: Schema.String.check(Schema.isMaxLength(255)).annotate({
@@ -379,7 +380,7 @@ export const MICROSOFT_GRAPH_TOOLS = [
     },
     {
         name: "microsoft365.mail.draft.create",
-        description: "Create one unsent Microsoft 365 mail draft with a plain-text body and optional file attachments through a fixed endpoint.",
+        description: "Create one unsent Microsoft 365 mail draft with optional recipients, a plain-text body, and optional file attachments through a fixed endpoint.",
         input: MailDraftCreateInput,
         readOnly: false,
         destructive: false,

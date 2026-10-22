@@ -63,7 +63,7 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly openWorld: true;
 }, {
     readonly name: "microsoft365.mail.draft.create";
-    readonly description: "Create one unsent Microsoft 365 mail draft with a plain-text body and optional file attachments through a fixed endpoint.";
+    readonly description: "Create one unsent Microsoft 365 mail draft with optional recipients, a plain-text body, and optional file attachments through a fixed endpoint.";
     readonly input: Schema.Struct<{
         readonly to: Schema.$Array<Schema.String>;
         readonly cc: Schema.optionalKey<Schema.$Array<Schema.String>>;
@@ -382,7 +382,7 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.mail.draft.create";
-        readonly description: "Create one unsent Microsoft 365 mail draft with a plain-text body and optional file attachments through a fixed endpoint.";
+        readonly description: "Create one unsent Microsoft 365 mail draft with optional recipients, a plain-text body, and optional file attachments through a fixed endpoint.";
         readonly input: Schema.Struct<{
             readonly to: Schema.$Array<Schema.String>;
             readonly cc: Schema.optionalKey<Schema.$Array<Schema.String>>;
