@@ -310,9 +310,9 @@ const BLOCK = new Set([
   "ul",
 ]);
 const INTERSTITIAL_TITLE =
-  /\b(?:sign[ -]?in|log[ -]?in|single sign[ -]?on|access denied|authentication required|just a moment|attention required|checking your browser|verify (?:you are|you're) human)\b/iu;
+  /^(?:(?:uc san diego|ucsd|university of california)[\s:|–—-]+)?(?:sign[ -]?in|log[ -]?in|single sign[ -]?on|sso)(?:\s*[|:–—-]\s*(?:uc san diego|ucsd|university of california))?[.!…]*$|\b(?:access denied|authentication required|just a moment|attention required|checking your browser|verify (?:you are|you're) human)\b/iu;
 const INTERSTITIAL_TEXT =
-  /(?:verify (?:that )?you are (?:a )?human|enable javascript and cookies|checking your browser|sign in to continue|log in to continue)/iu;
+  /(?:verify (?:that )?you are (?:a )?human|enable javascript and cookies|checking your browser)|^(?:please )?(?:sign[ -]?in|log[ -]?in) to continue[.!…]*$/iu;
 const attr = (node: HtmlElement, name: string) =>
   node.attrs.find((item) => item.name === name)?.value;
 const normalize = (text: string) =>
@@ -360,6 +360,8 @@ async function extractHtml(source: string, url: URL, budget: HtmlBudget) {
   const links: { title: string; url: string }[] = [];
   const seen = new Set<string>();
   let linksTruncated = false;
+  let documentBase = url;
+  let foundBase = false;
   // Inspect the parsed document for sign-in/refresh gates, including inside omitted forms/head.
   const inspect: HtmlNode[] = [document];
   while (inspect.length) {
@@ -367,6 +369,23 @@ async function extractHtml(source: string, url: URL, budget: HtmlBudget) {
     const node = inspect.pop()!;
     if (defaultTreeAdapter.isElementNode(node)) {
       if (node.tagName === "title" && !title) title = nodeText(node, budget).slice(0, 500);
+      const baseHref = node.tagName === "base" ? attr(node, "href") : undefined;
+      if (
+        !foundBase &&
+        node.namespaceURI === "http://www.w3.org/1999/xhtml" &&
+        baseHref !== undefined
+      ) {
+        foundBase = true;
+        // HTML uses the first base[href], even if it is invalid. Resolve against
+        // the final response URL; invalid, data: and javascript: bases fall back.
+        try {
+          const candidate = new URL(baseHref, url);
+          if (candidate.protocol !== "data:" && candidate.protocol !== "javascript:")
+            documentBase = candidate;
+        } catch {
+          budget.check();
+        }
+      }
       if (
         (node.tagName === "input" && attr(node, "type")?.toLowerCase() === "password") ||
         (node.tagName === "meta" && attr(node, "http-equiv")?.toLowerCase() === "refresh")
@@ -405,7 +424,9 @@ async function extractHtml(source: string, url: URL, budget: HtmlBudget) {
       const href = node.tagName === "a" ? attr(node, "href") : undefined;
       if (href && !href.startsWith("#")) {
         try {
-          const target = checkPublicPageUrl(new URL(href, url)).href;
+          // Keep a disallowed base for resolution: ignoring it could invent an
+          // official destination. Only each resolved destination is eligible.
+          const target = checkPublicPageUrl(new URL(href, documentBase)).href;
           const label =
             nodeText(node, budget) || attr(node, "aria-label") || attr(node, "title") || "";
           if (label && !seen.has(target)) {

@@ -151,10 +151,7 @@ describe("one bounded public original page", () => {
       url: sourceUrl,
       requestedUrl: sourceUrl,
       title: "Travel & policy",
-      links: [
-        { title: "Campus policy", url: "https://blink.ucsd.edu/policy.html" },
-        { title: "UC policy", url: "https://policy.ucop.edu/doc" },
-      ],
+      links: [{ title: "UC policy", url: "https://policy.ucop.edu/doc" }],
       contentType: "text/html",
       redirectCount: 0,
       truncated: false,
@@ -167,6 +164,123 @@ describe("one bounded public original page", () => {
     expect(Number.isNaN(Date.parse(result.retrievedAt))).toBe(false);
     expect(() => JSON.stringify(result)).not.toThrow();
     expect(network.request).toHaveBeenCalledTimes(1); // No links or scripts were fetched.
+  });
+
+  it("resolves a relative document base against the final fetched URL after redirects", async () => {
+    const finalUrl = "https://policy.ucop.edu/current/pages/index.html";
+    replies.push(
+      { status: 302, headers: { location: finalUrl } },
+      {
+        body: '<base href="../resources/"><main>Public policy. <a href="travel.html">Travel</a></main>',
+      },
+    );
+    const page = await readPublicPage(sourceUrl, signal());
+    expect(page).toMatchObject({
+      url: finalUrl,
+      requestedUrl: sourceUrl,
+      links: [{ title: "Travel", url: "https://policy.ucop.edu/current/resources/travel.html" }],
+    });
+    expect(network.lookup).toHaveBeenCalledTimes(2);
+    expect(network.request).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [
+      '<base href="https://policy.ucop.edu/guidance/">',
+      "https://policy.ucop.edu/guidance/policy.html",
+    ],
+    [
+      '<base target="_blank"><base href="../handbook/"><base href="https://policy.ucop.edu/ignored/">',
+      "https://blink.ucsd.edu/handbook/policy.html",
+    ],
+    [
+      '<base href=""><base href="https://policy.ucop.edu/ignored/">',
+      "https://blink.ucsd.edu/finance/policy.html",
+    ],
+    [
+      '<base href="http://["><base href="https://policy.ucop.edu/ignored/">',
+      "https://blink.ucsd.edu/finance/policy.html",
+    ],
+    [
+      '<base href="data:text/html,ignored"><base href="https://policy.ucop.edu/ignored/">',
+      "https://blink.ucsd.edu/finance/policy.html",
+    ],
+    [
+      '<base href="javascript:void(0)"><base href="https://policy.ucop.edu/ignored/">',
+      "https://blink.ucsd.edu/finance/policy.html",
+    ],
+    [
+      '<template><base href="https://example.com/"></template><base href="/handbook/">',
+      "https://blink.ucsd.edu/handbook/policy.html",
+    ],
+    [
+      '<svg><base href="https://example.com/"></base></svg><base href="/handbook/">',
+      "https://blink.ucsd.edu/handbook/policy.html",
+    ],
+  ])(
+    "uses the first applicable HTML base, including invalid-base fallback: %s",
+    async (bases, expectedUrl) => {
+      replies.push({
+        body: `<head>${bases}</head><main>Public policy. <a href="policy.html">Policy</a></main>`,
+      });
+      const page = await readPublicPage(sourceUrl, signal());
+      expect(page.links).toEqual([{ title: "Policy", url: expectedUrl }]);
+      expect(network.lookup).toHaveBeenCalledTimes(1);
+      expect(network.request).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    "https://example.com/",
+    "https://127.0.0.1/",
+    "https://[::1]/",
+    "https://sso.ucsd.edu/",
+    "https://blink.ucsd.edu/login/",
+    "/login/",
+    "https://user:secret@blink.ucsd.edu/",
+    "https://blink.ucsd.edu:8443/",
+    "http://blink.ucsd.edu/",
+    "https://secure4.compliancebridge.com/private/",
+  ])("never invents official relative destinations from a disallowed base: %s", async (base) => {
+    replies.push({
+      body: `<base href="${base}"><base href="https://blink.ucsd.edu/ignored/">
+      <main>Public policy. <a href="continue">Relative policy</a>
+      <a href="/login/continue">Root sign-in link</a>
+      <a href="https://policy.ucop.edu/doc">UC policy</a></main>`,
+    });
+    const page = await readPublicPage(sourceUrl, signal());
+    expect(page.links).toEqual([{ title: "UC policy", url: "https://policy.ucop.edu/doc" }]);
+    expect(network.lookup).toHaveBeenCalledTimes(1);
+    expect(network.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks an auth-path base's resolved destinations rather than falling back to the page URL", async () => {
+    replies.push({
+      body: `<base href="https://policy.ucop.edu/sso/"><main>Public policy.
+      <a href="continue">Continue</a><a href="/public-guide.html">Public guide</a>
+      <a href="https://blink.ucsd.edu/help/">Account help</a></main>`,
+    });
+    const page = await readPublicPage(sourceUrl, signal());
+    expect(page.links).toEqual([
+      { title: "Public guide", url: "https://policy.ucop.edu/public-guide.html" },
+      { title: "Account help", url: "https://blink.ucsd.edu/help/" },
+    ]);
+    expect(network.lookup).toHaveBeenCalledTimes(1);
+    expect(network.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("still checks resolved destinations from an allowed base against the public URL policy", async () => {
+    replies.push({
+      body: `<base href="https://blink.ucsd.edu/handbook/"><main>Public policy.
+      <a href="../login">Login</a><a href="?access_token=secret">Token</a>
+      <a href="https://example.com/">External</a><a href="travel.html">Travel</a></main>`,
+    });
+    const page = await readPublicPage(sourceUrl, signal());
+    expect(page.links).toEqual([
+      { title: "Travel", url: "https://blink.ucsd.edu/handbook/travel.html" },
+    ]);
+    expect(network.lookup).toHaveBeenCalledTimes(1);
+    expect(network.request).toHaveBeenCalledTimes(1);
   });
 
   it("dials the checked IP with the official TLS identity and fixed, credential-free GET headers", async () => {
@@ -316,11 +430,19 @@ describe("one bounded public original page", () => {
 
   it("returns bounded text and deduplicated links with explicit truncation fields", async () => {
     replies.push({
-      body: `<h1>Long policy</h1><p>${"x".repeat(30_000)}</p>${Array.from({ length: 45 }, (_, i) => `<a href="/policy${i}">Policy ${i}</a><a href="/policy${i}">Duplicate</a>`).join("")}`,
+      body: `<base href="/handbook/"><h1>Long policy</h1><p>${"x".repeat(30_000)}</p>${Array.from({ length: 45 }, (_, i) => `<a href="policy${i}">Policy ${i}</a><a href="/handbook/policy${i}">Duplicate</a>`).join("")}`,
     });
     const page = await readPublicPage(sourceUrl, signal());
     expect(page.text).toHaveLength(20_000);
     expect(page.links).toHaveLength(40);
+    expect(page.links[0]).toEqual({
+      title: "Policy 0",
+      url: "https://blink.ucsd.edu/handbook/policy0",
+    });
+    expect(page.links.at(-1)).toEqual({
+      title: "Policy 39",
+      url: "https://blink.ucsd.edu/handbook/policy39",
+    });
     expect(page).toMatchObject({ truncated: true, textTruncated: true, linksTruncated: true });
   });
 
@@ -407,14 +529,79 @@ describe("one bounded public original page", () => {
 
   it.each([
     "<title>UC San Diego Sign In</title><p>Please continue</p>",
+    "<title>Sign In</title><p>Use your campus account.</p>",
+    "<title>SSO</title><p>Please continue with your campus account.</p>",
+    "<title>Single Sign-On</title><p>Sign in to continue.</p>",
+    "<title>Sign In | UC San Diego</title><p>Please continue</p>",
+    "<title>Campus portal</title><p>Sign in to continue.</p>",
+    "<title>Campus portal</title><p>Please log in to continue.</p>",
     "<title>Just a moment...</title><p>Checking your browser</p>",
     "<form><input type='password'></form><p>University portal</p>",
     "<meta http-equiv='refresh' content='0;url=/login'><p>Redirecting</p>",
     "<div>Verify that you are human</div>",
+    "<title>Browser verification</title><p>Enable JavaScript and cookies.</p>",
     "<script>document.write('JS-only content')</script>",
   ])("refuses sign-in, browser gates and empty JS pages", async (body) => {
     replies.push({ body });
     await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/interstitial/u);
+  });
+
+  it("rejects a branded sign-in gate even with a long body", async () => {
+    replies.push({
+      body: `<title>UC San Diego Sign In</title><main>Please sign in to continue.
+      ${"This service is available to campus account holders. ".repeat(40)}</main>`,
+    });
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/interstitial/u);
+  });
+
+  it.each([
+    '<form><input type="password"></form>',
+    '<meta http-equiv="refresh" content="0;url=/login">',
+  ])("keeps inspecting for hard gate signals after finding a base: %s", async (gate) => {
+    replies.push({
+      body: `<base href="/help/"><title>How to sign in to campus services</title><main>
+      <h1>Campus account instructions</h1><p>${"Read these public setup instructions. ".repeat(50)}</p>
+      ${gate}</main>`,
+    });
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/interstitial/u);
+    expect(network.request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    "How to sign in to campus services",
+    "Campus login instructions",
+    "Using single sign-on for campus services",
+    "Single Sign-On (SSO): setup and troubleshooting",
+  ])("retains a public instructional article about authentication: %s", async (title) => {
+    replies.push({
+      body: `<title>${title}</title><main><h1>${title}</h1>
+      <p>This public guide explains campus account access. When a service says sign in to continue,
+      open the official service page and choose your campus account.</p>
+      <p>If it says log in to continue, follow the same steps. Keep your recovery information current,
+      approve your own multifactor prompt, and contact the service desk if you need help.</p>
+      <a href="/help/accounts.html">Account help</a></main>`,
+    });
+    const page = await readPublicPage(sourceUrl, signal());
+    expect(page).toMatchObject({
+      title,
+      text: expect.stringContaining("sign in to continue"),
+      links: [{ title: "Account help", url: "https://blink.ucsd.edu/help/accounts.html" }],
+    });
+    expect(page.text.length).toBeLessThan(1_500); // Also exercises the text gate, not just the title.
+    expect(network.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains instructional content beginning with a quoted gate instruction", async () => {
+    replies.push({
+      body: `<title>Campus account help</title><main><p>Sign in to continue.</p>
+      <p>This message appears when you open a service that needs a campus account. Choose your
+      institution, enter your account on the official page, and approve your own multifactor prompt.
+      If the message repeats, close the old tab and contact the service desk for account help.</p></main>`,
+    });
+    await expect(readPublicPage(sourceUrl, signal())).resolves.toMatchObject({
+      title: "Campus account help",
+      text: expect.stringContaining("This message appears"),
+    });
   });
 
   it.each(["Loading...", "Loading…", "Please wait.", "Please enable JavaScript to continue."])(

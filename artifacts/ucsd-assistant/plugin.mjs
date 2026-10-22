@@ -10292,8 +10292,8 @@ var BLOCK = /* @__PURE__ */ new Set([
   "tr",
   "ul"
 ]);
-var INTERSTITIAL_TITLE = /\b(?:sign[ -]?in|log[ -]?in|single sign[ -]?on|access denied|authentication required|just a moment|attention required|checking your browser|verify (?:you are|you're) human)\b/iu;
-var INTERSTITIAL_TEXT = /(?:verify (?:that )?you are (?:a )?human|enable javascript and cookies|checking your browser|sign in to continue|log in to continue)/iu;
+var INTERSTITIAL_TITLE = /^(?:(?:uc san diego|ucsd|university of california)[\s:|–—-]+)?(?:sign[ -]?in|log[ -]?in|single sign[ -]?on|sso)(?:\s*[|:–—-]\s*(?:uc san diego|ucsd|university of california))?[.!…]*$|\b(?:access denied|authentication required|just a moment|attention required|checking your browser|verify (?:you are|you're) human)\b/iu;
+var INTERSTITIAL_TEXT = /(?:verify (?:that )?you are (?:a )?human|enable javascript and cookies|checking your browser)|^(?:please )?(?:sign[ -]?in|log[ -]?in) to continue[.!…]*$/iu;
 var attr = (node, name) => node.attrs.find((item) => item.name === name)?.value;
 var normalize = (text3) => text3.replace(/[^\S\n]+/gu, " ").replace(/ *\n */gu, "\n").replace(/\n{3,}/gu, "\n\n").trim();
 function omitted(node) {
@@ -10324,12 +10324,25 @@ async function extractHtml(source, url, budget) {
   const links = [];
   const seen = /* @__PURE__ */ new Set();
   let linksTruncated = false;
+  let documentBase = url;
+  let foundBase = false;
   const inspect = [document];
   while (inspect.length) {
     budget.step();
     const node = inspect.pop();
     if (defaultTreeAdapter.isElementNode(node)) {
       if (node.tagName === "title" && !title) title = nodeText(node, budget).slice(0, 500);
+      const baseHref = node.tagName === "base" ? attr(node, "href") : void 0;
+      if (!foundBase && node.namespaceURI === "http://www.w3.org/1999/xhtml" && baseHref !== void 0) {
+        foundBase = true;
+        try {
+          const candidate = new URL(baseHref, url);
+          if (candidate.protocol !== "data:" && candidate.protocol !== "javascript:")
+            documentBase = candidate;
+        } catch {
+          budget.check();
+        }
+      }
       if (node.tagName === "input" && attr(node, "type")?.toLowerCase() === "password" || node.tagName === "meta" && attr(node, "http-equiv")?.toLowerCase() === "refresh") {
         throw new PublicPageError(
           "The source is a sign-in or redirect interstitial, not a readable public page."
@@ -10365,7 +10378,7 @@ async function extractHtml(source, url, budget) {
       const href = node.tagName === "a" ? attr(node, "href") : void 0;
       if (href && !href.startsWith("#")) {
         try {
-          const target = checkPublicPageUrl(new URL(href, url)).href;
+          const target = checkPublicPageUrl(new URL(href, documentBase)).href;
           const label = nodeText(node, budget) || attr(node, "aria-label") || attr(node, "title") || "";
           if (label && !seen.has(target)) {
             seen.add(target);
