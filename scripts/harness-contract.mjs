@@ -51,10 +51,26 @@ export function assertTrustedHarnessCheckout(harnessRoot, expectedHarnessCommit)
 }
 
 export function assertSupportedEffectVersion(version) {
+  // Released providers are intentionally admitted by Harness on its stable 4.x
+  // runtime as well as the original prerelease runtime. Keep package metadata
+  // unchanged and verify the exact host's admission separately.
+  const stable =
+    typeof version === "string" &&
+    /^4\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z.-]+)?$/u.exec(version);
   assert(
     typeof version === "string" &&
-      satisfiesSemver(version, PROVIDER_EFFECT_PEER_RANGE, { includePrerelease: true }),
-    `Harness Effect ${String(version)} is outside the provider peer range ${PROVIDER_EFFECT_PEER_RANGE}.`,
+      (satisfiesSemver(version, PROVIDER_EFFECT_PEER_RANGE, { includePrerelease: true }) ||
+        (stable &&
+          Number.isSafeInteger(Number(stable[1])) &&
+          Number.isSafeInteger(Number(stable[2])))),
+    `Harness Effect ${String(version)} is outside the supported provider host-runtime contract.`,
+  );
+}
+
+export function assertHarnessEffectPeerContract(range) {
+  assert(
+    range === PROVIDER_EFFECT_PEER_RANGE || range === ">=4.0.0-beta.78 <5.0.0",
+    "Harness advertises an unrecognized Effect peer contract.",
   );
 }
 

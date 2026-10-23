@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   assertSupportedEffectVersion,
+  assertHarnessEffectPeerContract,
   assertTrustedHarnessCheckout,
   resolveEffectRuntimeIdentity,
 } from "../scripts/harness-contract.mjs";
@@ -16,38 +17,52 @@ const effectHash = "7".repeat(64);
 const effectSelector = `effect@${effectVersion}`;
 const effectPatchPath = `patches/effect@${effectVersion}.patch`;
 
-function runtimeFixture({ lockPatch = effectHash, patched = true } = {}) {
-  const lockVersion = patched ? `${effectVersion}(patch_hash=${effectHash})` : effectVersion;
-  const snapshotKey = patched ? `${effectSelector}(patch_hash=${effectHash})` : effectSelector;
+function runtimeFixture({ lockPatch = effectHash, patched = true, version = effectVersion } = {}) {
+  const selector = `effect@${version}`;
+  const patchPath = `patches/effect@${version}.patch`;
+  const lockVersion = patched ? `${version}(patch_hash=${effectHash})` : version;
+  const snapshotKey = patched ? `${selector}(patch_hash=${effectHash})` : selector;
   return {
     workspace: {
-      catalog: { effect: effectVersion },
-      ...(patched ? { patchedDependencies: { [effectSelector]: effectPatchPath } } : {}),
+      catalog: { effect: version },
+      ...(patched ? { patchedDependencies: { [selector]: patchPath } } : {}),
     },
     lockfile: {
-      ...(patched ? { patchedDependencies: { [effectSelector]: lockPatch } } : {}),
+      ...(patched ? { patchedDependencies: { [selector]: lockPatch } } : {}),
       importers: {
         "apps/server": {
-          dependencies: { effect: { specifier: effectVersion, version: lockVersion } },
+          dependencies: { effect: { specifier: version, version: lockVersion } },
         },
       },
-      packages: { [effectSelector]: {} },
+      packages: { [selector]: {} },
       snapshots: { [snapshotKey]: {} },
     },
-    installedPackageVersion: effectVersion,
+    installedPackageVersion: version,
     expectedPnpmStoreRoot: "/fixture/node_modules/.pnpm",
     installedRealpath: patched
-      ? `/fixture/node_modules/.pnpm/${effectSelector}_patch_hash=${effectHash}/node_modules/effect`
-      : `/fixture/node_modules/.pnpm/${effectSelector}/node_modules/effect`,
+      ? `/fixture/node_modules/.pnpm/${selector}_patch_hash=${effectHash}/node_modules/effect`
+      : `/fixture/node_modules/.pnpm/${selector}/node_modules/effect`,
   };
 }
 
-test("enforces the complete provider Effect peer-range boundaries", () => {
-  for (const version of ["4.0.0-beta.78", effectVersion, "4.0.0-rc.0"]) {
+test("enforces the published provider host-runtime boundaries", () => {
+  for (const version of [
+    "4.0.0-beta.78",
+    effectVersion,
+    "4.0.0-rc.0",
+    "4.0.0",
+    "4.0.4",
+    "4.0.5",
+    "4.1.0",
+    "4.0.4+build.1",
+  ]) {
     assert.doesNotThrow(() => assertSupportedEffectVersion(version));
   }
-  for (const version of ["4.0.0-beta.77", "4.0.0", "5.0.0-beta.1", "invalid"]) {
-    assert.throws(() => assertSupportedEffectVersion(version), /outside the provider peer range/u);
+  for (const version of ["4.0.0-beta.77", "4.0.1-rc.1", "5.0.0", "5.0.0-beta.1", "invalid"]) {
+    assert.throws(
+      () => assertSupportedEffectVersion(version),
+      /outside the supported provider host-runtime contract/u,
+    );
   }
 });
 
@@ -78,6 +93,13 @@ test("accepts a coherently unpatched Effect runtime", () => {
   assert.equal(identity.patch, undefined);
   assert.equal(identity.lockVersion, effectVersion);
   assert.equal(identity.snapshotKey, effectSelector);
+});
+
+test("binds stable Effect 4.0.5 to the exact installed runtime and lockfile", () => {
+  const fixture = runtimeFixture({ version: "4.0.5", patched: false });
+  assert.equal(resolveEffectRuntimeIdentity(fixture).version, "4.0.5");
+  fixture.installedPackageVersion = effectVersion;
+  assert.throws(() => resolveEffectRuntimeIdentity(fixture), /installed Effect/u);
 });
 
 test("binds the server importer, package and snapshot keys, and patch identity", () => {
@@ -146,4 +168,14 @@ test("requires the exact caller-supplied commit and a clean Harness tree", async
 
   await Fs.writeFile(Path.join(checkout, "dirty.txt"), "untrusted drift\n");
   assert.throws(() => assertTrustedHarnessCheckout(checkout, commit), /worktree must be clean/u);
+});
+
+test("accepts only the reviewed original and stable Harness peer policies", () => {
+  for (const range of [">=4.0.0-beta.78 <4.0.0", ">=4.0.0-beta.78 <5.0.0"])
+    assert.doesNotThrow(() => assertHarnessEffectPeerContract(range));
+  for (const range of [undefined, "*", ">=4.0.0-beta.1 <5.0.0", ">=4.0.0-beta.78 <6.0.0"])
+    assert.throws(
+      () => assertHarnessEffectPeerContract(range),
+      /unrecognized Effect peer contract/u,
+    );
 });
