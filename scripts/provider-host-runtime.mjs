@@ -32,7 +32,7 @@ export async function stageProviderHostRuntime(packageRoot, harness) {
       });
     }
     await Fs.mkdir(Path.join(root, "node_modules"));
-    await Fs.symlink(effectRoot, Path.join(root, "node_modules/effect"), "dir");
+    await Fs.symlink(effectRoot, Path.join(root, "node_modules/effect"), "junction");
     const load = (name) => import(pathToFileURL(Path.join(effectRoot, "dist", `${name}.js`)).href);
     const [Effect, Option, Schema] = await Promise.all([
       load("Effect"),
