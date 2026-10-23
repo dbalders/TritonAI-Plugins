@@ -56,6 +56,13 @@ therefore select a maintainer-reviewed, trusted TritonAI-Harness checkout. The f
 worktree checks prove that one immutable input was used; they do not establish repository
 provenance or make an untrusted checkout safe.
 
+## UCSD Assistant
+
+The [UCSD Assistant plugin](plugins/ucsd-assistant/README.md) searches public campus sources directly,
+with a source catalog, public support-article search, original-page reading and anonymous maps,
+Walking/ADA routing and busyness tools. It requires no sign-in or Onyx connection. Its skills run
+broader source searches with the session's available web search or browser.
+
 ## Local verification
 
 ```sh

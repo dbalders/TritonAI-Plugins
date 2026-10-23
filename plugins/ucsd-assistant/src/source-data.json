@@ -1,0 +1,593 @@
+{
+  "verifiedAt": "2026-10-22T19:56:38.336381+00:00",
+  "guide": "https://tritonai.ucsd.edu/training-resources/tritongpt/assistants.html",
+  "scope": "71 documented labels covered; exact Onyx Stage connector URLs, exclusions, document-set contents, private sources, counts and freshness are unverified. A canonical domain mapping is not proof of indexed-corpus parity.",
+  "sources": [
+    {
+      "id": "academic-integrity",
+      "name": "Academic Integrity",
+      "urls": ["https://academicintegrity.ucsd.edu/"],
+      "searchScopes": ["academicintegrity.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "academic-personnel-website",
+      "name": "Academic Personnel website",
+      "urls": ["https://aps.ucsd.edu/"],
+      "searchScopes": ["aps.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "admissions-website",
+      "name": "Admissions website",
+      "urls": ["https://admissions.ucsd.edu/"],
+      "searchScopes": ["admissions.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "advising",
+      "name": "Advising",
+      "urls": ["https://advising.ucsd.edu/"],
+      "searchScopes": ["advising.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "amphitheater",
+      "name": "Amphitheater",
+      "urls": ["https://amphitheater.ucsd.edu/"],
+      "searchScopes": ["amphitheater.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "associated-students",
+      "name": "Associated Students",
+      "urls": ["https://as.ucsd.edu/"],
+      "searchScopes": ["as.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "athletics",
+      "name": "Athletics",
+      "urls": ["https://ucsdtritons.com/"],
+      "searchScopes": ["ucsdtritons.com"],
+      "notes": "ucsdtritons.com is an official non-ucsd.edu domain, linked as Athletics by the live UCSD Student Life page. First metadata fetch returned 200; a later fetch returned 404. Do not assume campus search indexes this external domain.",
+      "accessObserved": "official_public_domain_verified_inconsistent_http_fetch"
+    },
+    {
+      "id": "basic-needs",
+      "name": "Basic Needs",
+      "urls": ["https://basicneeds.ucsd.edu/"],
+      "searchScopes": ["basicneeds.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "behavioral-consultation-team",
+      "name": "Behavioral Consultation Team",
+      "urls": ["https://safecampus.ucsd.edu/bct/index.html"],
+      "searchScopes": ["safecampus.ucsd.edu/bct"],
+      "notes": "bct.ucsd.edu redirects to safecampus.ucsd.edu/bct/index.html; constrain searches to the BCT path when appropriate.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "blink",
+      "name": "Blink",
+      "urls": ["https://blink.ucsd.edu/"],
+      "searchScopes": ["blink.ucsd.edu"],
+      "notes": "Native search includes Google CSE organic results plus an auto-generated TritonGPT overview/widget. Exclude that generated overview and all tgpt scripts/APIs to preserve the no-Onyx runtime boundary. Merely ignoring the overview text does not prevent the native page from calling TritonGPT. Use independent source-scoped web search, or explicitly block tgpt scripts/requests before rendering.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "business-analytics-hub",
+      "name": "Business Analytics Hub",
+      "urls": ["https://bah.ucsd.edu/"],
+      "searchScopes": ["bah.ucsd.edu"],
+      "notes": "Public report descriptions and documentation are visible; underlying reports require requested and approved access per official BAH Help. Do not promise direct financial/student/employee data access.",
+      "accessObserved": "public_guidance_verified_some_services_or_content_access_restricted"
+    },
+    {
+      "id": "calendar-of-events",
+      "name": "Calendar of Events",
+      "urls": ["https://calendar.ucsd.edu/"],
+      "searchScopes": ["calendar.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "career-center",
+      "name": "Career Center",
+      "urls": ["https://career.ucsd.edu/"],
+      "searchScopes": ["career.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "center-for-mindfulness",
+      "name": "Center for Mindfulness",
+      "urls": ["https://cih.ucsd.edu/mindfulness"],
+      "searchScopes": ["cih.ucsd.edu/mindfulness"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "center-for-student-accountability-growth-and-education-sage",
+      "name": "Center for Student Accountability, Growth, and Education (SAGE)",
+      "urls": ["https://sage.ucsd.edu/"],
+      "searchScopes": ["sage.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "center-for-student-involvement",
+      "name": "Center for Student Involvement",
+      "urls": ["https://getinvolved.ucsd.edu/"],
+      "searchScopes": ["getinvolved.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "chancellor-website",
+      "name": "Chancellor website",
+      "urls": ["https://chancellor.ucsd.edu/"],
+      "searchScopes": ["chancellor.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "childcare-services",
+      "name": "Childcare Services",
+      "urls": ["https://child.ucsd.edu/"],
+      "searchScopes": ["child.ucsd.edu"],
+      "notes": "Verified public Early Childhood Education Center site. Guide label is broader than the current site title; exact original connector scope is unverified.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "colleges",
+      "name": "Colleges",
+      "urls": ["https://undergrad.ucsd.edu/colleges/"],
+      "searchScopes": ["undergrad.ucsd.edu/colleges"],
+      "notes": "Verified central college overview plus the eight named college source categories. Not proof every college-related page was in Onyx.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "counseling-and-psychological-services-caps",
+      "name": "Counseling and Psychological Services (CAPS)",
+      "urls": ["https://caps.ucsd.edu/"],
+      "searchScopes": ["caps.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "course-catalog",
+      "name": "Course Catalog",
+      "urls": ["https://catalog.ucsd.edu/"],
+      "searchScopes": ["catalog.ucsd.edu"],
+      "notes": "Same current catalog domain as UC San Diego General Catalog; retain both documented labels. Exact old connector scopes may differ. Catalog year matters; do not substitute current requirements for an archived year.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "diversity",
+      "name": "Diversity",
+      "urls": ["https://transformation.ucsd.edu/"],
+      "searchScopes": ["transformation.ucsd.edu"],
+      "notes": "diversity.ucsd.edu redirects to transformation.ucsd.edu (Organizational Transformation). Do not claim the renamed office or surviving pages reproduce the old Diversity corpus.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "eighth-college",
+      "name": "Eighth College",
+      "urls": ["https://eighth.ucsd.edu/"],
+      "searchScopes": ["eighth.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "educational-technology",
+      "name": "Educational Technology",
+      "urls": ["https://edtech.ucsd.edu/"],
+      "searchScopes": ["edtech.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "foundation",
+      "name": "Foundation",
+      "urls": ["https://foundation.ucsd.edu/"],
+      "searchScopes": ["foundation.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "housing-and-dining",
+      "name": "Housing and Dining",
+      "urls": [
+        "https://hdh.ucsd.edu/",
+        "https://hdhughousing.ucsd.edu/",
+        "https://hdhgradfamilyhousing.ucsd.edu/",
+        "https://hdhdining.ucsd.edu/"
+      ],
+      "searchScopes": [
+        "hdh.ucsd.edu",
+        "hdhughousing.ucsd.edu",
+        "hdhgradfamilyhousing.ucsd.edu",
+        "hdhdining.ucsd.edu"
+      ],
+      "notes": "HDH home links undergraduate housing, graduate/family housing and dining subdomains. Those linked subdomains are verified by official HDH navigation, not individually crawled.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "international-faculty-scholars-office",
+      "name": "International Faculty & Scholars Office",
+      "urls": ["https://iseo.ucsd.edu/scholar-services/index.html"],
+      "searchScopes": ["iseo.ucsd.edu/scholar-services"],
+      "notes": "ifso.ucsd.edu redirects to iseo.ucsd.edu/scholar-services/index.html (Scholar Services). Preserve old-domain search aliases for discovery only.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "lgbt-resource-center",
+      "name": "LGBT Resource Center",
+      "urls": ["https://lgbt.ucsd.edu/"],
+      "searchScopes": ["lgbt.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "marshall-college",
+      "name": "Marshall College",
+      "urls": ["https://marshall.ucsd.edu/"],
+      "searchScopes": ["marshall.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "muir-college",
+      "name": "Muir College",
+      "urls": ["https://muir.ucsd.edu/"],
+      "searchScopes": ["muir.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "office-for-students-with-disabilities-osd",
+      "name": "Office for Students with Disabilities (OSD)",
+      "urls": ["https://osd.ucsd.edu/"],
+      "searchScopes": ["osd.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "office-for-the-prevention-of-harassment-discrimination-ophd",
+      "name": "Office for the Prevention of Harassment & Discrimination (OPHD)",
+      "urls": ["https://ophd.ucsd.edu/"],
+      "searchScopes": ["ophd.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "office-of-technology-innovation-commercialization",
+      "name": "Office of Technology Innovation & Commercialization",
+      "urls": ["https://innovation.ucsd.edu/"],
+      "searchScopes": ["innovation.ucsd.edu"],
+      "notes": "Verified current site title is Office of Innovation & Commercialization.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "parents-and-families-resources",
+      "name": "Parents and Families Resources",
+      "urls": ["https://parents.ucsd.edu/"],
+      "searchScopes": ["parents.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "policies-uc-san-diego-and-ucop",
+      "name": "Policies (UC San Diego and UCOP)",
+      "urls": [
+        "https://igp.ucsd.edu/policies/ppm.html",
+        "https://secure4.compliancebridge.com/ucsd/public/index.php?fuseaction=app.main",
+        "https://policy.ucop.edu/"
+      ],
+      "searchScopes": [
+        "igp.ucsd.edu",
+        "secure4.compliancebridge.com/ucsd/public/",
+        "policy.ucop.edu"
+      ],
+      "notes": "Old adminrecords.ucsd.edu/PPM/Index.html redirects to the public ComplianceBridge policy directory; adminrecords home is a frameset with no usable title. Current official IGP page links the directory and UCOP. Allow only /ucsd/public/ on the third-party host. UCOP has a separate verified search form.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "postdoctoral-scholar-affairs",
+      "name": "Postdoctoral Scholar Affairs",
+      "urls": ["https://postdoc.ucsd.edu/"],
+      "searchScopes": ["postdoc.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "recreation",
+      "name": "Recreation",
+      "urls": ["https://recreation.ucsd.edu/"],
+      "searchScopes": ["recreation.ucsd.edu"],
+      "notes": "Canonical domain confirmed by public official campus links and a current primary web-search result for /policies/. Two direct metadata requests timed out in this environment; this is fetch unavailability, not proof of authentication restriction.",
+      "accessObserved": "official_public_domain_verified_direct_fetch_timed_out"
+    },
+    {
+      "id": "research-ethics-program",
+      "name": "Research Ethics Program",
+      "urls": ["https://blink.ucsd.edu/research/rci/integrity/responsible-conduct.html"],
+      "searchScopes": ["blink.ucsd.edu/research/rci"],
+      "notes": "ethics.ucsd.edu redirects to Blink home, not a subject-specific replacement. Current official RCI guidance says the program is being reorganized into Research Compliance and Integrity and the Scientific Ethics course is no longer offered by the former program. Current RCI page is the routing replacement, not evidence of old-corpus parity.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "revelle-college",
+      "name": "Revelle College",
+      "urls": ["https://revelle.ucsd.edu/"],
+      "searchScopes": ["revelle.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "roosevelt-college",
+      "name": "Roosevelt College",
+      "urls": ["https://roosevelt.ucsd.edu/"],
+      "searchScopes": ["roosevelt.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "scripps-institution-of-oceanography",
+      "name": "Scripps Institution of Oceanography",
+      "urls": ["https://scripps.ucsd.edu/"],
+      "searchScopes": ["scripps.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "seventh-college",
+      "name": "Seventh College",
+      "urls": ["https://seventh.ucsd.edu/"],
+      "searchScopes": ["seventh.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "servicenow-knowledge-base-content-public-facing",
+      "name": "ServiceNow Knowledge Base content (public facing)",
+      "urls": ["https://support.ucsd.edu/services", "https://support.ucsd.edu/its"],
+      "searchScopes": ["support.ucsd.edu"],
+      "notes": "Anonymous current search and article URLs were verified. Old id=kb_search&query= pattern redirected to SSO. Some KBs, catalogs and actions may be restricted. Search result accessibility does not authorize private content.",
+      "accessObserved": "public_guidance_verified_some_services_or_content_access_restricted"
+    },
+    {
+      "id": "student-health-and-well-being",
+      "name": "Student Health and Well Being",
+      "urls": ["https://studentwellbeing.ucsd.edu/"],
+      "searchScopes": ["studentwellbeing.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "sixth-college",
+      "name": "Sixth College",
+      "urls": ["https://sixth.ucsd.edu/"],
+      "searchScopes": ["sixth.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "student-financial-solutions",
+      "name": "Student Financial Solutions",
+      "urls": ["https://sfs.ucsd.edu/"],
+      "searchScopes": ["sfs.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "student-health-services",
+      "name": "Student Health Services",
+      "urls": ["https://studenthealth.ucsd.edu/"],
+      "searchScopes": ["studenthealth.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "student-success-coaching-program",
+      "name": "Student Success Coaching Program",
+      "urls": ["https://successcoaching.ucsd.edu/"],
+      "searchScopes": ["successcoaching.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "student-veterans-resource-center",
+      "name": "Student Veterans Resource Center",
+      "urls": ["https://svrc.ucsd.edu/"],
+      "searchScopes": ["svrc.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "study-abroad",
+      "name": "Study Abroad",
+      "urls": ["https://studyabroad.ucsd.edu/"],
+      "searchScopes": ["studyabroad.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "strategic-plan",
+      "name": "Strategic Plan",
+      "urls": ["https://plan.ucsd.edu/"],
+      "searchScopes": ["plan.ucsd.edu"],
+      "notes": "plan.ucsd.edu is the verified Strategic Plan site. Candidate strategicplan.ucsd.edu failed DNS; do not configure it.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "teaching-learning-commons",
+      "name": "Teaching + Learning Commons",
+      "urls": ["https://commons.ucsd.edu/"],
+      "searchScopes": ["commons.ucsd.edu"],
+      "notes": "Shares commons.ucsd.edu with The Commons. Preserve both guide labels without claiming two independently verified corpora.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "the-commons",
+      "name": "The Commons",
+      "urls": ["https://commons.ucsd.edu/"],
+      "searchScopes": ["commons.ucsd.edu"],
+      "notes": "Official Commons about page identifies this as Teaching and Learning Commons. Shares commons.ucsd.edu with Teaching + Learning Commons; separate original connector scope unverified.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "transfer-students",
+      "name": "Transfer Students",
+      "urls": ["https://transferstudents.ucsd.edu/"],
+      "searchScopes": ["transferstudents.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "transportation",
+      "name": "Transportation",
+      "urls": ["https://transportation.ucsd.edu/"],
+      "searchScopes": ["transportation.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "tritonai",
+      "name": "TritonAI",
+      "urls": ["https://tritonai.ucsd.edu/"],
+      "searchScopes": ["tritonai.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "triton-card-account-services",
+      "name": "Triton Card Account Services",
+      "urls": ["https://hdhtcas.ucsd.edu/"],
+      "searchScopes": ["hdhtcas.ucsd.edu"],
+      "notes": "Use hdhtcas.ucsd.edu for card accounts, Triton Cash and dining-account guidance. sfs.ucsd.edu/campus-cards/ concerns Campus Cards and is not an equivalent category mapping.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "triton-firsts",
+      "name": "Triton Firsts",
+      "urls": ["https://tritonfirsts.ucsd.edu/"],
+      "searchScopes": ["tritonfirsts.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "tritonlink-students-ucsd-edu",
+      "name": "TritonLink (students.ucsd.edu)",
+      "urls": ["https://students.ucsd.edu/"],
+      "searchScopes": ["students.ucsd.edu"],
+      "notes": "Public current-student guidance only; personalized student record tools and transactions are separate authenticated services.",
+      "accessObserved": "public_guidance_verified_some_services_or_content_access_restricted"
+    },
+    {
+      "id": "triton-testing",
+      "name": "Triton Testing",
+      "urls": ["https://tritontesting.ucsd.edu/"],
+      "searchScopes": ["tritontesting.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "uc-path-website",
+      "name": "UC Path website",
+      "urls": ["https://ucpath.ucsd.edu/"],
+      "searchScopes": ["ucpath.ucsd.edu"],
+      "notes": "Public UCSD UCPath guidance only; payroll, personnel and UCPath account transactions are outside public-source search.",
+      "accessObserved": "public_guidance_verified_some_services_or_content_access_restricted"
+    },
+    {
+      "id": "uc-san-diego-brand",
+      "name": "UC San Diego Brand",
+      "urls": ["https://brand.ucsd.edu/"],
+      "searchScopes": ["brand.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "uc-san-diego-general-catalog",
+      "name": "UC San Diego General Catalog",
+      "urls": ["https://catalog.ucsd.edu/"],
+      "searchScopes": ["catalog.ucsd.edu"],
+      "notes": "Same current catalog domain as Course Catalog; retain both documented labels. Exact old connector scopes may differ. Current landing-page title is 2026-27 Catalog Interim Update: Fall.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "uc-san-diego-library",
+      "name": "UC San Diego Library",
+      "urls": ["https://library.ucsd.edu/", "https://library.ucsd.edu/search/"],
+      "searchScopes": ["library.ucsd.edu"],
+      "notes": "Root metadata fetch hit an anti-bot page (HTTP 200). /search/ and /search/?q=hours returned Search Results HTML. Do not treat anti-bot HTML as library source content. Licensed collections and account functions can require access.",
+      "accessObserved": "mixed_public_and_antibot_observed"
+    },
+    {
+      "id": "uc-san-diego-today",
+      "name": "UC San Diego Today",
+      "urls": ["https://today.ucsd.edu/"],
+      "searchScopes": ["today.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "ucsd-police-department",
+      "name": "UCSD Police Department",
+      "urls": ["https://police.ucsd.edu/"],
+      "searchScopes": ["police.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "university-centers",
+      "name": "University Centers",
+      "urls": ["https://universitycenters.ucsd.edu/"],
+      "searchScopes": ["universitycenters.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "university-communications",
+      "name": "University Communications",
+      "urls": ["https://univcomms.ucsd.edu/"],
+      "searchScopes": ["univcomms.ucsd.edu"],
+      "notes": "ucpa.ucsd.edu redirects to univcomms.ucsd.edu.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "vice-chancellor-student-affairs",
+      "name": "Vice Chancellor Student Affairs",
+      "urls": ["https://vcsacl.ucsd.edu/"],
+      "searchScopes": ["vcsacl.ucsd.edu"],
+      "notes": "vcsa.ucsd.edu redirects to vcsacl.ucsd.edu (Student Affairs and Campus Life).",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "warren-college",
+      "name": "Warren College",
+      "urls": ["https://warren.ucsd.edu/"],
+      "searchScopes": ["warren.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    },
+    {
+      "id": "women-s-center",
+      "name": "Women's Center",
+      "urls": ["https://women.ucsd.edu/"],
+      "searchScopes": ["women.ucsd.edu"],
+      "notes": "Public informational site identified by matching live page title and campus ownership. Individual pages and search index coverage can vary.",
+      "accessObserved": "public_informational_page_verified"
+    }
+  ]
+}

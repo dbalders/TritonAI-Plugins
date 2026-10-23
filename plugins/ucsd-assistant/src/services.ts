@@ -1,0 +1,36 @@
+export const CAMPUS_CONNECTIONS = [
+  {
+    id: "campus-maps",
+    name: "UCSD Maps",
+    publicSite: "https://campusmap.ucsd.edu/",
+    connection: "Anonymous official map REST services",
+    status: "anonymous_verified",
+    tools: [
+      "ucsd.search_map_buildings",
+      "ucsd.search_map_pois",
+      "ucsd.list_map_poi_classes",
+      "ucsd.nearby_map_pois",
+      "ucsd.map_distance",
+      "ucsd.map_walking_route",
+    ],
+    note: "Buildings, places, classes, nearby places, geodesic distance and modeled walking/ADA routes use the public services used by the campus map. Routing is not a live closure or field accessibility check. These are REST adapters, independent of the authenticated Maps gateway MCP configured in Onyx.",
+  },
+  {
+    id: "campus-busyness",
+    name: "Campus Busyness",
+    publicSite: "https://library.ucsd.edu/assets/availability/mobile/index.html",
+    connection: "Anonymous Waitz feed used by UCSD Library",
+    status: "anonymous_verified",
+    tools: ["ucsd.get_campus_busyness"],
+    note: "Reports locations and floor detail with open/unavailable flags and estimated busyness. The source measurement timestamp is unknown; retrieval time and HTTP Date are not observation times. This direct API does not use the separate OAuth-protected campus gateway MCP.",
+  },
+  {
+    id: "parking",
+    name: "Parking availability",
+    publicSite: "https://transportation.ucsd.edu/commute/permits/availability.html",
+    connection: "Public published guidance and surveys",
+    status: "live_anonymous_unverified",
+    tools: [],
+    note: "Published parking surveys and map inventory are historical/static. No anonymous live parking occupancy contract is verified; do not describe them as currently available spaces. Use the public site for dated surveys, permits and parking guidance.",
+  },
+] as const;

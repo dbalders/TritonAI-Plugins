@@ -1,0 +1,837 @@
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
+import type { RequestOptions } from "node:https";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+
+const network = vi.hoisted(() => ({
+  lookup: vi.fn(),
+  request: vi.fn(),
+  agents: vi.fn(),
+  destroyAgent: vi.fn(),
+}));
+vi.mock("node:dns/promises", () => ({ lookup: network.lookup }));
+vi.mock("node:https", () => ({
+  Agent: class {
+    constructor(options: unknown) {
+      network.agents(options);
+    }
+    destroy() {
+      network.destroyAgent();
+    }
+  },
+  request: network.request,
+}));
+
+import { checkPublicPageUrl, readPublicPage } from "./public-web.ts";
+import { createIntegrationProvider } from "./index.js";
+
+interface Reply {
+  status?: number;
+  headers?: IncomingHttpHeaders;
+  body?: string | Buffer | Buffer[];
+  holdOpen?: boolean;
+}
+const replies: Reply[] = [];
+const streams: PassThrough[] = [];
+const sourceUrl = "https://blink.ucsd.edu/finance/index.html";
+const html =
+  "<!doctype html><title>Campus policy</title><main><h1>Travel rules</h1><p>Read the current policy.</p></main>";
+const signal = () => new AbortController().signal;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  replies.length = 0;
+  streams.length = 0;
+  network.lookup.mockReset().mockResolvedValue([{ address: "132.239.1.2", family: 4 }]);
+  network.request
+    .mockReset()
+    .mockImplementation(
+      (options: RequestOptions, callback: (response: IncomingMessage) => void) => {
+        const reply = replies.shift();
+        if (!reply) throw new Error("Unexpected network request");
+        const stream = new PassThrough();
+        const response = Object.assign(stream, {
+          statusCode: reply.status ?? 200,
+          headers: { "content-type": "text/html; charset=utf-8", ...reply.headers },
+        }) as unknown as IncomingMessage;
+        streams.push(stream);
+        const req = Object.assign(new EventEmitter(), {
+          end() {
+            queueMicrotask(() => {
+              callback(response);
+              if (!reply.holdOpen) {
+                for (const bytes of Array.isArray(reply.body) ? reply.body : [reply.body ?? html])
+                  stream.write(bytes);
+                stream.end();
+              }
+            });
+          },
+        });
+        const cancel = () => {
+          stream.destroy();
+          req.emit("error", new Error("private transport abort details"));
+        };
+        options.signal?.addEventListener("abort", cancel, { once: true });
+        stream.once("close", () => options.signal?.removeEventListener("abort", cancel));
+        return req;
+      },
+    );
+});
+
+afterEach(() => {
+  for (const stream of streams) stream.destroy();
+  vi.useRealTimers();
+});
+
+describe("public page URL boundary", () => {
+  it.each([
+    "https://ucsd.edu/",
+    "https://blink.ucsd.edu/finance/",
+    "https://department.ucsd.edu:443/",
+    "https://policy.ucop.edu/",
+    "https://www.ucop.edu/",
+    "https://ucnet.universityofcalifornia.edu/",
+    "https://ucsdtritons.com/",
+    "https://www.ucsdtritons.com/",
+  ])("allows the official source %s", (url) => {
+    expect(checkPublicPageUrl(url)).toBeInstanceOf(URL);
+  });
+
+  it.each([
+    "http://blink.ucsd.edu/",
+    "https://blink.ucsd.edu:8443/",
+    "https://user:secret@blink.ucsd.edu/",
+    "https://ucsd.edu.example.com/",
+    "https://evilucsd.edu/",
+    "https://policy.ucop.edu.example.com/",
+    "https://example.com/",
+    "https://127.0.0.1/",
+    "https://[::1]/",
+    "file:///etc/passwd",
+    "not a url",
+    "https://blink.ucsd.edu./",
+    "https://sso.ucsd.edu/",
+    "https://blink.ucsd.edu/%6cogin/",
+    "https://blink.ucsd.edu/saml/start",
+    "https://blink.ucsd.edu/?access_token=secret",
+    "https://blink.ucsd.edu/\\@example.com/",
+    "https://tritongpt.ucsd.edu/",
+    "https://tritongpt-stage.ucsd.edu/admin/",
+    "https://tritongpt-dev.ucsd.edu/",
+  ])("rejects unsafe, nonofficial or authenticated URLs: %s", (url) => {
+    expect(() => checkPublicPageUrl(url)).toThrow();
+  });
+
+  it("clones URL inputs and strips fragments without mutating the caller", () => {
+    const input = new URL(`${sourceUrl}#section`);
+    expect(checkPublicPageUrl(input).href).toBe(sourceUrl);
+    expect(input.hash).toBe("#section");
+  });
+
+  it("tags initial URL validation failures without exposing the supplied URL", async () => {
+    await expect(readPublicPage("https://example.invalid/?token=secret", signal())).rejects.toEqual(
+      {
+        _tag: "PluginFailure",
+        code: "public_page_url_not_allowed",
+        message: "This host is not an allowed official public campus source.",
+        retryable: false,
+      },
+    );
+    await expect(readPublicPage("not a url", signal())).rejects.toMatchObject({
+      _tag: "PluginFailure",
+      code: "public_page_invalid_url",
+      retryable: false,
+    });
+    expect(network.lookup).not.toHaveBeenCalled();
+    expect(network.request).not.toHaveBeenCalled();
+  });
+});
+
+describe("one bounded public original page", () => {
+  it.each([
+    [401, "public_page_auth_required", false],
+    [403, "public_page_auth_required", false],
+    [404, "public_page_http_error", false],
+    [429, "public_page_http_error", true],
+    [500, "public_page_http_error", true],
+    [503, "public_page_http_error", true],
+  ] as const)("tags HTTP %i with the appropriate retry policy", async (status, code, retryable) => {
+    replies.push({ status, body: "private upstream body token=secret" });
+    const error = await readPublicPage(sourceUrl, signal()).catch((error: unknown) => error);
+    expect(error).toMatchObject({ _tag: "PluginFailure", code, retryable });
+    expect(JSON.stringify(error)).not.toMatch(/private|secret|token/u);
+  });
+
+  it("preserves vetted failures through the provider and sanitizes unexpected failures", async () => {
+    const provider = createIntegrationProvider({
+      configuration: {},
+      secrets: { get: async () => null, set: async () => {}, remove: async () => {} },
+    });
+    const context = {
+      signal: signal(),
+      writeApproved: false,
+      beginCommit: async () => {
+        throw new Error("A public read must not cross the write boundary.");
+      },
+    };
+    replies.push({ status: 403, body: "private provider body" });
+    await expect(provider.invoke("ucsd.read_page", { url: sourceUrl }, context)).rejects.toEqual({
+      _tag: "PluginFailure",
+      code: "public_page_auth_required",
+      message: "The source requires sign-in or denies public access.",
+      retryable: false,
+    });
+    replies.push({ body: "Readable public policy.", headers: { "content-type": "text/plain" } });
+    const unexpected = vi.spyOn(Date.prototype, "toISOString").mockImplementationOnce(() => {
+      throw new Error("private unexpected details");
+    });
+    try {
+      await expect(provider.invoke("ucsd.read_page", { url: sourceUrl }, context)).rejects.toEqual({
+        _tag: "PluginFailure",
+        code: "public_page_unavailable",
+        message: "Unable to read the public source. Check the URL or try again later.",
+        retryable: false,
+      });
+    } finally {
+      unexpected.mockRestore();
+    }
+  });
+
+  it("extracts titles, headings and meaningful links while excluding hidden and executable content", async () => {
+    replies.push({
+      body: `<!doctype html><html><head><title>Travel &amp; policy</title>
+      <script>head-secret</script><style>style-secret</style><base href="https://example.com/"></head>
+      <body><nav>nav-secret</nav><header><h1>Travel guidance</h1></header><main>
+      <p>Book <strong>approved</strong> travel &amp; retain receipts.</p>
+      <a href="../policy.html">Campus <strong>policy</strong></a>
+      <a href="https://policy.ucop.edu/doc">UC policy</a>
+      <a href="https://example.com/">External link</a><a href="javascript:alert(1)">Script link</a>
+      <a href="/login">Sign-in link</a><a href="#local">Local anchor</a>
+      <p hidden>hidden-secret</p><p aria-hidden="true">aria-secret</p>
+      <p style="display: none !important">display-secret</p><p style="visibility:hidden">visibility-secret</p>
+      <p class="visually-hidden">class-secret</p><div inert>inert-secret</div>
+      <div role="navigation">role-secret</div><script>body-secret</script><noscript>noscript-secret</noscript>
+      <iframe>frame-secret</iframe><template>template-secret</template></main><footer>footer-secret</footer></body></html>`,
+    });
+    const result = await readPublicPage(sourceUrl, signal());
+    expect(result).toMatchObject({
+      url: sourceUrl,
+      requestedUrl: sourceUrl,
+      title: "Travel & policy",
+      links: [{ title: "UC policy", url: "https://policy.ucop.edu/doc" }],
+      contentType: "text/html",
+      redirectCount: 0,
+      truncated: false,
+      untrustedContent: true,
+    });
+    expect(result.text).toContain("Travel guidance");
+    expect(result.text).toContain("Book approved travel & retain receipts.");
+    expect(result.text).not.toContain("-secret");
+    expect(result.text).not.toContain("Travel & policy"); // Head title is separate from body evidence.
+    expect(Number.isNaN(Date.parse(result.retrievedAt))).toBe(false);
+    expect(() => JSON.stringify(result)).not.toThrow();
+    expect(network.request).toHaveBeenCalledTimes(1); // No links or scripts were fetched.
+  });
+
+  it("resolves a relative document base against the final fetched URL after redirects", async () => {
+    const finalUrl = "https://policy.ucop.edu/current/pages/index.html";
+    replies.push(
+      { status: 302, headers: { location: finalUrl } },
+      {
+        body: '<base href="../resources/"><main>Public policy. <a href="travel.html">Travel</a></main>',
+      },
+    );
+    const page = await readPublicPage(sourceUrl, signal());
+    expect(page).toMatchObject({
+      url: finalUrl,
+      requestedUrl: sourceUrl,
+      links: [{ title: "Travel", url: "https://policy.ucop.edu/current/resources/travel.html" }],
+    });
+    expect(network.lookup).toHaveBeenCalledTimes(2);
+    expect(network.request).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [
+      '<base href="https://policy.ucop.edu/guidance/">',
+      "https://policy.ucop.edu/guidance/policy.html",
+    ],
+    [
+      '<base target="_blank"><base href="../handbook/"><base href="https://policy.ucop.edu/ignored/">',
+      "https://blink.ucsd.edu/handbook/policy.html",
+    ],
+    [
+      '<base href=""><base href="https://policy.ucop.edu/ignored/">',
+      "https://blink.ucsd.edu/finance/policy.html",
+    ],
+    [
+      '<base href="http://["><base href="https://policy.ucop.edu/ignored/">',
+      "https://blink.ucsd.edu/finance/policy.html",
+    ],
+    [
+      '<base href="data:text/html,ignored"><base href="https://policy.ucop.edu/ignored/">',
+      "https://blink.ucsd.edu/finance/policy.html",
+    ],
+    [
+      '<base href="javascript:void(0)"><base href="https://policy.ucop.edu/ignored/">',
+      "https://blink.ucsd.edu/finance/policy.html",
+    ],
+    [
+      '<template><base href="https://example.com/"></template><base href="/handbook/">',
+      "https://blink.ucsd.edu/handbook/policy.html",
+    ],
+    [
+      '<svg><base href="https://example.com/"></base></svg><base href="/handbook/">',
+      "https://blink.ucsd.edu/handbook/policy.html",
+    ],
+  ])(
+    "uses the first applicable HTML base, including invalid-base fallback: %s",
+    async (bases, expectedUrl) => {
+      replies.push({
+        body: `<head>${bases}</head><main>Public policy. <a href="policy.html">Policy</a></main>`,
+      });
+      const page = await readPublicPage(sourceUrl, signal());
+      expect(page.links).toEqual([{ title: "Policy", url: expectedUrl }]);
+      expect(network.lookup).toHaveBeenCalledTimes(1);
+      expect(network.request).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    "https://example.com/",
+    "https://127.0.0.1/",
+    "https://[::1]/",
+    "https://sso.ucsd.edu/",
+    "https://blink.ucsd.edu/login/",
+    "/login/",
+    "https://user:secret@blink.ucsd.edu/",
+    "https://blink.ucsd.edu:8443/",
+    "http://blink.ucsd.edu/",
+    "https://secure4.compliancebridge.com/private/",
+  ])("never invents official relative destinations from a disallowed base: %s", async (base) => {
+    replies.push({
+      body: `<base href="${base}"><base href="https://blink.ucsd.edu/ignored/">
+      <main>Public policy. <a href="continue">Relative policy</a>
+      <a href="/login/continue">Root sign-in link</a>
+      <a href="https://policy.ucop.edu/doc">UC policy</a></main>`,
+    });
+    const page = await readPublicPage(sourceUrl, signal());
+    expect(page.links).toEqual([{ title: "UC policy", url: "https://policy.ucop.edu/doc" }]);
+    expect(network.lookup).toHaveBeenCalledTimes(1);
+    expect(network.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks an auth-path base's resolved destinations rather than falling back to the page URL", async () => {
+    replies.push({
+      body: `<base href="https://policy.ucop.edu/sso/"><main>Public policy.
+      <a href="continue">Continue</a><a href="/public-guide.html">Public guide</a>
+      <a href="https://blink.ucsd.edu/help/">Account help</a></main>`,
+    });
+    const page = await readPublicPage(sourceUrl, signal());
+    expect(page.links).toEqual([
+      { title: "Public guide", url: "https://policy.ucop.edu/public-guide.html" },
+      { title: "Account help", url: "https://blink.ucsd.edu/help/" },
+    ]);
+    expect(network.lookup).toHaveBeenCalledTimes(1);
+    expect(network.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("still checks resolved destinations from an allowed base against the public URL policy", async () => {
+    replies.push({
+      body: `<base href="https://blink.ucsd.edu/handbook/"><main>Public policy.
+      <a href="../login">Login</a><a href="?access_token=secret">Token</a>
+      <a href="https://example.com/">External</a><a href="travel.html">Travel</a></main>`,
+    });
+    const page = await readPublicPage(sourceUrl, signal());
+    expect(page.links).toEqual([
+      { title: "Travel", url: "https://blink.ucsd.edu/handbook/travel.html" },
+    ]);
+    expect(network.lookup).toHaveBeenCalledTimes(1);
+    expect(network.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("dials the checked IP with the official TLS identity and fixed, credential-free GET headers", async () => {
+    replies.push({});
+    await readPublicPage(sourceUrl, signal());
+    expect(network.lookup).toHaveBeenCalledWith("blink.ucsd.edu", { all: true, verbatim: true });
+    const options = network.request.mock.calls[0]![0] as RequestOptions;
+    expect(options).toMatchObject({
+      hostname: "132.239.1.2",
+      family: 4,
+      port: 443,
+      servername: "blink.ucsd.edu",
+      rejectUnauthorized: true,
+      method: "GET",
+      path: "/finance/index.html",
+      headers: { Host: "blink.ucsd.edu", "Accept-Encoding": "identity" },
+    });
+    const headerNames = Object.keys(options.headers ?? {}).map((key) => key.toLowerCase());
+    expect(headerNames).not.toContain("cookie");
+    expect(headerNames).not.toContain("authorization");
+    expect(network.agents).toHaveBeenCalledWith({ keepAlive: false, proxyEnv: {} });
+    expect(network.destroyAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("revalidates each allowed redirect, pins its own DNS answer and ignores Set-Cookie", async () => {
+    replies.push(
+      {
+        status: 302,
+        headers: { location: "https://policy.ucop.edu/doc", "set-cookie": ["session=secret"] },
+      },
+      { body: "<h1>University policy</h1>Public evidence" },
+    );
+    network.lookup
+      .mockResolvedValueOnce([{ address: "132.239.1.2", family: 4 }])
+      .mockResolvedValueOnce([{ address: "2607:f720:1000:100::1", family: 6 }]);
+    const page = await readPublicPage(sourceUrl, signal());
+    expect(page).toMatchObject({
+      url: "https://policy.ucop.edu/doc",
+      requestedUrl: sourceUrl,
+      redirectCount: 1,
+    });
+    expect(network.lookup.mock.calls.map((call) => call[0])).toEqual([
+      "blink.ucsd.edu",
+      "policy.ucop.edu",
+    ]);
+    expect(network.request.mock.calls[1]![0]).toMatchObject({
+      hostname: "2607:f720:1000:100::1",
+      family: 6,
+      servername: "policy.ucop.edu",
+    });
+    expect(JSON.stringify(network.request.mock.calls)).not.toContain("session=secret");
+  });
+
+  it.each([
+    "https://example.com/",
+    "http://blink.ucsd.edu/",
+    "https://127.0.0.1/",
+    "https://sso.ucsd.edu/",
+    "https://user:secret@blink.ucsd.edu/",
+  ])("rejects a redirect outside the public boundary: %s", async (location) => {
+    replies.push({ status: 302, headers: { location } });
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(
+      /redirected to a disallowed/u,
+    );
+    expect(network.lookup).toHaveBeenCalledTimes(1);
+    expect(network.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses private DNS on a same-host redirect instead of trusting the earlier answer", async () => {
+    replies.push({ status: 301, headers: { location: "/next" } });
+    network.lookup
+      .mockResolvedValueOnce([{ address: "132.239.1.2", family: 4 }])
+      .mockResolvedValueOnce([{ address: "127.0.0.1", family: 4 }]);
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/public network addresses/u);
+    expect(network.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows four redirects and refuses a fifth", async () => {
+    for (let i = 0; i < 4; i += 1)
+      replies.push({ status: 302, headers: { location: `/step${i}` } });
+    replies.push({});
+    expect(await readPublicPage(sourceUrl, signal())).toMatchObject({ redirectCount: 4 });
+    expect(network.request).toHaveBeenCalledTimes(5);
+    network.request.mockClear();
+    for (let i = 0; i < 5; i += 1)
+      replies.push({ status: 302, headers: { location: `/step${i}` } });
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/four-redirect limit/u);
+    expect(network.request).toHaveBeenCalledTimes(5);
+  });
+
+  it.each([
+    "0.0.0.0",
+    "10.1.2.3",
+    "100.64.0.1",
+    "100.127.255.254",
+    "127.1.2.3",
+    "169.254.169.254",
+    "172.16.0.1",
+    "172.31.255.254",
+    "192.0.0.9",
+    "192.0.2.1",
+    "192.168.1.1",
+    "198.18.0.1",
+    "198.19.0.1",
+    "198.51.100.1",
+    "203.0.113.1",
+    "224.0.0.1",
+    "240.0.0.1",
+    "255.255.255.255",
+    "::",
+    "::1",
+    "::ffff:127.0.0.1",
+    "::ffff:8.8.8.8",
+    "64:ff9b::a00:1",
+    "fc00::1",
+    "fd00::1",
+    "fe80::1",
+    "ff02::1",
+    "2001::1",
+    "2001:2::1",
+    "2001:db8::1",
+    "2002:7f00:1::1",
+    "3fff::1",
+  ])("rejects a special-purpose or reserved DNS answer: %s", async (address) => {
+    network.lookup.mockResolvedValue([{ address, family: address.includes(":") ? 6 : 4 }]);
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/public network addresses/u);
+    expect(network.request).not.toHaveBeenCalled();
+  });
+
+  it("rejects mixed public/private DNS answers, empty answers and malformed address records", async () => {
+    for (const records of [
+      [
+        { address: "132.239.1.2", family: 4 },
+        { address: "10.0.0.1", family: 4 },
+      ],
+      [],
+      [{ address: "not-an-address", family: 4 }],
+      [{ address: "132.239.1.2", family: 6 }],
+    ]) {
+      network.lookup.mockResolvedValue(records);
+      await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(
+        /public network addresses/u,
+      );
+    }
+    expect(network.request).not.toHaveBeenCalled();
+  });
+
+  it("returns bounded text and deduplicated links with explicit truncation fields", async () => {
+    replies.push({
+      body: `<base href="/handbook/"><h1>Long policy</h1><p>${"x".repeat(30_000)}</p>${Array.from({ length: 45 }, (_, i) => `<a href="policy${i}">Policy ${i}</a><a href="/handbook/policy${i}">Duplicate</a>`).join("")}`,
+    });
+    const page = await readPublicPage(sourceUrl, signal());
+    expect(page.text).toHaveLength(20_000);
+    expect(page.links).toHaveLength(40);
+    expect(page.links[0]).toEqual({
+      title: "Policy 0",
+      url: "https://blink.ucsd.edu/handbook/policy0",
+    });
+    expect(page.links.at(-1)).toEqual({
+      title: "Policy 39",
+      url: "https://blink.ucsd.edu/handbook/policy39",
+    });
+    expect(page).toMatchObject({ truncated: true, textTruncated: true, linksTruncated: true });
+  });
+
+  it("rejects a sub-MiB deeply nested page promptly, before output truncation", async () => {
+    const body = `<main>${"<div>".repeat(90_000)}Campus policy${"</div>".repeat(90_000)}</main>`;
+    expect(Buffer.byteLength(body)).toBeLessThan(1024 * 1024);
+    replies.push({ body });
+    const started = performance.now();
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toMatchObject({
+      _tag: "PluginFailure",
+      code: "public_page_html_limit",
+      retryable: false,
+      message: expect.stringMatching(/HTML.*limit/u),
+    });
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
+  it("retains a shallow MiB-sized page within the parsing budget", async () => {
+    replies.push({ body: `<main>${`<p>${"Campus policy ".repeat(80)}</p>`.repeat(1_000)}</main>` });
+    const started = performance.now();
+    await expect(readPublicPage(sourceUrl, signal())).resolves.toMatchObject({
+      textTruncated: true,
+      text: expect.stringContaining("Campus policy"),
+    });
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
+  it("honors caller cancellation during HTML parsing after the response completes", async () => {
+    replies.push({ body: `<p>${"Campus policy ".repeat(80_000)}</p>` });
+    const controller = new AbortController();
+    const pending = readPublicPage(sourceUrl, controller.signal);
+    setImmediate(() => controller.abort());
+    await expect(pending).rejects.toThrow("Public page read cancelled.");
+    expect(network.destroyAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks elapsed time during parsing even before the deadline timer can fire", async () => {
+    vi.useFakeTimers({ toFake: ["performance"] });
+    replies.push({ body: `<p>${"Campus policy ".repeat(80_000)}</p>` });
+    const pending = readPublicPage(sourceUrl, signal());
+    setImmediate(() => vi.advanceTimersByTime(20_000));
+    await expect(pending).rejects.toThrow("Public page read timed out after 20 seconds.");
+  });
+
+  it.each(["text/plain; charset=utf-8", "text/plain; charset=windows-1252"])(
+    "accepts plain text: %s",
+    async (contentType) => {
+      replies.push({
+        headers: { "content-type": contentType },
+        body: "Campus policy\n\nOriginal public text.",
+      });
+      expect(await readPublicPage(sourceUrl, signal())).toMatchObject({
+        contentType: "text/plain",
+        text: "Campus policy\n\nOriginal public text.",
+        links: [],
+      });
+    },
+  );
+
+  it.each(["application/pdf", "image/png", "application/json", "application/octet-stream", ""])(
+    "refuses non-page content type: %s",
+    async (contentType) => {
+      replies.push({ headers: { "content-type": contentType } });
+      await expect(readPublicPage(sourceUrl, signal())).rejects.toMatchObject({
+        _tag: "PluginFailure",
+        code: "public_page_unsupported_content",
+        retryable: false,
+        message: expect.stringMatching(/not an HTML or plain-text page/u),
+      });
+      expect(streams[0]?.destroyed).toBe(true);
+    },
+  );
+
+  it.each(["gzip", "br", "deflate", "gzip, br"])(
+    "rejects compressed responses rather than risking inflated content: %s",
+    async (encoding) => {
+      replies.push({ headers: { "content-encoding": encoding } });
+      await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/Compressed responses/u);
+    },
+  );
+
+  it("checks declared bytes before reading and streamed bytes without Content-Length", async () => {
+    replies.push({ headers: { "content-length": String(2 * 1024 * 1024 + 1) }, holdOpen: true });
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toMatchObject({
+      _tag: "PluginFailure",
+      code: "public_page_response_too_large",
+      retryable: false,
+    });
+    replies.push({
+      headers: { "content-type": "text/plain" },
+      body: [Buffer.alloc(1024 * 1024, "x"), Buffer.alloc(1024 * 1024 + 1, "x")],
+    });
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/2 MiB/u);
+    expect(streams.every((stream) => stream.destroyed)).toBe(true);
+  });
+
+  it.each([
+    "<title>UC San Diego Sign In</title><p>Please continue</p>",
+    "<title>Sign In</title><p>Use your campus account.</p>",
+    "<title>SSO</title><p>Please continue with your campus account.</p>",
+    "<title>Single Sign-On</title><p>Sign in to continue.</p>",
+    "<title>Sign In | UC San Diego</title><p>Please continue</p>",
+    "<title>Campus portal</title><p>Sign in to continue.</p>",
+    "<title>Campus portal</title><p>Please log in to continue.</p>",
+    "<title>Just a moment...</title><p>Checking your browser</p>",
+    "<form><input type='password'></form><p>University portal</p>",
+    "<meta http-equiv='refresh' content='0;url=/login'><p>Redirecting</p>",
+    "<div>Verify that you are human</div>",
+    "<title>Browser verification</title><p>Enable JavaScript and cookies.</p>",
+    "<script>document.write('JS-only content')</script>",
+  ])("refuses sign-in, browser gates and empty JS pages", async (body) => {
+    replies.push({ body });
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/interstitial/u);
+  });
+
+  it.each([
+    "<h1>Campus portal</h1><p>Sign in to continue.</p>",
+    "<h2>Campus portal</h2><div>Please log in to continue.</div><h3>Account access</h3>",
+    "<h1>Campus portal</h1><p>Please <strong>sign in</strong> to continue...</p>",
+    "<h1>Campus portal</h1><section><div><p>Sign in<br>to continue.</p></div></section>",
+    "<h1>Campus portal</h1><p>Sign in to continue.</p><footer>UC San Diego. All rights reserved.</footer>",
+    '<header><h1>Campus portal</h1></header><p>Log in to continue.</p><div role="contentinfo">UC San Diego</div>',
+  ])(
+    "refuses a standalone sign-in prompt surrounded by headings or footer text: %s",
+    async (body) => {
+      replies.push({ body: `<title>Campus portal</title><main>${body}</main>` });
+      await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/interstitial/u);
+      expect(network.request).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("rejects a branded sign-in gate even with a long body", async () => {
+    replies.push({
+      body: `<title>UC San Diego Sign In</title><main>Please sign in to continue.
+      ${"This service is available to campus account holders. ".repeat(40)}</main>`,
+    });
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/interstitial/u);
+  });
+
+  it.each([
+    '<form><input type="password"></form>',
+    '<meta http-equiv="refresh" content="0;url=/login">',
+  ])("keeps inspecting for hard gate signals after finding a base: %s", async (gate) => {
+    replies.push({
+      body: `<base href="/help/"><title>How to sign in to campus services</title><main>
+      <h1>Campus account instructions</h1><p>${"Read these public setup instructions. ".repeat(50)}</p>
+      ${gate}</main>`,
+    });
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/interstitial/u);
+    expect(network.request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    "How to sign in to campus services",
+    "Campus login instructions",
+    "Using single sign-on for campus services",
+    "Single Sign-On (SSO): setup and troubleshooting",
+  ])("retains a public instructional article about authentication: %s", async (title) => {
+    replies.push({
+      body: `<title>${title}</title><main><h1>${title}</h1>
+      <p>This public guide explains campus account access. When a service says sign in to continue,
+      open the official service page and choose your campus account.</p>
+      <p>If it says log in to continue, follow the same steps. Keep your recovery information current,
+      approve your own multifactor prompt, and contact the service desk if you need help.</p>
+      <a href="/help/accounts.html">Account help</a></main>`,
+    });
+    const page = await readPublicPage(sourceUrl, signal());
+    expect(page).toMatchObject({
+      title,
+      text: expect.stringContaining("sign in to continue"),
+      links: [{ title: "Account help", url: "https://blink.ucsd.edu/help/accounts.html" }],
+    });
+    expect(page.text.length).toBeLessThan(1_500); // Also exercises the text gate, not just the title.
+    expect(network.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains instructional content beginning with a quoted gate instruction", async () => {
+    replies.push({
+      body: `<title>Campus account help</title><main><p>Sign in to continue.</p>
+      <p>This message appears when you open a service that needs a campus account. Choose your
+      institution, enter your account on the official page, and approve your own multifactor prompt.
+      If the message repeats, close the old tab and contact the service desk for account help.</p></main>`,
+    });
+    await expect(readPublicPage(sourceUrl, signal())).resolves.toMatchObject({
+      title: "Campus account help",
+      text: expect.stringContaining("This message appears"),
+    });
+  });
+
+  it.each([
+    "<p>When the portal says <q>Sign in to continue.</q>, open the official campus service page.</p>",
+    "<p>Sign in to continue.</p><p>This message means the service needs a campus account.</p>",
+    "<p>This public guide explains a common account prompt.</p><p>Please log in to continue.</p>",
+    "<p>Sign in to continue reading this public guide about campus account setup.</p>",
+  ])("retains explanatory prose around a sign-in prompt: %s", async (body) => {
+    replies.push({
+      body: `<title>Campus account help</title><main><h1>Campus account help</h1>${body}</main>
+      <footer>UC San Diego</footer>`,
+    });
+    const page = await readPublicPage(sourceUrl, signal());
+    expect(page.title).toBe("Campus account help");
+    expect(page.text).toMatch(/(?:[Ss]ign|log) in to continue/u);
+    expect(page.text.length).toBeLessThan(1_500);
+    expect(network.request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["Loading...", "Loading…", "Please wait.", "Please enable JavaScript to continue."])(
+    "rejects an application shell rather than reporting article content: %s",
+    async (text) => {
+      replies.push({
+        body: `<title>UCSD Knowledge Article</title><div>${text}</div><script>app()</script>`,
+      });
+      await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(
+        /application loading shell/u,
+      );
+    },
+  );
+
+  it("retains real short content that mentions loading", async () => {
+    replies.push({
+      body: "<title>Loading zones</title><main>Loading zones require a permit.</main>",
+    });
+    await expect(readPublicPage(sourceUrl, signal())).resolves.toMatchObject({
+      text: "Loading zones require a permit.",
+    });
+  });
+
+  it("rejects binary/PDF bytes mislabeled as text and invalid encodings", async () => {
+    for (const body of ["%PDF-1.7 fake PDF", "binary\u0000data", Buffer.from([0xff])]) {
+      replies.push({ headers: { "content-type": "text/plain" }, body });
+      await expect(readPublicPage(sourceUrl, signal())).rejects.toThrow(/binary|encoding/u);
+    }
+  });
+
+  it("cancels before lookup and while DNS is pending without starting a connection", async () => {
+    const first = new AbortController();
+    first.abort({ _tag: "PluginFailure", message: "secret abort reason" });
+    await expect(readPublicPage(sourceUrl, first.signal)).rejects.toEqual({
+      _tag: "PluginFailure",
+      code: "public_page_cancelled",
+      message: "Public page read cancelled.",
+      retryable: false,
+    });
+    expect(network.lookup).not.toHaveBeenCalled();
+    let finishLookup!: (value: { address: string; family: number }[]) => void;
+    network.lookup.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishLookup = resolve;
+        }),
+    );
+    const second = new AbortController();
+    const pending = readPublicPage(sourceUrl, second.signal);
+    second.abort();
+    await expect(pending).rejects.toThrow(/cancelled/u);
+    finishLookup([{ address: "132.239.1.2", family: 4 }]);
+    await Promise.resolve();
+    expect(network.request).not.toHaveBeenCalled();
+  });
+
+  it("cancels an in-flight response and tears down its private agent", async () => {
+    replies.push({ holdOpen: true });
+    const controller = new AbortController();
+    const pending = readPublicPage(sourceUrl, controller.signal);
+    await vi.waitFor(() => expect(network.request).toHaveBeenCalledTimes(1));
+    controller.abort(new Error("private details"));
+    await expect(pending).rejects.toThrow("Public page read cancelled.");
+    expect(network.destroyAgent).toHaveBeenCalledTimes(1);
+    expect(streams[0]?.destroyed).toBe(true);
+  });
+
+  it("enforces one 20-second deadline including DNS lookup", async () => {
+    vi.useFakeTimers();
+    network.lookup.mockImplementation(() => new Promise(() => undefined));
+    const pending = readPublicPage(sourceUrl, signal());
+    const assertion = expect(pending).rejects.toEqual({
+      _tag: "PluginFailure",
+      code: "public_page_timeout",
+      message: "Public page read timed out after 20 seconds.",
+      retryable: true,
+    });
+    await vi.advanceTimersByTimeAsync(20_000);
+    await assertion;
+    expect(network.request).not.toHaveBeenCalled();
+  });
+
+  it("keeps the original deadline while reading a response after slow DNS", async () => {
+    vi.useFakeTimers();
+    replies.push({ holdOpen: true });
+    network.lookup.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve([{ address: "132.239.1.2", family: 4 }]), 12_000);
+        }),
+    );
+    const pending = readPublicPage(sourceUrl, signal());
+    const assertion = expect(pending).rejects.toThrow(/timed out after 20 seconds/u);
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(network.request).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(8_000);
+    await assertion;
+    expect(network.destroyAgent).toHaveBeenCalledTimes(1);
+    expect(streams[0]?.destroyed).toBe(true);
+  });
+
+  it("sanitizes DNS and transport failures instead of echoing upstream details", async () => {
+    network.lookup.mockRejectedValueOnce({ _tag: "PluginFailure", message: "secret dns details" });
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toEqual({
+      _tag: "PluginFailure",
+      code: "public_page_network_error",
+      message: "Unable to read the public source. Check the URL or try again later.",
+      retryable: true,
+    });
+    network.request.mockImplementationOnce(() => {
+      throw new Error("secret transport details");
+    });
+    await expect(readPublicPage(sourceUrl, signal())).rejects.toMatchObject({
+      _tag: "PluginFailure",
+      code: "public_page_network_error",
+      retryable: true,
+    });
+    expect(network.destroyAgent).toHaveBeenCalledTimes(1);
+  });
+});
