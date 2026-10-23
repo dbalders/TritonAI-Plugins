@@ -52,6 +52,7 @@ test("enforces the published provider host-runtime boundaries", () => {
     "4.0.0-rc.0",
     "4.0.0",
     "4.0.4",
+    "4.0.5",
     "4.1.0",
     "4.0.4+build.1",
   ]) {
@@ -94,9 +95,9 @@ test("accepts a coherently unpatched Effect runtime", () => {
   assert.equal(identity.snapshotKey, effectSelector);
 });
 
-test("binds stable Effect 4.0.4 to the exact installed runtime and lockfile", () => {
-  const fixture = runtimeFixture({ version: "4.0.4", patched: false });
-  assert.equal(resolveEffectRuntimeIdentity(fixture).version, "4.0.4");
+test("binds stable Effect 4.0.5 to the exact installed runtime and lockfile", () => {
+  const fixture = runtimeFixture({ version: "4.0.5", patched: false });
+  assert.equal(resolveEffectRuntimeIdentity(fixture).version, "4.0.5");
   fixture.installedPackageVersion = effectVersion;
   assert.throws(() => resolveEffectRuntimeIdentity(fixture), /installed Effect/u);
 });
