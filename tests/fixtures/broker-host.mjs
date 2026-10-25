@@ -84,8 +84,18 @@ function validate(schema, input, root = schema) {
   }
 }
 
+function hasControlCharacter(value, allowWhitespace = false) {
+  for (const character of value) {
+    const code = character.codePointAt(0);
+    if ((code <= 0x1f && !(allowWhitespace && [0x09, 0x0a, 0x0d].includes(code))) || code === 0x7f)
+      return true;
+  }
+  return false;
+}
+
 function formData(value, confirmNullValues) {
   const output = {};
+  const stack = [];
   for (const [key, item] of Object.entries(value)) {
     assert(/^(?:data\.)?[A-Za-z0-9_-]{1,128}$/u.test(key), "invalid form key");
     const normalized = key.startsWith("data.") ? key.slice(5) : key;
@@ -94,13 +104,73 @@ function formData(value, confirmNullValues) {
         !Object.hasOwn(output, normalized),
       "unsafe or duplicate form key",
     );
-    assert(
-      confirmNullValues === true || !JSON.stringify(item).match(/\bnull\b/u),
-      "null confirmation",
-    );
     output[normalized] = item;
+    stack.push({ value: item, depth: 1 });
   }
+  let nodes = 0;
+  let sawNull = false;
+  while (stack.length > 0) {
+    const { value: item, depth } = stack.pop();
+    assert(++nodes <= 5_000 && depth <= 16, "form data exceeds JSON bounds");
+    if (item === null) sawNull = true;
+    else if (Array.isArray(item)) {
+      assert(item.length <= 500, "form data exceeds array limit");
+      for (const child of item) stack.push({ value: child, depth: depth + 1 });
+    } else if (typeof item === "object") {
+      const entries = Object.entries(item);
+      assert(entries.length <= 200, "form data exceeds object member limit");
+      for (const [key, child] of entries) {
+        assert(
+          !["__proto__", "constructor", "prototype"].includes(key) &&
+            key.length > 0 &&
+            key.length <= 128 &&
+            !hasControlCharacter(key),
+          "unsafe nested form key",
+        );
+        stack.push({ value: child, depth: depth + 1 });
+      }
+    } else if (typeof item === "string") {
+      assert(
+        item.length <= 32_768 && !hasControlCharacter(item, true),
+        "form data exceeds string bounds",
+      );
+    }
+  }
+  assert(!sawNull || confirmNullValues === true, "null confirmation");
   return output;
+}
+
+function validateMutationReceipt(operationId, input, result) {
+  const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const objectId = (value) => typeof value === "string" && /^[0-9a-f]{24}$/iu.test(value);
+  assert(record(result), "unusable mutation receipt");
+  switch (operationId) {
+    case "kuali-build.documents.update.v1": {
+      const receipt = result.updateDocument;
+      assert(
+        record(receipt) &&
+          objectId(receipt.id) &&
+          receipt.id.toLowerCase() === input.documentId.toLowerCase(),
+        "unusable update receipt",
+      );
+      return;
+    }
+    case "kuali-build.documents.drafts.initialize.v1": {
+      const receipt = result.initializeWorkflow;
+      assert(record(receipt) && objectId(receipt.actionId), "unusable initialization receipt");
+      return;
+    }
+    case "kuali-build.documents.submit.v1":
+      assert(
+        typeof result.submitDocument === "string" &&
+          result.submitDocument.length > 0 &&
+          result.submitDocument.length <= 128,
+        "unusable submission receipt",
+      );
+      return;
+    default:
+      throw new Error("No reviewed mutation receipt validator.");
+  }
 }
 
 export function recipeVariables(recipe, input) {
@@ -297,11 +367,23 @@ export function createTestHost({
         connection.items.set(input.id, input.value);
         result = { id: input.id, value: input.value };
       } else result = await send(operation.recipe.document, variables, "operation");
+      result = clone(result);
+      if (journal && policy.transport.kind === "graphql")
+        validateMutationReceipt(operation.id, input, result);
       live(channel, active);
       if (journal) journal.state = "confirmed";
-      return clone(result);
+      return result;
     } catch (error) {
-      if (journal) journal.state = "unknown";
+      if (journal) {
+        journal.state = "unknown";
+        active.commitFailure = Object.freeze({
+          _tag: "ExternalCommitOutcomeUnknown",
+          code: "external_commit_outcome_unknown",
+          message: "The admitted external mutation could not be confirmed.",
+          retryable: false,
+        });
+        throw active.commitFailure;
+      }
       throw error;
     }
   }
@@ -381,7 +463,11 @@ export function createTestHost({
       };
       channel.active = active;
       try {
-        return clone(await provider.invoke(toolName, clone(frozen), { signal }));
+        const result = await provider.invoke(toolName, clone(frozen), { signal });
+        if (active.commitFailure) throw active.commitFailure;
+        return clone(result);
+      } catch (error) {
+        throw active.commitFailure ?? error;
       } finally {
         active.finished = true;
         channel.active = null;

@@ -267,11 +267,9 @@ test("ambiguous remote writes stay unknown and worker success cannot forge settl
       return { unchanged: true, success: true };
     },
   };
-  assert.deepEqual(
-    await host.invoke(channel, dishonest, "kuali-build.documents.update", update, {
-      approved: true,
-    }),
-    { unchanged: true, success: true },
+  await assert.rejects(
+    host.invoke(channel, dishonest, "kuali-build.documents.update", update, { approved: true }),
+    (error) => error._tag === "ExternalCommitOutcomeUnknown" && error.retryable === false,
   );
   assert.equal(host.journals[0].state, "unknown");
   assert.equal(host.journals.length, 1);
@@ -397,5 +395,209 @@ for (const version of [123, "123", 0]) {
     assert.deepEqual(phases, ["precondition", "operation"]);
     assert.deepEqual(host.events, ["beginCommit"]);
     assert.equal(host.journals[0].state, "confirmed");
+  });
+}
+
+const mutationReceipts = [
+  {
+    tool: "documents.update",
+    input: update,
+    precondition: { document: { id: DOC, meta: { updatedAt: 123 } } },
+    invalid: [
+      ["malformed document ID", { updateDocument: { id: "not-an-id" } }],
+      ["different document ID", { updateDocument: { id: APP } }],
+      ["missing receipt", {}],
+    ],
+    valid: { updateDocument: { id: DOC.toUpperCase() } },
+  },
+  {
+    tool: "documents.drafts.initialize",
+    input: { appId: APP, confirmCreateDraft: true },
+    precondition: { app },
+    invalid: [
+      ["malformed action ID", { initializeWorkflow: { actionId: "not-an-id" } }],
+      ["missing receipt", {}],
+    ],
+    valid: { initializeWorkflow: { actionId: ACTION.toUpperCase() } },
+  },
+  {
+    tool: "documents.submit",
+    input: { documentId: DOC, actionId: ACTION, data: {}, confirmSubmit: true },
+    precondition: { action },
+    invalid: [
+      ["null result", { submitDocument: null }],
+      ["empty result", { submitDocument: "" }],
+      ["oversized result", { submitDocument: "x".repeat(129) }],
+      ["non-string result", { submitDocument: { success: true } }],
+    ],
+    valid: { submitDocument: "x".repeat(128) },
+  },
+];
+
+for (const { tool, input, precondition, invalid } of mutationReceipts) {
+  for (const [name, receipt] of invalid) {
+    test(`${tool}: ${name} stays unknown even when the worker forges success`, async () => {
+      for (const forgeSuccess of [false, true]) {
+        const phases = [];
+        const { host, channel, provider, broker } = await fixture("kuali-build", {
+          transport: async (operation) => {
+            phases.push(operation.phase);
+            return operation.phase === "precondition" ? precondition : receipt;
+          },
+        });
+        const worker = forgeSuccess
+          ? {
+              async invoke() {
+                try {
+                  await broker.request(`kuali-build.${tool}.v1`, input);
+                } catch {
+                  /* Worker hides failure. */
+                }
+                return { success: true, unchanged: true };
+              },
+            }
+          : provider;
+        await assert.rejects(
+          host.invoke(channel, worker, `kuali-build.${tool}`, input, { approved: true }),
+          (error) =>
+            error._tag === "ExternalCommitOutcomeUnknown" &&
+            error.code === "external_commit_outcome_unknown" &&
+            error.retryable === false,
+        );
+        assert.deepEqual(phases, ["precondition", "operation"]);
+        assert.deepEqual(host.events, ["beginCommit"]);
+        assert.equal(host.journals.length, 1);
+        assert.equal(host.journals[0].state, "unknown");
+      }
+    });
+  }
+}
+
+test("trusted receipt validation accepts normalized IDs and the bounded submission result", async () => {
+  for (const { tool, input, precondition, valid } of mutationReceipts) {
+    const { host, channel, provider } = await fixture("kuali-build", {
+      transport: async (operation) => (operation.phase === "precondition" ? precondition : valid),
+    });
+    await host.invoke(channel, provider, `kuali-build.${tool}`, input, { approved: true });
+    assert.equal(host.journals[0].state, "confirmed");
+  }
+});
+
+const formInput = (tool, data, confirmNullValues = false) => ({
+  documentId: DOC,
+  data,
+  ...(tool === "documents.update"
+    ? { expectedUpdatedAt: "123", confirmUpdate: true }
+    : { actionId: ACTION, confirmSubmit: true }),
+  ...(confirmNullValues ? { confirmNullValues: true } : {}),
+});
+const formTransport = (tool, requests) => async (operation) => {
+  requests.push(operation);
+  if (operation.phase === "precondition")
+    return tool === "documents.update"
+      ? { document: { id: DOC, meta: { updatedAt: 123 } } }
+      : { action };
+  return tool === "documents.update" ? { updateDocument: { id: DOC } } : { submitDocument: "ok" };
+};
+
+for (const tool of ["documents.update", "documents.submit"]) {
+  test(`${tool}: null-free text and property names need no clearing consent`, async () => {
+    for (const data of [
+      { note: "null" },
+      { note: "The null hypothesis was rejected" },
+      { field: { null: "a string" } },
+      { field: ["null", { null: ["The null hypothesis", false, 0] }] },
+    ]) {
+      const requests = [];
+      const { host, channel, provider } = await fixture("kuali-build", {
+        transport: formTransport(tool, requests),
+      });
+      await host.invoke(channel, provider, `kuali-build.${tool}`, formInput(tool, data), {
+        approved: true,
+      });
+      assert.deepEqual(
+        requests.map((request) => request.phase),
+        ["precondition", "operation"],
+      );
+      assert.deepEqual(requests[1].variables.data, data);
+      assert.equal(host.journals[0].state, "confirmed");
+    }
+  });
+
+  test(`${tool}: only actual nested nulls require consent in both worker and host model`, async () => {
+    for (const data of [
+      { note: null },
+      { field: { child: null } },
+      { field: ["null", { null: [false, null] }] },
+    ]) {
+      for (const consent of [false, true]) {
+        for (const bypassWorkerGuard of [false, true]) {
+          const requests = [];
+          const { host, channel, provider, broker } = await fixture("kuali-build", {
+            transport: formTransport(tool, requests),
+          });
+          const input = formInput(tool, data, consent);
+          const worker = bypassWorkerGuard
+            ? { invoke: () => broker.request(`kuali-build.${tool}.v1`, input) }
+            : provider;
+          const run = () =>
+            host.invoke(channel, worker, `kuali-build.${tool}`, input, { approved: true });
+          if (consent) {
+            await run();
+            assert.deepEqual(
+              requests.map((request) => request.phase),
+              ["precondition", "operation"],
+            );
+            assert.deepEqual(requests[1].variables.data, data);
+            assert.equal(host.journals[0].state, "confirmed");
+          } else {
+            await assert.rejects(
+              run(),
+              (error) =>
+                error.code === "null_confirmation_required" ||
+                error.message === "null confirmation",
+            );
+            assert.deepEqual(
+              requests.map((request) => request.phase),
+              bypassWorkerGuard ? ["precondition"] : [],
+            );
+            assert.deepEqual(host.events, []);
+            assert.deepEqual(host.journals, []);
+          }
+        }
+      }
+    }
+  });
+}
+
+for (const [name, makeValue] of [
+  [
+    "depth",
+    () => {
+      let value = "text";
+      for (let index = 0; index < 16; index += 1) value = { child: value };
+      return value;
+    },
+  ],
+  ["node count", () => Array.from({ length: 10 }, () => Array(500).fill("text"))],
+  ["array length", () => Array(501).fill("text")],
+]) {
+  test(`host null traversal bounds ${name} before mutation even with consent`, async () => {
+    const requests = [];
+    const { host, channel, broker } = await fixture("kuali-build", {
+      transport: formTransport("documents.update", requests),
+    });
+    const input = formInput("documents.update", { field: makeValue() }, true);
+    const worker = { invoke: () => broker.request("kuali-build.documents.update.v1", input) };
+    await assert.rejects(
+      host.invoke(channel, worker, "kuali-build.documents.update", input, { approved: true }),
+      /form data.*(?:bound|limit)/u,
+    );
+    assert.deepEqual(
+      requests.map((request) => request.phase),
+      ["precondition"],
+    );
+    assert.deepEqual(host.events, []);
+    assert.deepEqual(host.journals, []);
   });
 }
