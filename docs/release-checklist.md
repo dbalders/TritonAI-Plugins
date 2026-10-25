@@ -14,6 +14,15 @@
 7. Review dependency advisories, licenses, lifecycle scripts, and lockfile changes.
 8. Run structured review and the requested security review for the changed boundary.
 
+## Broker SDK2 admission
+
+Require the positive exact-clean-Harness contract gate against an implemented SDK2 host, separately
+reviewed host policy digests, source/build/artifact provenance and native OS acceptance before
+including SDK2 packages in a release. Preserve F05 exact approved payload/target/receipt bindings.
+A recipe in a signed plugin release cannot authorize new operations. Older hosts must reject the
+ABI and must never execute a legacy fallback. Record unmigrated providers as unsupported for
+isolated execution. Package fixture success does not satisfy these host/native/release gates.
+
 ## Plugin additions and updates
 
 1. Confirm the manifest, package version, API/manifest contract, capabilities, skills, provider ID,

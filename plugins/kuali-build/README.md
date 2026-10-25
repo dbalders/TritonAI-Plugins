@@ -1,68 +1,38 @@
 # UC San Diego Kuali Build
 
-This dependency-free TritonAI plugin provides bounded reads and tightly allowlisted document writes
-for the UC San Diego Kuali Build tenant at `https://ucsd.kualibuild.com`. It calls the documented
-Kuali Build GraphQL endpoint directly over HTTPS and does not install or launch Kuali Connector.
+SDK2 provides the existing 11 bounded Kuali tools through host-owned broker operations. It requires
+a Harness host that implements SDK2, independently approves this package's recipe digest, and
+supports verified worker isolation. Older hosts reject version 2.0.0. There is no legacy fallback.
 
 ## Connection
 
-Open the UCSD Kuali Build [API Keys page](https://ucsd.kualibuild.com/build/space/favorites/account/api-keys),
-sign in if prompted, create a new API key, and copy the full key when Kuali displays it. Then enable
-the plugin, select **Open API key settings** if you still need the page, paste the key, and select
-**Connect**. The key is validated against the UCSD tenant before it is stored through the Harness
-package-scoped secret store. Kuali ties each key to a user and applies that user's existing
-permissions.
+Use the host's connection flow to create or select a user-scoped Kuali API key and enable read or
+opt-in write access. The host validates and stores the credential for the selected connection;
+plugin code receives no API key. Existing package-scoped credentials require an explicit host
+migration that preserves their permissions, or reconnecting. This package does not migrate them.
 
-The only accepted tenant configuration is `https://ucsd.kualibuild.com`; an omitted `tenantUrl`
-defaults to that exact origin. Paths, query strings, credentials, non-HTTPS URLs, lookalike hosts,
-and alternate ports are rejected.
+The only tenant is `https://ucsd.kualibuild.com`. The host sends only reviewed GraphQL operations
+to `/app/api/v0/graphql`; the worker validates input and projects bounded results.
 
-## Scope
+## Tools and writes
 
-The plugin exposes fixed reads for Build apps, form schemas, Build documents, users, workflow
-metadata, and initialized draft actions. Its single opt-in **Create, edit, and submit Build
-documents** permission provides only the mutation shapes established by the official Build GraphQL
-guides:
+Read apps, published form schemas, document IDs/data, users, workflow metadata and draft-action
+identity with the same tool names and input schemas as version 1.1.0. Before editing, read the form
+schema to identify form keys and the document to obtain `meta.updatedAt`.
 
-- update explicitly supplied fields on an existing document;
-- initialize an empty draft for one exact app;
-- resolve the initialized draft ID from its action ID; and
-- submit that matching draft with fixed status `completed`, starting its configured workflow.
+Updates require `confirmUpdate: true` and the exact `expectedUpdatedAt`. The host checks that
+version before admitting the exact approved payload. This is a best-effort stale check, not an
+atomic compare-and-set. Nulls additionally require `confirmNullValues: true`.
 
-Document lists return IDs and pagination only; fetching form data or workflow metadata requires an
-exact document ID. It deliberately excludes Kuali Curriculum, Sponsored Programs, product datasets,
-arbitrary GraphQL, attachments, exports, administrative APIs, app/form builder operations,
-deletion, approval, denial, send-back, reassignment, withdrawal, cancellation, and secondary
-workflow administration.
+Creating a document is three steps: initialize an empty draft with `confirmCreateDraft: true`,
+resolve its document ID from the action ID, then submit the matching draft with `confirmSubmit:
+true`. Submission starts its configured workflow. The host checks the action/document binding.
+These phases are not atomic; initialization can leave an empty draft. Inspect Kuali after any
+unknown outcome before deciding on another action. Writes are never automatically retried.
 
-## Write safety and creation phases
+Arbitrary GraphQL, other tenants, attachments/exports, builder administration, deletion, approval,
+denial and secondary workflow administration remain unavailable.
 
-Every mutation requires the unified `kuali-build.write` permission, host write approval, and exactly
-one `beginCommit` call immediately before the request. Network, timeout, oversized/malformed response,
-post-commit cancellation, partial-data, and server-side ambiguity are returned as
-`external_commit_outcome_unknown`; writes are never automatically retried.
-
-Document updates require a recent `meta.updatedAt` value and explicit `confirmUpdate: true`. This is
-a best-effort stale check, not an atomic server-side compare-and-set. Null values additionally
-require `confirmNullValues: true` because they may clear data.
-
-Kuali's documented creation flow is intentionally exposed as three separate tools: initialize an
-empty draft, resolve its document ID, then submit it. These phases are not atomic. A successful
-initialization can leave an empty draft when a later phase fails, and an unknown initialization or
-submission outcome must be inspected in Kuali before any further action.
-
-Existing connections do not need to reveal or re-enter their API key when changing permissions.
-Connections that previously granted both legacy write permissions are recognized as unified write.
-A connection with only one legacy write permission is treated as read-only until the user enables
-the new unified write permission, preventing a silent expansion of access.
-
-References:
-
-- https://developers.kualibuild.com/
-- https://developers.kualibuild.com/authentication
-- https://developers.kualibuild.com/update-document
-- https://developers.kualibuild.com/start-workflow
-- https://connector.kuali.co/
-
-From the repository root, run `pnpm --filter @tritonai/plugin-kuali-build test` and
-`pnpm artifacts:sdk` to test and seal the deterministic artifact.
+References: https://developers.kualibuild.com/ and https://developers.kualibuild.com/authentication.
+Run `pnpm --filter @tritonai/plugin-kuali-build test` and `pnpm artifacts:sdk` from this repository.
+Tests use synthetic host/transport fixtures; they do not prove a live Kuali or isolated Harness run.

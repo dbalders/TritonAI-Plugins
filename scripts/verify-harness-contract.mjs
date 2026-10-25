@@ -118,7 +118,7 @@ for (const directory of await discoverPluginDirectories(pluginsRoot)) {
   const manifestPath = Path.join(packageRoot, ".tritonai-plugin", "plugin.json");
   const manifest = JSON.parse(await Fs.readFile(manifestPath, "utf8"));
   const packageJson = JSON.parse(await Fs.readFile(Path.join(packageRoot, "package.json"), "utf8"));
-  if (manifest.apiVersion === "tritonai.plugin/v1") {
+  if (["tritonai.plugin/v1", "tritonai.plugin/v2"].includes(manifest.apiVersion)) {
     const artifactRoot = Path.resolve(pluginsRoot, "..", "artifacts", directory);
     const artifactStatus = await Fs.lstat(artifactRoot);
     assert(
@@ -139,6 +139,7 @@ for (const directory of await discoverPluginDirectories(pluginsRoot)) {
     await collect(artifactRoot);
     const verified = pluginSdkArtifactModule.verifyPluginSdkArtifact(files, {
       hostNodeVersion: "24.13.1",
+      workerNodeVersion: "24.13.1",
     });
     assert(
       verified.sdkManifest.id === directory && verified.sdkManifest.version === packageJson.version,

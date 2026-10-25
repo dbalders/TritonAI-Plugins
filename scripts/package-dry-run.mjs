@@ -92,7 +92,7 @@ if (pluginDirectories.length === 0) {
       const manifestPath = Path.join(packageRoot, ".tritonai-plugin", "plugin.json");
       const packageJson = JSON.parse(await Fs.readFile(packagePath, "utf8"));
       const manifestValue = JSON.parse(await Fs.readFile(manifestPath, "utf8"));
-      if (manifestValue.apiVersion === "tritonai.plugin/v1") {
+      if (["tritonai.plugin/v1", "tritonai.plugin/v2"].includes(manifestValue.apiVersion)) {
         const outputs = [
           Path.join(temporary, "one", directory),
           Path.join(temporary, "two", directory),
@@ -100,7 +100,12 @@ if (pluginDirectories.length === 0) {
         for (const output of outputs) {
           await Fs.mkdir(Path.dirname(output), { recursive: true });
           await buildPluginArtifact(packageRoot, output);
-          const verified = await verifyPluginArtifact(output, { hostNodeVersion: "24.13.1" });
+          const verified = await verifyPluginArtifact(output, {
+            hostNodeVersion: "24.13.1",
+            sdkApiMajor: manifestValue.sdk.apiMajor,
+            hostContractLevel: 3,
+            workerNodeVersion: "24.13.1",
+          });
           if (verified.manifest.id !== directory) {
             throw new Error(`${directory}: SDK artifact manifest id does not match its directory.`);
           }
