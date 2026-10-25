@@ -40,11 +40,11 @@ function bounded(value) {
     new TextEncoder().encode(encoded).length <= BROKER_LIMITS.frameBytes,
     "Broker value exceeds the byte limit.",
   );
-  return encoded;
+  return JSON.parse(encoded);
 }
 
 export function validateBrokerManifest(value) {
-  bounded(value);
+  value = bounded(value);
   keys(value, [
     "apiVersion",
     "kind",
@@ -108,7 +108,7 @@ export function validateBrokerManifest(value) {
 }
 
 export function validateOperationRequest(value) {
-  bounded(value);
+  value = bounded(value);
   keys(value, ["protocol", "requestId", "kind", "operationId", "parameters"]);
   assert(
     value.protocol === BROKER_PROTOCOL && value.kind === "operation",
@@ -126,7 +126,7 @@ export function validateOperationRequest(value) {
 
 export function validateBrokerPolicy(value, manifestValue) {
   const manifest = validateBrokerManifest(manifestValue);
-  bounded(value);
+  value = bounded(value);
   keys(value, ["format", "id", "version", "pluginId", "credential", "transport", "operations"]);
   assert(
     value.format === BROKER_POLICY_FORMAT &&
@@ -257,7 +257,7 @@ export function validateBrokerPolicy(value, manifestValue) {
 }
 
 export function validateOperationResponse(value) {
-  bounded(value);
+  value = bounded(value);
   keys(value, ["protocol", "requestId", "kind"], value.kind === "result" ? ["value"] : ["error"]);
   assert(
     value.protocol === BROKER_PROTOCOL &&
@@ -300,9 +300,7 @@ export function createOperationBroker(transport) {
       });
       pending = true;
       try {
-        const response = validateOperationResponse(
-          await transport(JSON.parse(canonicalJson(request))),
-        );
+        const response = validateOperationResponse(await transport(request));
         assert(response.requestId === request.requestId, "Broker response request mismatch.");
         if (response.kind === "error") {
           throw Object.freeze(
@@ -321,7 +319,7 @@ export function createOperationBroker(transport) {
                 },
           );
         }
-        return JSON.parse(canonicalJson(response.value));
+        return response.value;
       } catch (error) {
         // A broken frame/transport cannot be recovered by replaying worker requests.
         failed = true;

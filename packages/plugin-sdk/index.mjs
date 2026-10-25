@@ -92,26 +92,49 @@ function assertJson(value, path = "$", depth = 0, budget = { nodes: 0 }) {
   budget.nodes += 1;
   assert(budget.nodes <= MAX_JSON_NODES, `${path} exceeds the JSON node limit.`);
   assert(depth <= 32, `${path} exceeds the JSON depth limit.`);
-  if (value === null || typeof value === "boolean" || typeof value === "string") return;
+  if (value === null || typeof value === "boolean" || typeof value === "string") return value;
   if (typeof value === "number") {
     assert(Number.isFinite(value), `${path} contains a non-finite number.`);
-    return;
+    return Object.is(value, -0) ? 0 : value;
   }
-  if (Array.isArray(value)) {
-    assert(value.length <= 1_024, `${path} exceeds the JSON array limit.`);
-    for (let index = 0; index < value.length; index += 1) {
-      assertJson(value[index], `${path}[${index}]`, depth + 1, budget);
+  const array = Array.isArray(value);
+  assert(array || plainObject(value), `${path} must contain only plain JSON values.`);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  assert(
+    keys.every((key) => typeof key === "string"),
+    `${path} contains a symbol property.`,
+  );
+  if (array) {
+    const length = descriptors.length.value;
+    assert(length <= 1_024, `${path} exceeds the JSON array limit.`);
+    assert(keys.length === length + 1, `${path} contains sparse or extra array properties.`);
+    const snapshot = [];
+    // JSON.stringify must not consult inherited toJSON hooks on detached arrays.
+    Object.setPrototypeOf(snapshot, null);
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      assert(
+        descriptor && Object.hasOwn(descriptor, "value") && descriptor.enumerable,
+        `${path}[${index}] must be an enumerable data property, not an accessor.`,
+      );
+      snapshot[index] = assertJson(descriptor.value, `${path}[${index}]`, depth + 1, budget);
     }
-    return;
+    return snapshot;
   }
-  assert(plainObject(value), `${path} must contain only plain JSON values.`);
-  const keys = Object.keys(value);
   assert(keys.length <= 1_024, `${path} exceeds the JSON object member limit.`);
-  for (const key of keys) {
+  const snapshot = Object.create(null);
+  for (const key of keys.sort()) {
     assert(key.length > 0 && key.length <= 256, `${path} contains an invalid JSON member name.`);
     assert(key !== "__proto__", `${path} contains an unsafe JSON member name.`);
-    assertJson(value[key], `${path}.${key}`, depth + 1, budget);
+    const descriptor = descriptors[key];
+    assert(
+      Object.hasOwn(descriptor, "value") && descriptor.enumerable,
+      `${path}.${key} must be an enumerable data property, not an accessor.`,
+    );
+    snapshot[key] = assertJson(descriptor.value, `${path}.${key}`, depth + 1, budget);
   }
+  return snapshot;
 }
 
 function assertSchema(schema, label) {
@@ -264,22 +287,11 @@ function assertSchema(schema, label) {
 }
 
 export function canonicalJson(value) {
-  assertJson(value);
-  function normalize(current) {
-    if (Array.isArray(current)) return current.map(normalize);
-    if (plainObject(current)) {
-      return Object.fromEntries(
-        Object.keys(current)
-          .sort()
-          .map((key) => [key, normalize(current[key])]),
-      );
-    }
-    return Object.is(current, -0) ? 0 : current;
-  }
-  return JSON.stringify(normalize(value));
+  return JSON.stringify(assertJson(value));
 }
 
 export function validateManifestV1(value) {
+  value = JSON.parse(canonicalJson(value));
   assert(plainObject(value), "Plugin manifest must be a plain object.");
   assert(exactKeys(value, MANIFEST_KEYS), "Plugin manifest contains unsupported fields.");
   assert(

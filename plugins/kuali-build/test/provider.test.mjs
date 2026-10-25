@@ -335,3 +335,67 @@ test("input guards retain bounded IDs, confirmations, null consent and safe form
     (error) => error.code === "provider_closed",
   );
 });
+
+for (const [name, expectedUpdatedAt, current] of [
+  ["missing version", "undefined", { document: { id: DOC, meta: {} } }],
+  ["null version", "null", { document: { id: DOC, meta: { updatedAt: null } } }],
+  ["boolean version", "true", { document: { id: DOC, meta: { updatedAt: true } } }],
+  [
+    "unsafe integer version",
+    "9007199254740992",
+    { document: { id: DOC, meta: { updatedAt: Number.MAX_SAFE_INTEGER + 1 } } },
+  ],
+  ["fractional version", "1.5", { document: { id: DOC, meta: { updatedAt: 1.5 } } }],
+  ["object version", "[object Object]", { document: { id: DOC, meta: { updatedAt: {} } } }],
+  ["array version", "123", { document: { id: DOC, meta: { updatedAt: [123] } } }],
+  ["wrong document ID", "123", { document: { id: APP, meta: { updatedAt: 123 } } }],
+  ["missing document ID", "123", { document: { meta: { updatedAt: 123 } } }],
+  ["missing metadata", "undefined", { document: { id: DOC } }],
+]) {
+  test(`version guard refuses ${name} before any mutation or commit admission`, async () => {
+    const phases = [];
+    const { host, channel, provider } = await fixture("kuali-build", {
+      transport: async (operation) => {
+        phases.push(operation.phase);
+        return operation.phase === "precondition" ? current : { updateDocument: { id: DOC } };
+      },
+    });
+    await assert.rejects(
+      host.invoke(
+        channel,
+        provider,
+        "kuali-build.documents.update",
+        { ...update, expectedUpdatedAt },
+        { approved: true },
+      ),
+      /document changed|invalid document/u,
+    );
+    assert.deepEqual(phases, ["precondition"]);
+    assert.deepEqual(host.events, []);
+    assert.deepEqual(host.journals, []);
+  });
+}
+
+for (const version of [123, "123", 0]) {
+  test(`version guard accepts the matching document and ${typeof version} version ${version}`, async () => {
+    const phases = [];
+    const { host, channel, provider } = await fixture("kuali-build", {
+      transport: async (operation) => {
+        phases.push(operation.phase);
+        return operation.phase === "precondition"
+          ? { document: { id: DOC.toUpperCase(), meta: { updatedAt: version } } }
+          : { updateDocument: { id: DOC } };
+      },
+    });
+    await host.invoke(
+      channel,
+      provider,
+      "kuali-build.documents.update",
+      { ...update, expectedUpdatedAt: String(version) },
+      { approved: true },
+    );
+    assert.deepEqual(phases, ["precondition", "operation"]);
+    assert.deepEqual(host.events, ["beginCommit"]);
+    assert.equal(host.journals[0].state, "confirmed");
+  });
+}

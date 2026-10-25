@@ -230,14 +230,28 @@ export function createTestHost({
       });
     };
     if (operation.precondition?.kind === "kuali-document-version") {
-      const current = await send(
-        "query KualiBuildDocumentVersion($id: ID!) { document(id: $id) { id meta } }",
-        { id: input.documentId.toLowerCase() },
-        "precondition",
+      const current = clone(
+        await send(
+          "query KualiBuildDocumentVersion($id: ID!) { document(id: $id) { id meta } }",
+          { id: input.documentId.toLowerCase() },
+          "precondition",
+        ),
       );
+      const document = current?.document;
+      const meta = document?.meta;
+      const version = meta?.updatedAt;
+      const record = (value) =>
+        value !== null && typeof value === "object" && !Array.isArray(value);
       assert(
-        current.document && String(current.document.meta?.updatedAt) === input.expectedUpdatedAt,
-        "document changed",
+        record(current) &&
+          record(document) &&
+          record(meta) &&
+          typeof document.id === "string" &&
+          document.id.toLowerCase() === input.documentId.toLowerCase() &&
+          (typeof version === "string" ||
+            (typeof version === "number" && Number.isSafeInteger(version))) &&
+          String(version) === input.expectedUpdatedAt,
+        "invalid document or document changed",
       );
     }
     if (operation.precondition?.kind === "kuali-app-exists") {

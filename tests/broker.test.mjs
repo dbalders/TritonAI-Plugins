@@ -25,8 +25,8 @@ import { fixture } from "./fixtures/provider.mjs";
 for (const id of ["synthetic-api-key", "kuali-build"]) {
   test(`${id}: SDK2 artifact binds policy, entry and exact schemas; SDK1 fails closed`, async (t) => {
     const { root, manifest, policy } = await fixture(id);
-    assert.equal(validateBrokerManifest(manifest), manifest);
-    assert.equal(validateBrokerPolicy(policy, manifest), policy);
+    assert.deepEqual(validateBrokerManifest(manifest), manifest);
+    assert.deepEqual(validateBrokerPolicy(policy, manifest), policy);
     assert.throws(() => validateManifestV1(manifest), /unsupported|Unsupported/u);
     const temp = await Fs.mkdtemp(Path.join(Os.tmpdir(), "plugin-broker-artifact-"));
     t.after(() => Fs.rm(temp, { recursive: true, force: true }));
@@ -103,7 +103,7 @@ test("broker request is strict JSON with no worker authority or transport escape
     operationId: "synthetic.items.list.v1",
     parameters: {},
   };
-  assert.equal(validateOperationRequest(request), request);
+  assert.deepEqual(validateOperationRequest(request), request);
   for (const field of [
     "url",
     "headers",
