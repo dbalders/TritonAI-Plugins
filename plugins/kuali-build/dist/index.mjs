@@ -71,25 +71,7 @@ function validateConfiguration(value) {
       `tenantUrl must be exactly ${TENANT_ORIGIN}.`,
     );
   }
-  let parsed;
-  try {
-    parsed = new URL(tenantUrl);
-  } catch {
-    throw failure("invalid_configuration", "tenantUrl is not a valid URL.");
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.hostname !== "ucsd.kualibuild.com" ||
-    parsed.port !== "" ||
-    parsed.username !== "" ||
-    parsed.password !== "" ||
-    parsed.pathname !== "/" ||
-    parsed.search !== "" ||
-    parsed.hash !== "" ||
-    parsed.origin !== TENANT_ORIGIN
-  ) {
-    throw failure("invalid_configuration", "tenantUrl must be the exact UCSD Kuali origin.");
-  }
+
 }
 
 function validateIdentifier(value, label) {

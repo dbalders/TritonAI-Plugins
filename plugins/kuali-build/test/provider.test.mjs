@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
 import { fixture } from "../../../tests/fixtures/provider.mjs";
 import { sha256 } from "../../../tests/fixtures/broker-host.mjs";
 
@@ -601,3 +602,41 @@ for (const [name, makeValue] of [
     assert.deepEqual(host.journals, []);
   });
 }
+
+test("fixed-origin configuration works without URL parsing and rejects every altered origin", () => {
+  const moduleUrl = new URL("../dist/index.mjs", import.meta.url).href;
+  const output = execFileSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `
+    import assert from "node:assert/strict";
+    import { createIntegrationProvider } from ${JSON.stringify(moduleUrl)};
+    Object.defineProperty(globalThis, "URL", { get() { throw Error("URL is unavailable in the isolated engine"); } });
+    const broker = { request: async (operationId, parameters) => {
+      assert.equal(operationId, "kuali-build.apps.list.v1");
+      assert.deepEqual(parameters, {});
+      return { apps: [], returned: 0, truncated: false };
+    }};
+    for (const configuration of [{}, {tenantUrl: "https://ucsd.kualibuild.com"}]) {
+      const provider = createIntegrationProvider({configuration, broker});
+      await provider.invoke("kuali-build.apps.list", {}, {signal: new AbortController().signal});
+    }
+    for (const tenantUrl of [
+      "http://ucsd.kualibuild.com", "https://ucsd.kualibuild.com/",
+      "https://ucsd.kualibuild.com:443", "https://user@ucsd.kualibuild.com",
+      "https://ucsd.kualibuild.com?query=1", "https://ucsd.kualibuild.com#fragment",
+      "https://ucsd.kualibuild.com.attacker.invalid", "https://UCSD.kualibuild.com",
+      {toString() { throw Error("coercion is forbidden"); }}, null
+    ]) {
+      assert.throws(() => createIntegrationProvider({configuration:{tenantUrl}, broker}),
+        error => error._tag === "PluginFailure" && error.code === "invalid_configuration");
+    }
+    console.log("2 accepted; 10 refused");
+  `,
+    ],
+    { encoding: "utf8", timeout: 5000, maxBuffer: 4096 },
+  );
+  assert.equal(output.trim(), "2 accepted; 10 refused");
+});
