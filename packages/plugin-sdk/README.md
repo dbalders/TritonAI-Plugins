@@ -12,5 +12,6 @@ authoritative; worker fields cannot select or expand them.
 
 See [the broker contract](../../docs/decisions/0002-broker-sdk-v2.md) for framing, independent host
 policy approval, credential ownership, artifact versioning and required native enforcement. SDK2
-artifacts fail closed on older hosts. Validation and ambient-dependency checks are integrity tools,
+artifact v3 requires host contract level 4 and the explicit QuickJS/Wasm execution profile.
+Older Node-targeted SDK2 descriptors and SDK1 artifacts do not establish interpreter compatibility. Validation and ambient-dependency checks are integrity tools,
 not proof of isolation. Package tests use test-owned host/transport fixtures only.

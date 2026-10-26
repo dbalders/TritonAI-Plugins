@@ -3,7 +3,8 @@ import { canonicalJson, validateManifestV1 } from "./index.mjs";
 export const BROKER_API_VERSION = "tritonai.plugin/v2";
 export const BROKER_PROTOCOL = "tritonai.plugin-broker/v1";
 export const BROKER_SDK_API_MAJOR = 2;
-export const BROKER_HOST_CONTRACT_LEVEL = 3;
+export const BROKER_HOST_CONTRACT_LEVEL = 4;
+export const BROKER_EXECUTION_PROFILE = "tritonai.quickjs-wasm/v1";
 export const BROKER_POLICY_FORMAT = "tritonai.plugin-broker-policy/v1";
 export const BROKER_LIMITS = Object.freeze({ frameBytes: 524_288, requestId: 2_147_483_647 });
 
@@ -70,7 +71,7 @@ export function validateBrokerManifest(value) {
     value.sdk?.apiMajor === BROKER_SDK_API_MAJOR &&
       Number.isSafeInteger(value.sdk.requiredHostContractLevel) &&
       value.sdk.requiredHostContractLevel >= BROKER_HOST_CONTRACT_LEVEL,
-    "Broker plugin requires SDK2 and host contract level 3 or newer.",
+    "Broker plugin requires SDK2 and host contract level 4 or newer.",
   );
   const { broker, ...legacyShape } = value;
   validateManifestV1({

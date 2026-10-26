@@ -3,7 +3,8 @@ import type { JsonObject, JsonValue, PluginManifestV1 } from "./index.js";
 export declare const BROKER_API_VERSION: "tritonai.plugin/v2";
 export declare const BROKER_PROTOCOL: "tritonai.plugin-broker/v1";
 export declare const BROKER_SDK_API_MAJOR: 2;
-export declare const BROKER_HOST_CONTRACT_LEVEL: 3;
+export declare const BROKER_HOST_CONTRACT_LEVEL: 4;
+export declare const BROKER_EXECUTION_PROFILE: "tritonai.quickjs-wasm/v1";
 export declare const BROKER_POLICY_FORMAT: "tritonai.plugin-broker-policy/v1";
 export declare const BROKER_LIMITS: Readonly<{ frameBytes: 524288; requestId: 2147483647 }>;
 export interface BrokerOperation {

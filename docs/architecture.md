@@ -9,7 +9,7 @@ contract and independently reviewed host recipes are in
 
 Each direct child of `plugins/` is one versioned package. Existing packages use the strict Harness
 v2 contract. New portable packages may use the additive plugin SDK v1 contract and sealed artifact
-format. Broker SDK2 packages use artifact v2 and a separate validation path. Older hosts reject them;
+format. Broker SDK2 packages use artifact v3, an explicit QuickJS/Wasm execution profile and a separate validation path. Older hosts reject them;
 SDK1/legacy factories do not become sandbox compatible.
 
 Repository validation rejects path and version drift, symlinks and special files, malformed skill

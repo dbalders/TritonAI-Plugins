@@ -39,18 +39,27 @@ for (const id of ["synthetic-api-key", "kuali-build"]) {
     await assert.rejects(
       verifyPluginArtifact(output, {
         sdkApiMajor: 2,
-        hostContractLevel: 3,
+        hostContractLevel: 4,
         hostNodeVersion: "24.13.1",
       }),
       /actual worker/u,
     );
     const verified = await verifyPluginArtifact(output, {
       sdkApiMajor: 2,
-      hostContractLevel: 3,
+      hostContractLevel: 4,
       hostNodeVersion: "24.13.1",
       workerNodeVersion: "24.13.1",
     });
-    assert.equal(verified.descriptor.format, "tritonai.plugin-artifact/v2");
+    assert.equal(verified.descriptor.format, "tritonai.plugin-artifact/v3");
+    await assert.rejects(
+      verifyPluginArtifact(output, {
+        sdkApiMajor: 2,
+        hostContractLevel: 3,
+        hostNodeVersion: "24.13.1",
+        workerNodeVersion: "24.13.1",
+      }),
+      /newer host contract/u,
+    );
     assert.deepEqual(verified.descriptor.target.environments, ["isolated-worker"]);
     assert.equal(verified.descriptor.target.nodeBuiltins.length, 0);
     assert.equal(verified.descriptor.broker.protocol, BROKER_PROTOCOL);
@@ -60,7 +69,7 @@ for (const id of ["synthetic-api-key", "kuali-build"]) {
     await assert.rejects(
       verifyPluginArtifact(output, {
         sdkApiMajor: 2,
-        hostContractLevel: 3,
+        hostContractLevel: 4,
         hostNodeVersion: "24.13.1",
         workerNodeVersion: "24.13.1",
       }),

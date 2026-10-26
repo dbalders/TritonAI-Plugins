@@ -86,12 +86,18 @@ implementations belong to the separately reviewed Harness host contract.
 
 ## Artifact and release admission
 
-SDK2 uses `tritonai.plugin-artifact/v2`, artifactVersion 2, target `environments: ["isolated-worker"]`
-and no runtime imports. Its descriptor adds `broker: {protocol, policy: {path, sha256, id, version}}`.
-Existing canonical manifest/schema/file hashes, regular-file/path/case/symlink checks and immutable
-snapshots remain required. The actual worker Node version must be supplied to verification;
-backend Node compatibility is not evidence about a separate worker. Tool schemas and annotations
-remain byte-for-byte equivalent to their prior canonical values.
+SDK2 uses `tritonai.plugin-artifact/v3`, artifactVersion 3 and host contract level 4.
+Its `quickjs-wasm` runtime explicitly declares `tritonai.quickjs-wasm/v1`; the standalone Node
+launcher has a separate compatibility field. This prevents a previously Node-targeted artifact
+from being silently admitted to a different JavaScript engine. The provider and broker wire ABIs
+remain SDK2 and broker v1. Hosts must reject unsupported profiles rather than infer support from
+caller-supplied options.
+
+The descriptor retains its hash-bound broker policy, canonical schema/file hashes and exact
+inventory. The actual standalone launcher Node version must be supplied to verification; backend
+Node compatibility is not evidence about a separate worker. The host independently pins its
+interpreter and guest shim. Fixed Wasm memory does not establish a hard whole-process RSS limit.
+Tool schemas and annotations remain equivalent to their prior canonical values.
 
 The source/artifact dependency check rejects known ambient network/credential references and
 imports as release hygiene. It is not malicious-code isolation. Hosts require a separately

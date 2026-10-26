@@ -14,6 +14,7 @@ import {
 } from "../packages/plugin-sdk/index.mjs";
 import {
   BROKER_API_VERSION,
+  BROKER_EXECUTION_PROFILE,
   BROKER_PROTOCOL,
   validateBrokerManifest,
   validateBrokerPolicy,
@@ -36,7 +37,7 @@ const MANIFEST_PATH = ".tritonai-plugin/plugin.json";
 const ARTIFACT_PATH = "artifact.json";
 const ENTRY_PATH = "plugin.mjs";
 const BROKER_POLICY_PATH = ".tritonai-plugin/broker-policy.json";
-export const BROKER_ARTIFACT_FORMAT = "tritonai.plugin-artifact/v2";
+export const BROKER_ARTIFACT_FORMAT = "tritonai.plugin-artifact/v3";
 const validateSdkManifest = (value) =>
   value?.apiVersion === BROKER_API_VERSION
     ? validateBrokerManifest(value)
@@ -316,7 +317,7 @@ function descriptorFor(manifest, payloads, nodeBuiltins) {
     }))
     .sort((left, right) => (left.tool < right.tool ? -1 : left.tool > right.tool ? 1 : 0));
   return {
-    artifactVersion: broker ? 2 : ARTIFACT_VERSION,
+    artifactVersion: broker ? 3 : ARTIFACT_VERSION,
     format: broker ? BROKER_ARTIFACT_FORMAT : ARTIFACT_FORMAT,
     plugin: { id: manifest.id, version: manifest.version },
     sdk: {
@@ -327,9 +328,11 @@ function descriptorFor(manifest, payloads, nodeBuiltins) {
       architecture: "any",
       environments: broker ? ["isolated-worker"] : ["electron-main", "server"],
       module: "esm",
-      node: ">=24.13.1 <25",
+      ...(broker
+        ? { launcherNode: ">=24.13.1 <25", executionProfile: BROKER_EXECUTION_PROFILE }
+        : { node: ">=24.13.1 <25" }),
       platform: "any",
-      runtime: "node",
+      runtime: broker ? "quickjs-wasm" : "node",
       nodeBuiltins,
     },
     entry: ENTRY_PATH,
@@ -482,7 +485,7 @@ function assertDescriptorShape(value) {
       value.artifactVersion === ARTIFACT_VERSION &&
       value.broker === undefined) ||
       (value.format === BROKER_ARTIFACT_FORMAT &&
-        value.artifactVersion === 2 &&
+        value.artifactVersion === 3 &&
         value.broker?.protocol === BROKER_PROTOCOL),
     "Artifact format is unsupported.",
   );
@@ -501,7 +504,7 @@ function assertDescriptorShape(value) {
         "architecture",
         "environments",
         "module",
-        "node",
+        ...(value.artifactVersion === 3 ? ["launcherNode", "executionProfile"] : ["node"]),
         "nodeBuiltins",
         "platform",
         "runtime",
@@ -511,12 +514,16 @@ function assertDescriptorShape(value) {
       Array.isArray(value.target.environments) &&
       canonicalJson(value.target.environments) ===
         canonicalJson(
-          value.artifactVersion === 2 ? ["isolated-worker"] : ["electron-main", "server"],
+          value.artifactVersion === 3 ? ["isolated-worker"] : ["electron-main", "server"],
         ) &&
       value.target.module === "esm" &&
-      value.target.node === ">=24.13.1 <25" &&
+      (value.artifactVersion === 3
+        ? value.target.launcherNode === ">=24.13.1 <25" &&
+          value.target.executionProfile === BROKER_EXECUTION_PROFILE &&
+          value.target.runtime === "quickjs-wasm" &&
+          value.target.nodeBuiltins?.length === 0
+        : value.target.node === ">=24.13.1 <25" && value.target.runtime === "node") &&
       value.target.platform === "any" &&
-      value.target.runtime === "node" &&
       Array.isArray(value.target.nodeBuiltins) &&
       value.target.nodeBuiltins.every(
         (specifier) => typeof specifier === "string" && specifier.startsWith("node:"),
@@ -573,16 +580,18 @@ export async function verifyPluginArtifact(
   );
   const descriptor = descriptorDocument.value;
   assertDescriptorShape(descriptor);
-  if (descriptor.artifactVersion === 2) {
+  if (descriptor.artifactVersion === 3) {
     assert(
       typeof workerNodeVersion === "string",
       "Broker artifact requires the actual worker Node.js version.",
     );
   }
-  const runtimeNodeVersion = descriptor.artifactVersion === 2 ? workerNodeVersion : hostNodeVersion;
+  const runtimeNodeVersion = descriptor.artifactVersion === 3 ? workerNodeVersion : hostNodeVersion;
+  const nodeTarget =
+    descriptor.artifactVersion === 3 ? descriptor.target.launcherNode : descriptor.target.node;
   assert(
-    satisfiesSemver(runtimeNodeVersion, descriptor.target.node),
-    `Plugin requires Node.js ${descriptor.target.node}; runtime is ${runtimeNodeVersion}.`,
+    satisfiesSemver(runtimeNodeVersion, nodeTarget),
+    `Plugin launcher requires Node.js ${nodeTarget}; runtime is ${runtimeNodeVersion}.`,
   );
   assert(
     descriptor.sdk.apiMajor === sdkApiMajor,

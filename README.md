@@ -13,7 +13,9 @@ skills; they cannot download or install runtime code.
 
 ## Broker SDK2 compatibility
 
-Kuali Build 2.0.0 and synthetic-api-key 2.0.0 use `tritonai.plugin/v2` and sealed artifact v2.
+Kuali Build 2.0.0 and synthetic-api-key 2.0.0 use `tritonai.plugin/v2` and sealed artifact v3.
+They require host contract level 4 and the explicit `tritonai.quickjs-wasm/v1` execution profile.
+The earlier Node-targeted descriptors cannot be relabeled as interpreter-compatible.
 Their workers receive no credentials or direct network APIs. Host-owned lifecycle, independently
 reviewed recipe digests, exact admitted tool payloads and F05 commit receipts remain authoritative.
 Older hosts must reject these packages; SDK1 and legacy Effect providers remain unchanged and are
@@ -116,7 +118,7 @@ manifest in `.tritonai-plugin/plugin.json` carries inline draft 2020-12 configur
 schemas, skills, SDK API major, and minimum host contract level. The factory module has one stable export:
 `createIntegrationProvider`.
 
-Builds produce a sealed Node 24 ESM directory with one reviewed `plugin.mjs`, declared skill files,
+SDK1 builds produce a sealed Node 24 ESM directory with one reviewed `plugin.mjs`, declared skill files,
 canonical manifest and canonical `artifact.json`. Release-ready bytes are committed at
 `artifacts/<plugin-id>/`; `pnpm artifacts:sdk` refreshes them and `pnpm artifacts:sdk:check` proves
 they exactly match source. Third-party code is bundled; static `node:`

@@ -94,7 +94,7 @@ try {
     const generatedArtifact = await verifyPluginArtifact(generated, {
       hostNodeVersion: "24.13.1",
       sdkApiMajor: sourceManifest.sdk.apiMajor,
-      hostContractLevel: 3,
+      hostContractLevel: 4,
       workerNodeVersion: "24.13.1",
     });
     if (generatedArtifact.manifest.id !== id) {
@@ -104,7 +104,7 @@ try {
       const committedArtifact = await verifyPluginArtifact(committed, {
         hostNodeVersion: "24.13.1",
         sdkApiMajor: sourceManifest.sdk.apiMajor,
-        hostContractLevel: 3,
+        hostContractLevel: 4,
         workerNodeVersion: "24.13.1",
       });
       if (committedArtifact.manifest.id !== id) {

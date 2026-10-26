@@ -103,7 +103,7 @@ if (pluginDirectories.length === 0) {
           const verified = await verifyPluginArtifact(output, {
             hostNodeVersion: "24.13.1",
             sdkApiMajor: manifestValue.sdk.apiMajor,
-            hostContractLevel: 3,
+            hostContractLevel: 4,
             workerNodeVersion: "24.13.1",
           });
           if (verified.manifest.id !== directory) {
