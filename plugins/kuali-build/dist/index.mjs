@@ -477,7 +477,6 @@ export function createIntegrationProvider(context) {
       const parsed = validateInput(toolName, input);
       // The host binds the original input, not these normalized projection values.
       const data = validateJsonTree(await factory.broker.request(`${toolName}.v1`, input));
-      context.signal.throwIfAborted();
       if (!isPlainObject(data)) throw failure("invalid_response", "The host returned an invalid Kuali data envelope.");
       switch (toolName) {
         case "kuali-build.apps.list": {

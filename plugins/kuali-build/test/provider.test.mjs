@@ -250,6 +250,55 @@ test("revocation/cancellation during host precondition prevents any admitted wri
   }
 });
 
+test("preserves host-confirmed write results when cancellation arrives with the broker response", async () => {
+  for (const [tool, input, current, response, receiptKey] of [
+    [
+      "documents.update",
+      update,
+      { document: { id: DOC, meta: { updatedAt: 123 } } },
+      { updateDocument: { id: DOC } },
+      "document",
+    ],
+    [
+      "documents.drafts.initialize",
+      { appId: APP, confirmCreateDraft: true },
+      { app },
+      { initializeWorkflow: { actionId: ACTION } },
+      "actionId",
+    ],
+    [
+      "documents.submit",
+      { documentId: DOC, actionId: ACTION, data: {}, confirmSubmit: true },
+      { action },
+      { submitDocument: "ok" },
+      "result",
+    ],
+  ]) {
+    const controller = new AbortController();
+    const { host, channel, broker, create } = await fixture("kuali-build", {
+      transport: async (request) => (request.phase === "precondition" ? current : response),
+    });
+    const provider = create({
+      configuration: {},
+      broker: {
+        request: async (...args) => {
+          const result = await broker.request(...args);
+          assert.equal(host.journals[0].state, "confirmed");
+          controller.abort();
+          return result;
+        },
+      },
+    });
+    const result = await host.invoke(channel, provider, `kuali-build.${tool}`, input, {
+      approved: true,
+      signal: controller.signal,
+    });
+    assert.ok(result[receiptKey]);
+    assert.equal(host.journals[0].state, "confirmed");
+    assert.deepEqual(host.events, ["beginCommit"]);
+  }
+});
+
 test("ambiguous remote writes stay unknown and worker success cannot forge settlement", async () => {
   const { host, channel, broker } = await fixture("kuali-build", {
     transport: async (request) => {
