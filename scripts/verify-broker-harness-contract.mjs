@@ -18,6 +18,16 @@ if (process.platform !== "darwin")
   );
 const plugins = fileURLToPath(new URL("..", import.meta.url));
 const exec = promisify(execFile);
+const pluginHead = (await exec("git", ["rev-parse", "HEAD"], { cwd: plugins })).stdout.trim();
+async function assertCleanPluginCheckout() {
+  const status = await exec("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
+    cwd: plugins,
+  });
+  const head = (await exec("git", ["rev-parse", "HEAD"], { cwd: plugins })).stdout.trim();
+  if (status.stdout.trim() !== "" || head !== pluginHead)
+    throw new Error("Plugins checkout must remain clean at one exact commit for broker proof.");
+}
+await assertCleanPluginCheckout();
 const importHost = (relative) => import(pathToFileURL(path.join(repo, relative)).href);
 const { createMacPluginSandboxRuntime } = await importHost(
   "apps/server/src/integrations/pluginSandbox/MacPluginSandboxRuntime.ts",
@@ -59,7 +69,6 @@ async function collect(directory, prefix = "") {
   }
   return result;
 }
-const pluginHead = (await exec("git", ["rev-parse", "HEAD"], { cwd: plugins })).stdout.trim();
 const pluginPatchSha256 = sha(
   (await exec("git", ["diff", "--binary", "HEAD"], { cwd: plugins })).stdout,
 );
@@ -244,6 +253,7 @@ try {
   }
   if (stored.size !== 0 || results.length !== 13 || admissions !== 8)
     throw Error("Incorrect host lifecycle or operation count");
+  await assertCleanPluginCheckout();
   const receipt = {
     harnessHead: actualHead,
     pluginsHead: pluginHead,

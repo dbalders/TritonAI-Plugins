@@ -7,7 +7,7 @@ in place would let older hosts silently supply the wrong authority. Older hosts 
 there is no backend import, same-user subprocess or raw-secret fallback.
 
 `@tritonai/plugin-sdk/broker` defines `tritonai.plugin/v2` (manifestVersion 2, SDK major 2, host
-contract level >=3) and `tritonai.plugin-broker/v1`. The import-free worker factory receives only
+contract level >=4) and `tritonai.plugin-broker/v1`. The import-free worker factory receives only
 `{configuration, broker}` and returns `id`, `invoke(toolName, input, {signal})` and optional `close`.
 It does not receive connection submissions, credential storage, token responses, write approval
 booleans or a commit callback. Host-owned connect/poll/status/disconnect owns API-key submissions,

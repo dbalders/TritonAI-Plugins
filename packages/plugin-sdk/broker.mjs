@@ -294,11 +294,12 @@ export function createOperationBroker(transport) {
       assert(!failed && !pending, "Broker channel is closed or already has an active operation.");
       const request = validateOperationRequest({
         protocol: BROKER_PROTOCOL,
-        requestId: nextRequestId++,
+        requestId: nextRequestId,
         kind: "operation",
         operationId,
         parameters,
       });
+      nextRequestId++;
       pending = true;
       try {
         const response = validateOperationResponse(await transport(request));

@@ -315,6 +315,21 @@ test("host model denies cancelled, ended, retired-worker and capability-restrict
   assert.equal(host.journals.length, 0);
 });
 
+test("SDK broker helper preserves the next request ID when local validation rejects input", async () => {
+  const frames = [];
+  const broker = createOperationBroker(async (request) => {
+    frames.push(request);
+    return { protocol: BROKER_PROTOCOL, requestId: 1, kind: "result", value: { items: [] } };
+  });
+  await assert.rejects(broker.request("", {}));
+  assert.deepEqual(frames, []);
+  assert.deepEqual(await broker.request("synthetic.items.list.v1", {}), { items: [] });
+  assert.deepEqual(
+    frames.map((request) => request.requestId),
+    [1],
+  );
+});
+
 test("SDK broker helper correlates strict frames, serializes work and never replays broken channels", async () => {
   const frames = [];
   let finish;
