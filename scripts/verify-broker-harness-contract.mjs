@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -28,6 +29,12 @@ async function assertCleanPluginCheckout() {
     throw new Error("Plugins checkout must remain clean at one exact commit for broker proof.");
 }
 await assertCleanPluginCheckout();
+const expected = JSON.parse(
+  await fs.readFile(
+    new URL("../tests/fixtures/broker-runtime-contract.json", import.meta.url),
+    "utf8",
+  ),
+);
 const importHost = (relative) => import(pathToFileURL(path.join(repo, relative)).href);
 const { createMacPluginSandboxRuntime } = await importHost(
   "apps/server/src/integrations/pluginSandbox/MacPluginSandboxRuntime.ts",
@@ -253,6 +260,13 @@ try {
   }
   if (stored.size !== 0 || results.length !== 13 || admissions !== 8)
     throw Error("Incorrect host lifecycle or operation count");
+  const hostTransport = JSON.parse(
+    JSON.stringify(
+      network.map(({ document, variables }) => ({ documentSha256: sha(document), variables })),
+    ),
+  );
+  assert.deepStrictEqual(results, expected.results, "Unexpected broker public results");
+  assert.deepStrictEqual(hostTransport, expected.transport, "Unexpected reviewed recipe transport");
   await assertCleanPluginCheckout();
   const receipt = {
     harnessHead: actualHead,
@@ -262,6 +276,7 @@ try {
     executionProfile: runtime.executionProfile,
     pins,
     results,
+    hostTransport,
     hostTransportCalls: network.length,
     admissions,
     credentialStoreEmpty: stored.size === 0,

@@ -1,0 +1,274 @@
+{
+  "results": [
+    {
+      "tool": "synthetic.items.put",
+      "result": {
+        "id": "owned",
+        "value": "host retained"
+      }
+    },
+    {
+      "tool": "synthetic.items.list",
+      "result": {
+        "items": [
+          {
+            "id": "owned",
+            "value": "host retained"
+          }
+        ]
+      }
+    },
+    {
+      "tool": "kuali-build.apps.list",
+      "result": {
+        "apps": [
+          {
+            "id": "cccccccccccccccccccccccc",
+            "name": "Synthetic app"
+          }
+        ],
+        "returned": 1,
+        "truncated": false
+      }
+    },
+    {
+      "tool": "kuali-build.apps.get",
+      "result": {
+        "app": {
+          "id": "cccccccccccccccccccccccc",
+          "name": "Synthetic app"
+        }
+      }
+    },
+    {
+      "tool": "kuali-build.forms.schema",
+      "result": {
+        "app": {
+          "id": "cccccccccccccccccccccccc",
+          "name": "Synthetic app"
+        },
+        "fields": [
+          {
+            "formKey": "text",
+            "label": "Text"
+          }
+        ],
+        "fieldCount": 1,
+        "published": true,
+        "truncated": false
+      }
+    },
+    {
+      "tool": "kuali-build.documents.list",
+      "result": {
+        "app": {
+          "id": "cccccccccccccccccccccccc",
+          "name": "Synthetic app"
+        },
+        "documents": [
+          {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false,
+          "skip": 0,
+          "limit": 25
+        },
+        "totalCount": 1,
+        "truncated": false
+      }
+    },
+    {
+      "tool": "kuali-build.documents.get",
+      "result": {
+        "document": {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+          "data": {
+            "text": "fixture"
+          },
+          "meta": {
+            "updatedAt": 7,
+            "workflowStatus": "Draft"
+          }
+        }
+      }
+    },
+    {
+      "tool": "kuali-build.documents.update",
+      "result": {
+        "document": {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "updatedFormKeys": ["text"],
+        "precondition": {
+          "expectedUpdatedAt": "7"
+        }
+      }
+    },
+    {
+      "tool": "kuali-build.documents.drafts.initialize",
+      "result": {
+        "appId": "cccccccccccccccccccccccc",
+        "actionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "draft_initialized",
+        "nextTool": "kuali-build.documents.drafts.resolve",
+        "atomic": false
+      }
+    },
+    {
+      "tool": "kuali-build.documents.drafts.resolve",
+      "result": {
+        "action": {
+          "actionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+          "appId": "cccccccccccccccccccccccc",
+          "documentId": "aaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    },
+    {
+      "tool": "kuali-build.documents.submit",
+      "result": {
+        "actionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+        "documentId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+        "result": "synthetic-submission",
+        "state": "submitted",
+        "workflowStarted": true,
+        "atomic": false
+      }
+    },
+    {
+      "tool": "kuali-build.users.lookup",
+      "result": {
+        "users": [
+          {
+            "id": "synthetic-user",
+            "displayName": "Fixture",
+            "email": null,
+            "username": null,
+            "firstName": null,
+            "lastName": null,
+            "schoolId": null
+          }
+        ],
+        "returned": 1,
+        "truncated": false
+      }
+    },
+    {
+      "tool": "kuali-build.workflows.status",
+      "result": {
+        "document": {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+          "workflowStatus": "Draft",
+          "workflowData": null,
+          "submittedAt": null,
+          "updatedAt": 7
+        }
+      }
+    }
+  ],
+  "transport": [
+    {
+      "documentSha256": "52156086a6fc6ead7315213c32a28db483bab63f134e163b1dbd774dc309a14d",
+      "variables": {}
+    },
+    {
+      "documentSha256": "52156086a6fc6ead7315213c32a28db483bab63f134e163b1dbd774dc309a14d",
+      "variables": {}
+    },
+    {
+      "documentSha256": "71c4313cc99a5030c2dcc27844e0de20b3fb5c4537b2e69db861fc2a139bca81",
+      "variables": {
+        "id": "cccccccccccccccccccccccc"
+      }
+    },
+    {
+      "documentSha256": "84842ea9d0d2c0ee078189d3a5de13f0d17e40be41d346c36ccc7f66df3805fa",
+      "variables": {
+        "id": "cccccccccccccccccccccccc"
+      }
+    },
+    {
+      "documentSha256": "27d3b51dcacf4cb2e4265d8844cb6eb7078207fa7eebb4212c805ae67d775296",
+      "variables": {
+        "appId": "cccccccccccccccccccccccc",
+        "fields": null,
+        "limit": 25,
+        "query": "",
+        "skip": 0,
+        "sort": ["meta.updatedAt"]
+      }
+    },
+    {
+      "documentSha256": "46185a1eadc97ac9e165c4ea1281efe115fe9a7955bbb0d12b9b40aef48ab1af",
+      "variables": {
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "documentSha256": "5a99450653934ca2e0a28a666dc511a3c88c22a9a2049eaa42d120fe97e6443c",
+      "variables": {
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "documentSha256": "6d60ea8a2ffc168dcb7112273781f4f2e98f389936f20a29a507e9e3d16e4440",
+      "variables": {
+        "data": {
+          "text": "synthetic update"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "documentSha256": "71c4313cc99a5030c2dcc27844e0de20b3fb5c4537b2e69db861fc2a139bca81",
+      "variables": {
+        "id": "cccccccccccccccccccccccc"
+      }
+    },
+    {
+      "documentSha256": "f68db73c032b9dccef404d2c1e3aa2f6b0004db34de5dc0aae73cde398e5ff82",
+      "variables": {
+        "appId": "cccccccccccccccccccccccc"
+      }
+    },
+    {
+      "documentSha256": "91e006433201c44750ddd8b4983af998fbbc07e7cec3ddfd41785290a1d4e7b2",
+      "variables": {
+        "actionId": "bbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "documentSha256": "91e006433201c44750ddd8b4983af998fbbc07e7cec3ddfd41785290a1d4e7b2",
+      "variables": {
+        "actionId": "bbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "documentSha256": "0657c6396204dcea9f5e0f5e79fbf38eab08a4234fc377281e52a6bfb247fcbd",
+      "variables": {
+        "actionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+        "data": {
+          "text": "synthetic submit"
+        },
+        "documentId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "completed"
+      }
+    },
+    {
+      "documentSha256": "743504721a8cfe4d5b7759d251682e167f247c7f975429e00d3000bc77d420bb",
+      "variables": {
+        "limit": 51,
+        "query": "fixture"
+      }
+    },
+    {
+      "documentSha256": "ccbeb7bbaa34ca55769da27ddaed339439c45a3e27a025e64b36820e50c4fd7d",
+      "variables": {
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  ]
+}
