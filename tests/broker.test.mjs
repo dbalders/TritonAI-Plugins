@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import * as Fs from "node:fs/promises";
 import * as Os from "node:os";
 import * as Path from "node:path";
+import * as Vm from "node:vm";
 import test from "node:test";
 
 import { validateManifestV1 } from "../packages/plugin-sdk/index.mjs";
@@ -166,8 +167,22 @@ test("declarative recipe cannot self-grant a broader destination or capability",
   assert.throws(() => validateBrokerManifest(extra), /exactly/u);
 });
 
+test("rejects a malformed fixed path without unbounded regex backtracking", async () => {
+  const { manifest, policy } = await fixture("kuali-build");
+  policy.transport.path = `/${"a".repeat(40)}!`;
+  assert.throws(
+    () =>
+      Vm.runInNewContext(
+        "validateBrokerPolicy(policy, manifest)",
+        { validateBrokerPolicy, policy, manifest },
+        { timeout: 500 },
+      ),
+    /Invalid fixed broker destination/u,
+  );
+});
+
 test("synthetic broker read/write keeps fixture credentials host-side and connection-scoped", async () => {
-  const { host, channel, provider, create } = await fixture("synthetic-api-key");
+  const { host, channel, provider, create, broker } = await fixture("synthetic-api-key");
   const flow = host.beginConnect("b");
   const status = host.completeOAuth(flow.flowId, {
     access_token: "host-only-token-canary",
@@ -190,6 +205,28 @@ test("synthetic broker read/write keeps fixture credentials host-side and connec
   assert.deepEqual(await host.invoke(b.channel, other, "synthetic.items.list", {}), { items: [] });
   assert.equal(host.journals.length, 1);
   assert.equal(host.journals[0].state, "confirmed");
+  const controller = new AbortController();
+  const confirmedProvider = create({
+    configuration: {},
+    broker: {
+      request: async (...args) => {
+        const result = await broker.request(...args);
+        controller.abort();
+        return result;
+      },
+    },
+  });
+  assert.deepEqual(
+    await host.invoke(
+      channel,
+      confirmedProvider,
+      "synthetic.items.put",
+      { id: "one", value: "confirmed" },
+      { approved: true, signal: controller.signal },
+    ),
+    { id: "one", value: "confirmed" },
+  );
+  assert.equal(host.journals[1].state, "confirmed");
   host.disconnect("a");
   await assert.rejects(host.invoke(channel, provider, "synthetic.items.list", {}), /revoked/u);
   host.connect("a");

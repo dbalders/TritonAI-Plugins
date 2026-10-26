@@ -179,7 +179,7 @@ export function validateBrokerPolicy(value, manifestValue) {
         !origin.username &&
         !origin.password &&
         !origin.port &&
-        /^\/(?:[a-zA-Z0-9_-]+\/?)*$/u.test(value.transport.path),
+        /^\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]*$/u.test(value.transport.path),
       "Invalid fixed broker destination.",
     );
     for (const field of ["timeoutMs", "maxRequestBytes", "maxResponseBytes"]) {

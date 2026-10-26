@@ -25,7 +25,6 @@ export function createIntegrationProvider(context) {
         throw failure("invalid_input", "Input is outside the declared tool schema.");
       }
       const result = await context.broker.request(`${toolName}.v1`, input);
-      signal.throwIfAborted();
       return result;
     },
     async close() { closed = true; },
