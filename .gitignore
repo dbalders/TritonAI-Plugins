@@ -4,3 +4,5 @@ node_modules/
 coverage/
 *.tsbuildinfo
 .DS_Store
+/harness/
+/broker-contract.json
