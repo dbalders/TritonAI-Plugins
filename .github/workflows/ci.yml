@@ -29,7 +29,7 @@ jobs:
       - run: pnpm readiness
 
   harness-contract:
-    name: Harness contract (${{ matrix.channel }})
+    name: Legacy Harness admission (${{ matrix.channel }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -74,7 +74,7 @@ jobs:
         run: |
           pnpm install --frozen-lockfile --ignore-scripts
           "$HOST_PNPM" --dir harness install --frozen-lockfile --ignore-scripts --filter t3...
-      - name: Verify exact host contract
+      - name: Verify legacy contracts and SDK2 refusal
         env:
           TRITONAI_HARNESS_ROOT: ${{ github.workspace }}/harness
           TRITONAI_HARNESS_COMMIT: ${{ matrix.commit }}
@@ -93,3 +93,51 @@ jobs:
             echo "Expected Harness commit: $HOST_COMMIT"
             echo "Actual Harness commit: $(git -C harness rev-parse HEAD)"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  broker-host-contract:
+    name: SDK2 broker host contract (macOS)
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout reviewed broker-capable Harness
+        uses: actions/checkout@v4
+        with:
+          repository: dbalders/TritonAI-Harness
+          ref: 90c01ace3226c549c828fb1d15dfc57b8ed4f98e
+          path: harness
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        id: broker-host-pnpm
+        with:
+          version: 12.14.0
+          package_json_file: harness/package.json
+          dest: ~/setup-broker-host-pnpm
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.24.0
+          dest: ~/setup-broker-plugins-pnpm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.1
+          cache: pnpm
+      - name: Install contract dependencies without lifecycle scripts
+        env:
+          HOST_PNPM: ${{ steps.broker-host-pnpm.outputs.bin_dest }}/pnpm
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          "$HOST_PNPM" --dir harness install --frozen-lockfile --ignore-scripts --filter t3... --filter @t3tools/scripts...
+      - name: Prepare checksum-pinned native runtime
+        run: node harness/scripts/prepare-plugin-sandbox.ts "$RUNNER_TEMP/broker-runtime"
+      - name: Exercise the actual pinned broker host
+        env:
+          TRITONAI_HARNESS_ROOT: ${{ github.workspace }}/harness
+          TRITONAI_HARNESS_COMMIT: 90c01ace3226c549c828fb1d15dfc57b8ed4f98e
+          TRITONAI_PLUGIN_SANDBOX_SOURCE: ${{ runner.temp }}/broker-runtime
+        run: node scripts/verify-broker-harness-contract.mjs > broker-contract.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk2-broker-host-contract
+          path: broker-contract.json

@@ -19,8 +19,9 @@ The earlier Node-targeted descriptors cannot be relabeled as interpreter-compati
 Their workers receive no credentials or direct network APIs. Host-owned lifecycle, independently
 reviewed recipe digests, exact admitted tool payloads and F05 commit receipts remain authoritative.
 Older hosts must reject these packages; SDK1 and legacy Effect providers remain unchanged and are
-not sandbox compatible. This is a package implementation, with host integration and native
-acceptance still required. See [the contract](docs/decisions/0002-broker-sdk-v2.md).
+not sandbox compatible. The separate macOS broker contract runs both SDK2 artifacts through the
+reviewed host verifier and confined worker using synthetic credentials and transport. Signed packaging,
+other operating systems and live-provider acceptance remain separate. See [the contract](docs/decisions/0002-broker-sdk-v2.md).
 
 ## Repository contract
 
@@ -95,10 +96,18 @@ CI runs the same `contract:harness` proof for both reviewed release commits pinn
 `65966171c1b6388d8bb6619369865ab2c8cf6ddb` and nightly `v0.3.8-nightly.20261014.78` at
 `ef03a9e243b17b682b29f117585db5278878a318`. Each job installs the selected host's locked server
 dependencies without lifecycle scripts and records the plugin and host commit identities in its
-run summary. These are legacy compatibility baselines, not moving `latest` refs. They do not implement SDK2;
-a positive full-host contract gate remains incomplete until a reviewed broker-capable host is pinned. Update each release label
-and full commit together after verifying the published tag resolves to that trusted commit; rerun
-the proof before accepting a new baseline. A newer host remains unverified until its pin advances.
+run summary. These are legacy compatibility baselines, not moving `latest` refs. They do not implement SDK2:
+the gate proves that they refuse the two SDK2 packages while retaining the existing legacy checks.
+A refusal is not compatibility.
+
+`contract:harness:broker` checks the two SDK2 packages against a clean, exact broker-capable
+Harness checkout on macOS. Set `TRITONAI_HARNESS_ROOT`, `TRITONAI_HARNESS_COMMIT` and
+`TRITONAI_PLUGIN_SANDBOX_SOURCE` to its prepared, host-verified runtime bundle. `readiness:broker`
+combines package readiness with that contract. CI pins candidate host
+`90c01ace3226c549c828fb1d15dfc57b8ed4f98e`; it exercises all 13 tools with synthetic transport,
+host-owned credentials and real confined workers. This gate does not claim that the remaining
+nine providers support isolation, or that F05 UI/journals, live services or signed packages passed.
+Update trusted host pins deliberately and rerun their matching contract before claiming support.
 
 The regular test gate also exercises the packaged Jira provider through real local HTTP requests
 with separate READ-only and WRITE OAuth grants. The server enforces READ method restrictions, so
