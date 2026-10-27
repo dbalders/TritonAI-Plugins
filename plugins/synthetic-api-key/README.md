@@ -1,6 +1,7 @@
 # Synthetic API Key
 
-This dependency-free SDK v1 conformance plugin exercises API-key connection, scoped credential
-storage, one read tool, and one explicitly approved write tool.
+SDK2 conformance provider with one read and one write tool. A test-owned host keeps the fixture
+API key, connection lifecycle and item state; the worker only requests the exact admitted operation.
+It performs no direct networking. Older SDK1 hosts reject version 2.0.0 without fallback.
 
-It is a test fixture, not a production integration.
+This is a test fixture. Its tests do not prove native confinement or a live production integration.

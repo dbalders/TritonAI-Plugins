@@ -1,13 +1,16 @@
 # Architecture and consumption
 
-The SDK trust and compatibility decision is recorded in
-[`decisions/0001-plugin-sdk-v1.md`](decisions/0001-plugin-sdk-v1.md).
+The legacy SDK trust decision is in
+[`decisions/0001-plugin-sdk-v1.md`](decisions/0001-plugin-sdk-v1.md). The credential-free worker
+contract and independently reviewed host recipes are in
+[`decisions/0002-broker-sdk-v2.md`](decisions/0002-broker-sdk-v2.md).
 
 ## Source layout
 
 Each direct child of `plugins/` is one versioned package. Existing packages use the strict Harness
 v2 contract. New portable packages may use the additive plugin SDK v1 contract and sealed artifact
-format. The two manifest versions have distinct `apiVersion` values and validation paths.
+format. Broker SDK2 packages use artifact v3, an explicit QuickJS/Wasm execution profile and a separate validation path. Older hosts reject them;
+SDK1/legacy factories do not become sandbox compatible.
 
 Repository validation rejects path and version drift, symlinks and special files, malformed skill
 frontmatter, unsafe package file lists, source or tests in release tarballs, and undeclared package
@@ -20,7 +23,7 @@ path. SDK v1 release bytes live at `artifacts/<plugin-id>/`. Release consumers c
 sealed directory byte-for-byte; only Harness performs descriptor, compatibility, schema, and code
 admission. A production catalog remains consumer-owned and pins the complete staged package digest.
 
-## Build-time composition
+## Legacy build-time composition
 
 ```text
 immutable TritonAI-Plugins ref
@@ -33,7 +36,7 @@ immutable TritonAI-Plugins ref
   -> user enable/disable and capability controls
 ```
 
-Every provider entrypoint exports the exact validated `manifest` and a synchronous
+Each legacy Effect provider entrypoint exports the exact validated `manifest` and a synchronous
 `createIntegrationProvider({ secrets, configuration })` factory. Harness deep-compares that
 manifest with the composed package and passes only the package-scoped secret-store facade and the
 package's opaque configuration object. The plugin owns the configuration schema, validation, and
@@ -42,7 +45,7 @@ remains a non-goal.
 
 ## Contract and versioning
 
-Manifest `apiVersion` and `manifestVersion` select the one current package contract. Package
+Manifest `apiVersion` and `manifestVersion` select the package ABI. Package
 semantic version tracks plugin behavior and assets. Breaking provider ABI or trust-boundary changes
 require a new Harness contract version or a jointly reviewed source change and contract proof.
 

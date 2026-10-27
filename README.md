@@ -1,15 +1,27 @@
 # TritonAI Plugins
 
-Framework, an additive platform-only SDK, and curated source packages for TritonAI Harness
-plugins. Existing Harness v2 packages remain supported without modification.
+Framework, versioned plugin SDKs, and curated source packages for TritonAI Harness.
 
 Created and maintained by David Balderston for UC San Diego.
 
-These are trusted Harness backend components, not Codex marketplace packages. A Harness build pins
+Legacy Harness v2 and SDK1 packages are trusted backend components, not isolated workers.
+SDK2 packages require a separate host-owned credential/operation broker and verified native isolation. A Harness build pins
 an immutable commit or tag from this repository and includes only packages named by its exact signed
 composition and digest allowlist. Provider construction stays inside each selected package through
 its reviewed `dist/index.js` entrypoint. Users can enable or disable an included plugin and its
 skills; they cannot download or install runtime code.
+
+## Broker SDK2 compatibility
+
+Kuali Build 2.0.0 and synthetic-api-key 2.0.0 use `tritonai.plugin/v2` and sealed artifact v3.
+They require host contract level 4 and the explicit `tritonai.quickjs-wasm/v1` execution profile.
+The earlier Node-targeted descriptors cannot be relabeled as interpreter-compatible.
+Their workers receive no credentials or direct network APIs. Host-owned lifecycle, independently
+reviewed recipe digests, exact admitted tool payloads and F05 commit receipts remain authoritative.
+Older hosts must reject these packages; SDK1 and legacy Effect providers remain unchanged and are
+not sandbox compatible. The separate macOS broker contract runs both SDK2 artifacts through the
+reviewed host verifier and confined worker using synthetic credentials and transport. Signed packaging,
+other operating systems and live-provider acceptance remain separate. See [the contract](docs/decisions/0002-broker-sdk-v2.md).
 
 ## Repository contract
 
@@ -35,7 +47,7 @@ See [architecture.md](docs/architecture.md), [release-checklist.md](docs/release
 
 ## Harness v2 contract
 
-Manifest `apiVersion` and `manifestVersion` identify the one current Harness contract. That contract
+For legacy packages, manifest `apiVersion` and `manifestVersion` identify the Harness v2 contract. That contract
 owns capability access policy, catalog, package-scoped secrets, lifecycle, skill materialization,
 write approval, and tool invocation. Provider packages prove structural conformance against a
 caller-selected trusted Harness checkout at one exact clean commit, while the Harness build owns
@@ -84,9 +96,18 @@ CI runs the same `contract:harness` proof for both reviewed release commits pinn
 `65966171c1b6388d8bb6619369865ab2c8cf6ddb` and nightly `v0.3.8-nightly.20261014.78` at
 `ef03a9e243b17b682b29f117585db5278878a318`. Each job installs the selected host's locked server
 dependencies without lifecycle scripts and records the plugin and host commit identities in its
-run summary. These are compatibility baselines, not moving `latest` refs. Update each release label
-and full commit together after verifying the published tag resolves to that trusted commit; rerun
-the proof before accepting a new baseline. A newer host remains unverified until its pin advances.
+run summary. These are legacy compatibility baselines, not moving `latest` refs. They do not implement SDK2:
+the gate proves that they refuse the two SDK2 packages while retaining the existing legacy checks.
+A refusal is not compatibility.
+
+`contract:harness:broker` checks the two SDK2 packages against a clean, exact broker-capable
+Harness checkout on macOS. Set `TRITONAI_HARNESS_ROOT`, `TRITONAI_HARNESS_COMMIT` and
+`TRITONAI_PLUGIN_SANDBOX_SOURCE` to its prepared, host-verified runtime bundle. `readiness:broker`
+combines package readiness with that contract. CI pins candidate host
+`90c01ace3226c549c828fb1d15dfc57b8ed4f98e`; it exercises all 13 tools with synthetic transport,
+host-owned credentials and real confined workers. This gate does not claim that the remaining
+nine providers support isolation, or that F05 UI/journals, live services or signed packages passed.
+Update trusted host pins deliberately and rerun their matching contract before claiming support.
 
 The regular test gate also exercises the packaged Jira provider through real local HTTP requests
 with separate READ-only and WRITE OAuth grants. The server enforces READ method restrictions, so
@@ -106,7 +127,7 @@ manifest in `.tritonai-plugin/plugin.json` carries inline draft 2020-12 configur
 schemas, skills, SDK API major, and minimum host contract level. The factory module has one stable export:
 `createIntegrationProvider`.
 
-Builds produce a sealed Node 24 ESM directory with one reviewed `plugin.mjs`, declared skill files,
+SDK1 builds produce a sealed Node 24 ESM directory with one reviewed `plugin.mjs`, declared skill files,
 canonical manifest and canonical `artifact.json`. Release-ready bytes are committed at
 `artifacts/<plugin-id>/`; `pnpm artifacts:sdk` refreshes them and `pnpm artifacts:sdk:check` proves
 they exactly match source. Third-party code is bundled; static `node:`

@@ -1,3 +1,4 @@
+import { validateBrokerManifest } from "../packages/plugin-sdk/broker.mjs";
 import * as Crypto from "node:crypto";
 import * as Fs from "node:fs/promises";
 import * as Path from "node:path";
@@ -64,8 +65,12 @@ for (const directory of entries) {
   await regularTree(packageRoot);
   const packageJson = await json(Path.join(packageRoot, "package.json"));
   const manifestValue = await json(Path.join(packageRoot, ".tritonai-plugin", "plugin.json"));
-  const sdkV1 = manifestValue.apiVersion === "tritonai.plugin/v1";
-  const manifest = sdkV1 ? validateManifestV1(manifestValue) : validateManifestV2(manifestValue);
+  const sdkV1 = ["tritonai.plugin/v1", "tritonai.plugin/v2"].includes(manifestValue.apiVersion);
+  const manifest = sdkV1
+    ? manifestValue.apiVersion === "tritonai.plugin/v2"
+      ? validateBrokerManifest(manifestValue)
+      : validateManifestV1(manifestValue)
+    : validateManifestV2(manifestValue);
   assert(packageJson.name === `@tritonai/plugin-${directory}`, `${directory}: package name drift.`);
   assert(packageJson.private === true, `${directory}: package must remain private.`);
   assert(packageJson.license === "MIT", `${directory}: package license must be MIT.`);
@@ -121,7 +126,9 @@ for (const directory of entries) {
     const entry = await Fs.stat(Path.join(packageRoot, manifest.entry)).catch(() => undefined);
     assert(entry?.isFile(), `${directory}: SDK v1 entry is missing ${manifest.entry}.`);
     const source = await Fs.readFile(Path.join(packageRoot, manifest.entry), "utf8");
-    await inspectPluginModule(source).catch((error) => {
+    await inspectPluginModule(source, {
+      broker: manifest.apiVersion === "tritonai.plugin/v2",
+    }).catch((error) => {
       throw new Error(`${directory}: SDK v1 entry module is invalid.`, { cause: error });
     });
   } else if (manifest.provider !== undefined) {

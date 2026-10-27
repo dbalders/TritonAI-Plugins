@@ -7,5 +7,5 @@
     "skipLibCheck": false,
     "noEmit": true
   },
-  "include": ["index.d.ts"]
+  "include": ["index.d.ts", "broker.d.ts"]
 }

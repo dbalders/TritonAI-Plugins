@@ -5,7 +5,7 @@ const reviewedDistributionFiles = ["plugins/*/dist/**", "artifacts/**", "paused/
 
 export default defineConfig({
   fmt: {
-    ignorePatterns: reviewedDistributionFiles,
+    ignorePatterns: [...reviewedDistributionFiles, "plugins/*/.tritonai-plugin/broker-policy.json"],
   },
   lint: {
     ignorePatterns: reviewedDistributionFiles,

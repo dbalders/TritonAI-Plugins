@@ -12,6 +12,13 @@ import {
   canonicalJson,
   validateManifestV1,
 } from "../packages/plugin-sdk/index.mjs";
+import {
+  BROKER_API_VERSION,
+  BROKER_EXECUTION_PROFILE,
+  BROKER_PROTOCOL,
+  validateBrokerManifest,
+  validateBrokerPolicy,
+} from "../packages/plugin-sdk/broker.mjs";
 import { parseSkillFrontmatter } from "./skill-frontmatter.mjs";
 
 export const ARTIFACT_FORMAT = "tritonai.plugin-artifact/v1";
@@ -29,6 +36,12 @@ export const ARTIFACT_LIMITS = Object.freeze({
 const MANIFEST_PATH = ".tritonai-plugin/plugin.json";
 const ARTIFACT_PATH = "artifact.json";
 const ENTRY_PATH = "plugin.mjs";
+const BROKER_POLICY_PATH = ".tritonai-plugin/broker-policy.json";
+export const BROKER_ARTIFACT_FORMAT = "tritonai.plugin-artifact/v3";
+const validateSdkManifest = (value) =>
+  value?.apiVersion === BROKER_API_VERSION
+    ? validateBrokerManifest(value)
+    : validateManifestV1(value);
 const NODE_BUILTINS = new Set(
   builtinModules.map((specifier) =>
     specifier.startsWith("node:") ? specifier : `node:${specifier}`,
@@ -56,6 +69,7 @@ const DESCRIPTOR_KEYS = new Set([
   "configurationSchema",
   "schemas",
   "files",
+  "broker",
 ]);
 
 function assert(condition, message) {
@@ -221,10 +235,40 @@ function assertSafePackageJson(value) {
   );
 }
 
-export async function inspectPluginModule(source) {
+export async function inspectPluginModule(source, { broker = false } = {}) {
   assert(typeof source === "string", "Plugin entry must be UTF-8 source text.");
   try {
-    parseModule(source, { ecmaVersion: "latest", sourceType: "module" });
+    const tree = parseModule(source, { ecmaVersion: "latest", sourceType: "module" });
+    if (broker) {
+      // Release hygiene only. Native confinement remains the host's security boundary.
+      const forbidden = new Set([
+        "fetch",
+        "XMLHttpRequest",
+        "WebSocket",
+        "EventSource",
+        "globalThis",
+        "global",
+        "process",
+        "require",
+        "Deno",
+        "Bun",
+        "eval",
+        "Function",
+        "secrets",
+      ]);
+      const visit = (node) => {
+        if (!node || typeof node !== "object") return;
+        assert(
+          node.type !== "Identifier" || !forbidden.has(node.name),
+          `Broker entry depends on a forbidden ambient API: ${node.name}`,
+        );
+        for (const value of Object.values(node)) {
+          if (Array.isArray(value)) value.forEach(visit);
+          else if (value && typeof value === "object") visit(value);
+        }
+      };
+      visit(tree);
+    }
   } catch (error) {
     throw new Error(
       `Plugin entry is not valid ECMAScript: ${error instanceof Error ? error.message : String(error)}`,
@@ -248,6 +292,7 @@ export async function inspectPluginModule(source) {
       canonicalJson(["createIntegrationProvider"]),
     "Plugin entry must export only createIntegrationProvider.",
   );
+  assert(!broker || imports.length === 0, "Broker entries must not import runtime dependencies.");
   return [...new Set(builtins)].sort();
 }
 
@@ -261,6 +306,7 @@ function assertNoNativeSources(files) {
 }
 
 function descriptorFor(manifest, payloads, nodeBuiltins) {
+  const broker = manifest.apiVersion === BROKER_API_VERSION;
   const payload = [...payloads.entries()]
     .map(([path, bytes]) => ({ path, sha256: digest(bytes), size: bytes.length }))
     .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
@@ -271,8 +317,8 @@ function descriptorFor(manifest, payloads, nodeBuiltins) {
     }))
     .sort((left, right) => (left.tool < right.tool ? -1 : left.tool > right.tool ? 1 : 0));
   return {
-    artifactVersion: ARTIFACT_VERSION,
-    format: ARTIFACT_FORMAT,
+    artifactVersion: broker ? 3 : ARTIFACT_VERSION,
+    format: broker ? BROKER_ARTIFACT_FORMAT : ARTIFACT_FORMAT,
     plugin: { id: manifest.id, version: manifest.version },
     sdk: {
       apiMajor: manifest.sdk.apiMajor,
@@ -280,11 +326,13 @@ function descriptorFor(manifest, payloads, nodeBuiltins) {
     },
     target: {
       architecture: "any",
-      environments: ["electron-main", "server"],
+      environments: broker ? ["isolated-worker"] : ["electron-main", "server"],
       module: "esm",
-      node: ">=24.13.1 <25",
+      ...(broker
+        ? { launcherNode: ">=24.13.1 <25", executionProfile: BROKER_EXECUTION_PROFILE }
+        : { node: ">=24.13.1 <25" }),
       platform: "any",
-      runtime: "node",
+      runtime: broker ? "quickjs-wasm" : "node",
       nodeBuiltins,
     },
     entry: ENTRY_PATH,
@@ -292,6 +340,19 @@ function descriptorFor(manifest, payloads, nodeBuiltins) {
     configurationSchema: digest(Buffer.from(canonicalJson(manifest.configurationSchema), "utf8")),
     schemas,
     files: payload,
+    ...(broker
+      ? {
+          broker: {
+            protocol: BROKER_PROTOCOL,
+            policy: {
+              path: BROKER_POLICY_PATH,
+              sha256: digest(payloads.get(BROKER_POLICY_PATH)),
+              id: manifest.broker.policyId,
+              version: manifest.broker.policyVersion,
+            },
+          },
+        }
+      : {}),
   };
 }
 
@@ -301,11 +362,19 @@ async function assertPayloadInvariants(manifest, payloads) {
   assert(entryBytes.length <= ARTIFACT_LIMITS.entryBytes, "Plugin entry exceeds its size limit.");
   const entrySource = entryBytes.toString("utf8");
   assert(Buffer.from(entrySource, "utf8").equals(entryBytes), "Plugin entry must be valid UTF-8.");
-  const nodeBuiltins = await inspectPluginModule(entrySource);
+  const broker = manifest.apiVersion === BROKER_API_VERSION;
+  const nodeBuiltins = await inspectPluginModule(entrySource, { broker });
+  if (broker) {
+    const bytes = payloads.get(BROKER_POLICY_PATH);
+    assert(bytes, "Broker policy payload is missing.");
+    const document = parseCanonicalJson(bytes, "Broker policy", ARTIFACT_LIMITS.manifestBytes);
+    validateBrokerPolicy(document.value, manifest);
+  }
 
   const declaredSkills = new Set(manifest.skills.map((skill) => skill.name));
   for (const path of payloads.keys()) {
-    if (path === MANIFEST_PATH || path === ENTRY_PATH) continue;
+    if (path === MANIFEST_PATH || path === ENTRY_PATH || (broker && path === BROKER_POLICY_PATH))
+      continue;
     const [root, skill] = path.split("/");
     assert(
       root === "skills" && skill !== undefined && declaredSkills.has(skill),
@@ -352,7 +421,7 @@ export async function buildPluginArtifact(sourceRoot, outputRoot) {
     "Plugin manifest",
     ARTIFACT_LIMITS.manifestBytes,
   );
-  const manifest = validateManifestV1(manifestDocument.value);
+  const manifest = validateSdkManifest(manifestDocument.value);
   assert(files.includes(manifest.entry), `Plugin entry is missing: ${manifest.entry}`);
   assert(
     packageJson.name === `@tritonai/plugin-${manifest.id}`,
@@ -363,12 +432,15 @@ export async function buildPluginArtifact(sourceRoot, outputRoot) {
     "Plugin package version does not match its manifest.",
   );
 
+  const broker = manifest.apiVersion === BROKER_API_VERSION;
   const entryBytes = await Fs.readFile(Path.join(source, manifest.entry));
   const declaredSkills = new Set(manifest.skills.map((skill) => skill.name));
   const payloads = new Map([
     [MANIFEST_PATH, manifestDocument.bytes],
     [ENTRY_PATH, entryBytes],
   ]);
+  if (broker)
+    payloads.set(BROKER_POLICY_PATH, await Fs.readFile(Path.join(source, BROKER_POLICY_PATH)));
   for (const path of files.filter((candidate) => candidate.startsWith("skills/"))) {
     const skill = path.split("/")[1];
     assert(declaredSkills.has(skill), `Plugin contains undeclared skill files: ${path}`);
@@ -409,7 +481,12 @@ export async function buildPluginArtifact(sourceRoot, outputRoot) {
 function assertDescriptorShape(value) {
   assert(onlyKeys(value, DESCRIPTOR_KEYS), "Artifact descriptor contains unsupported fields.");
   assert(
-    value.format === ARTIFACT_FORMAT && value.artifactVersion === ARTIFACT_VERSION,
+    (value.format === ARTIFACT_FORMAT &&
+      value.artifactVersion === ARTIFACT_VERSION &&
+      value.broker === undefined) ||
+      (value.format === BROKER_ARTIFACT_FORMAT &&
+        value.artifactVersion === 3 &&
+        value.broker?.protocol === BROKER_PROTOCOL),
     "Artifact format is unsupported.",
   );
   assert(
@@ -427,7 +504,7 @@ function assertDescriptorShape(value) {
         "architecture",
         "environments",
         "module",
-        "node",
+        ...(value.artifactVersion === 3 ? ["launcherNode", "executionProfile"] : ["node"]),
         "nodeBuiltins",
         "platform",
         "runtime",
@@ -435,11 +512,18 @@ function assertDescriptorShape(value) {
     ) &&
       value.target.architecture === "any" &&
       Array.isArray(value.target.environments) &&
-      canonicalJson(value.target.environments) === canonicalJson(["electron-main", "server"]) &&
+      canonicalJson(value.target.environments) ===
+        canonicalJson(
+          value.artifactVersion === 3 ? ["isolated-worker"] : ["electron-main", "server"],
+        ) &&
       value.target.module === "esm" &&
-      value.target.node === ">=24.13.1 <25" &&
+      (value.artifactVersion === 3
+        ? value.target.launcherNode === ">=24.13.1 <25" &&
+          value.target.executionProfile === BROKER_EXECUTION_PROFILE &&
+          value.target.runtime === "quickjs-wasm" &&
+          value.target.nodeBuiltins?.length === 0
+        : value.target.node === ">=24.13.1 <25" && value.target.runtime === "node") &&
       value.target.platform === "any" &&
-      value.target.runtime === "node" &&
       Array.isArray(value.target.nodeBuiltins) &&
       value.target.nodeBuiltins.every(
         (specifier) => typeof specifier === "string" && specifier.startsWith("node:"),
@@ -471,6 +555,7 @@ export async function verifyPluginArtifact(
     sdkApiMajor = SDK_API_MAJOR,
     hostContractLevel = HOST_CONTRACT_LEVEL,
     hostNodeVersion = process.versions.node,
+    workerNodeVersion,
   } = {},
 ) {
   assert(Number.isSafeInteger(sdkApiMajor) && sdkApiMajor > 0, "Host sdkApiMajor is invalid.");
@@ -495,9 +580,18 @@ export async function verifyPluginArtifact(
   );
   const descriptor = descriptorDocument.value;
   assertDescriptorShape(descriptor);
+  if (descriptor.artifactVersion === 3) {
+    assert(
+      typeof workerNodeVersion === "string",
+      "Broker artifact requires the actual worker Node.js version.",
+    );
+  }
+  const runtimeNodeVersion = descriptor.artifactVersion === 3 ? workerNodeVersion : hostNodeVersion;
+  const nodeTarget =
+    descriptor.artifactVersion === 3 ? descriptor.target.launcherNode : descriptor.target.node;
   assert(
-    satisfiesSemver(hostNodeVersion, descriptor.target.node),
-    `Plugin requires Node.js ${descriptor.target.node}; host is ${hostNodeVersion}.`,
+    satisfiesSemver(runtimeNodeVersion, nodeTarget),
+    `Plugin launcher requires Node.js ${nodeTarget}; runtime is ${runtimeNodeVersion}.`,
   );
   assert(
     descriptor.sdk.apiMajor === sdkApiMajor,
@@ -549,7 +643,7 @@ export async function verifyPluginArtifact(
     "Plugin manifest",
     ARTIFACT_LIMITS.manifestBytes,
   );
-  const manifest = validateManifestV1(manifestDocument.value);
+  const manifest = validateSdkManifest(manifestDocument.value);
   assert(
     descriptor.plugin.id === manifest.id && descriptor.plugin.version === manifest.version,
     "Artifact plugin identity does not match its manifest.",
