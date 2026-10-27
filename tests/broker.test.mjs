@@ -181,6 +181,16 @@ test("rejects a malformed fixed path without unbounded regex backtracking", asyn
   );
 });
 
+test("reserves whole-input bindings for the reviewed document-filter transform", async () => {
+  for (const input of ["$", "appId"]) {
+    const { manifest, policy } = await fixture("kuali-build");
+    const operation = policy.operations.find((item) => item.id === "kuali-build.documents.list.v1");
+    operation.recipe.variables.fields =
+      input === "$" ? { input } : { input, transform: "kuali-document-filters" };
+    assert.throws(() => validateBrokerPolicy(policy, manifest), /whole input/u);
+  }
+});
+
 test("synthetic broker read/write keeps fixture credentials host-side and connection-scoped", async () => {
   const { host, channel, provider, create, broker } = await fixture("synthetic-api-key");
   const flow = host.beginConnect("b");

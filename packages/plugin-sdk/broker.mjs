@@ -240,6 +240,10 @@ export function validateBrokerPolicy(value, manifestValue) {
               ),
             "Unknown recipe transform.",
           );
+          assert(
+            (binding.input === "$") === (binding.transform === "kuali-document-filters"),
+            "Only the document-filter transform accepts the whole input.",
+          );
         }
       }
     }
