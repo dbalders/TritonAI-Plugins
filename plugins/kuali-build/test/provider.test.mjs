@@ -18,7 +18,7 @@ test.after(() => {
   globalThis.fetch = originalFetch;
 });
 
-test("manifest exposes exactly read and unified write permissions", () => {
+test("manifest exposes read, unified write, and opt-in admin permissions", () => {
   assert.deepEqual(
     manifest.capabilities.map(({ id, displayName, access }) => ({ id, displayName, access })),
     [
@@ -32,11 +32,30 @@ test("manifest exposes exactly read and unified write permissions", () => {
         displayName: "Create, edit, and submit Build documents",
         access: "opt-in",
       },
+      {
+        id: "kuali-build.admin",
+        displayName: "Admin & delete in Kuali Build",
+        access: "opt-in",
+      },
     ],
   );
   assert.deepEqual(
-    manifest.tools.filter((tool) => tool.effect === "write").map((tool) => tool.capabilities),
-    [["kuali-build.write"], ["kuali-build.write"], ["kuali-build.write"]],
+    manifest.tools
+      .filter((tool) => tool.effect === "write")
+      .map((tool) => [tool.name, tool.capabilities]),
+    [
+      ["kuali-build.documents.update", ["kuali-build.write"]],
+      ["kuali-build.documents.drafts.initialize", ["kuali-build.write"]],
+      ["kuali-build.documents.submit", ["kuali-build.write"]],
+      ["kuali-build.graphql.mutate", ["kuali-build.write"]],
+      ["kuali-build.graphql.admin", ["kuali-build.admin"]],
+    ],
+  );
+  assert.equal(
+    manifest.tools
+      .filter((tool) => tool.effect === "write")
+      .every((tool) => tool.destructive || tool.name.endsWith(".initialize")),
+    true,
   );
 });
 

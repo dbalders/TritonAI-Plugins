@@ -1,9 +1,10 @@
 const PROVIDER_ID = "kuali-build";
 const READ_CAPABILITY = "kuali-build.read";
 const WRITE_CAPABILITY = "kuali-build.write";
+const ADMIN_CAPABILITY = "kuali-build.admin";
 const LEGACY_DOCUMENT_WRITE_CAPABILITY = "kuali-build.documents.write";
 const LEGACY_WORKFLOW_WRITE_CAPABILITY = "kuali-build.workflows.write";
-const CAPABILITIES = Object.freeze([READ_CAPABILITY, WRITE_CAPABILITY]);
+const CAPABILITIES = Object.freeze([READ_CAPABILITY, WRITE_CAPABILITY, ADMIN_CAPABILITY]);
 const CAPABILITY_SET = new Set(CAPABILITIES);
 const LEGACY_CAPABILITY_SET = new Set([
   READ_CAPABILITY,
@@ -397,6 +398,11 @@ function validateInput(toolName, value) {
       }
       return output;
     }
+    case "kuali-build.graphql.schema":
+    case "kuali-build.graphql.query":
+    case "kuali-build.graphql.mutate":
+    case "kuali-build.graphql.admin":
+      return validateGenericInput(toolName, value);
     default:
       throw failure("tool_not_found", "The requested tool is not provided by this plugin.");
   }
@@ -650,7 +656,7 @@ function parseSecret(value) {
     const capabilities = isCurrent
       ? CAPABILITIES.filter((capability) => parsed.capabilities.includes(capability))
       : hadBothLegacyWriteCapabilities
-        ? [...CAPABILITIES]
+        ? [READ_CAPABILITY, WRITE_CAPABILITY]
         : [READ_CAPABILITY];
     return {
       version: 1,
@@ -689,7 +695,7 @@ function exactCapabilities(value) {
   ) {
     throw failure(
       "invalid_capabilities",
-      "The connection must request kuali-build.read first and may additionally request kuali-build.write.",
+      "The connection must request kuali-build.read first and may additionally request kuali-build.write and kuali-build.admin.",
     );
   }
   return CAPABILITIES.filter((capability) => value.includes(capability));
@@ -822,6 +828,17 @@ function isAmbiguousWriteFailure(error, commitSignal) {
   return error.code === "graphql_error" && error.details?.partialDataDiscarded === true;
 }
 
+function connectionMessage(capabilities) {
+  if (capabilities.includes(ADMIN_CAPABILITY)) {
+    return capabilities.includes(WRITE_CAPABILITY)
+      ? "Connected to UC San Diego Kuali Build with write and admin tools enabled."
+      : "Connected to UC San Diego Kuali Build with admin tools enabled.";
+  }
+  return capabilities.includes(WRITE_CAPABILITY)
+    ? "Connected to UC San Diego Kuali Build with write tools enabled."
+    : "Connected to UC San Diego Kuali Build with read-only tools.";
+}
+
 function createFlow(flows, capabilities) {
   const now = Date.now();
   for (const [id, flow] of flows) {
@@ -833,6 +850,695 @@ function createFlow(flows, capabilities) {
   const flowId = crypto.randomUUID();
   flows.set(flowId, { expiresAt: now + FLOW_LIFETIME_MS, capabilities });
   return flowId;
+}
+
+// ---------------------------------------------------------------------------
+// General GraphQL access.
+//
+// The generic tools let the assistant send any single GraphQL operation the connected user's key
+// is allowed to run. Every request is parsed here first so it can be sorted into a permission
+// tier before anything reaches Kuali:
+//   - queries need kuali-build.read;
+//   - a mutation whose one root field is on the reviewed allowlist needs kuali-build.write;
+//   - every other mutation, including fields Kuali adds later, needs kuali-build.admin.
+// Mutations are never retried. Kuali's server still enforces the user's own Kuali permissions.
+
+const GRAPHQL_MAX_DOCUMENT_CHARS = 32_768;
+const GRAPHQL_MAX_TOKENS = 8_000;
+const GRAPHQL_MAX_DEPTH = 24;
+const GRAPHQL_MAX_SELECTIONS = 1_000;
+const GRAPHQL_MAX_ERROR_MESSAGES = 5;
+const GRAPHQL_MAX_ERROR_MESSAGE_CHARS = 500;
+const SCHEMA_MAX_TYPE_NAMES = 2_000;
+const SCHEMA_MAX_FIELDS = 1_000;
+const SCHEMA_DESCRIPTION_CHARS = 300;
+const SCHEMA_CACHE_MS = 60 * 60 * 1_000;
+const graphqlNamePattern = /^[_A-Za-z][_0-9A-Za-z]{0,127}$/u;
+
+// Routine document work. Keep this list short and reviewed; anything absent needs Admin.
+const WRITE_MUTATION_FIELDS = Object.freeze(new Set([
+  "updateDocument",
+  "initializeWorkflow",
+  "submitDocument",
+]));
+
+// Backstop: names that suggest deletion, access control, credentials, or configuration are always
+// Admin, even if someone later adds them to the Write allowlist by mistake.
+const ADMIN_NAME_PATTERN =
+  /delete|remove|archive|purge|destroy|revoke|permission|role|group|policy|apikey|token|secret|password|credential|integration|webhook|setting|config|publish|transfer|bypass|skip|reassign|import|user|space|tenant|admin/iu;
+
+const REDACTED_RESPONSE_KEYS = /^(?:api[_-]?key|apikeys?|secret|client[_-]?secret|password|token|access[_-]?token|refresh[_-]?token|private[_-]?key)$/iu;
+
+function classifyMutationField(name) {
+  if (WRITE_MUTATION_FIELDS.has(name) && !ADMIN_NAME_PATTERN.test(name)) return "write";
+  return "admin";
+}
+
+const GRAPHQL_PUNCTUATORS = new Set(["!", "$", "&", "(", ")", ":", "=", "@", "[", "]", "{", "|", "}"]);
+
+function graphqlSyntaxError(message) {
+  return failure("graphql_syntax_error", `The GraphQL document could not be read: ${message}`);
+}
+
+function tokenizeGraphql(source) {
+  const tokens = [];
+  let index = source.charCodeAt(0) === 0xfeff ? 1 : 0;
+  const length = source.length;
+  const push = (kind, value) => {
+    tokens.push({ kind, value });
+    if (tokens.length > GRAPHQL_MAX_TOKENS) {
+      throw failure("graphql_too_complex", "The GraphQL document has too many tokens.");
+    }
+  };
+  while (index < length) {
+    const character = source[index];
+    if (character === " " || character === "\t" || character === "\n" || character === "\r" || character === ",") {
+      index += 1;
+      continue;
+    }
+    if (character === "#") {
+      while (index < length && source[index] !== "\n" && source[index] !== "\r") index += 1;
+      continue;
+    }
+    if (character === ".") {
+      if (source.startsWith("...", index)) {
+        push("punct", "...");
+        index += 3;
+        continue;
+      }
+      throw graphqlSyntaxError("unexpected '.'.");
+    }
+    if (GRAPHQL_PUNCTUATORS.has(character)) {
+      push("punct", character);
+      index += 1;
+      continue;
+    }
+    if (/[_A-Za-z]/u.test(character)) {
+      const start = index;
+      while (index < length && /[_0-9A-Za-z]/u.test(source[index])) index += 1;
+      push("name", source.slice(start, index));
+      continue;
+    }
+    if (character === "-" || /[0-9]/u.test(character)) {
+      const match = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/u.exec(source.slice(index, index + 64));
+      if (!match) throw graphqlSyntaxError("invalid number.");
+      push("number", match[0]);
+      index += match[0].length;
+      if (index < length && /[_A-Za-z.]/u.test(source[index])) throw graphqlSyntaxError("invalid number.");
+      continue;
+    }
+    if (character === '"') {
+      if (source.startsWith('"""', index)) {
+        let cursor = index + 3;
+        let close = -1;
+        while (cursor < length) {
+          if (source.startsWith('\\"""', cursor)) {
+            cursor += 4;
+            continue;
+          }
+          if (source.startsWith('"""', cursor)) {
+            close = cursor;
+            break;
+          }
+          cursor += 1;
+        }
+        if (close === -1) throw graphqlSyntaxError("unterminated block string.");
+        push("string", source.slice(index + 3, close));
+        index = close + 3;
+        continue;
+      }
+      let cursor = index + 1;
+      let value = "";
+      let closed = false;
+      while (cursor < length) {
+        const next = source[cursor];
+        if (next === "\n" || next === "\r") break;
+        if (next === '"') {
+          closed = true;
+          break;
+        }
+        if (next === "\\") {
+          const escaped = source[cursor + 1];
+          if (escaped === "u") {
+            const hex = source.slice(cursor + 2, cursor + 6);
+            if (!/^[0-9A-Fa-f]{4}$/u.test(hex)) throw graphqlSyntaxError("invalid unicode escape.");
+            value += String.fromCharCode(Number.parseInt(hex, 16));
+            cursor += 6;
+            continue;
+          }
+          const simple = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" }[escaped];
+          if (simple === undefined) throw graphqlSyntaxError("invalid string escape.");
+          value += simple;
+          cursor += 2;
+          continue;
+        }
+        value += next;
+        cursor += 1;
+      }
+      if (!closed) throw graphqlSyntaxError("unterminated string.");
+      push("string", value);
+      index = cursor + 1;
+      continue;
+    }
+    throw graphqlSyntaxError(`unexpected character U+${character.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")}.`);
+  }
+  push("eof", "");
+  return tokens;
+}
+
+function parseGraphqlDocument(source) {
+  const tokens = tokenizeGraphql(source);
+  let position = 0;
+  let selections = 0;
+  const peek = () => tokens[position];
+  const advance = () => tokens[position++];
+  const isPunct = (value) => peek().kind === "punct" && peek().value === value;
+  const isName = (value) => peek().kind === "name" && (value === undefined || peek().value === value);
+  const expectPunct = (value) => {
+    if (!isPunct(value)) throw graphqlSyntaxError(`expected '${value}'.`);
+    advance();
+  };
+  const expectName = () => {
+    if (!isName()) throw graphqlSyntaxError("expected a name.");
+    return advance().value;
+  };
+  const checkDepth = (depth) => {
+    if (depth > GRAPHQL_MAX_DEPTH) {
+      throw failure("graphql_too_complex", "The GraphQL document is nested too deeply.");
+    }
+  };
+
+  function parseValue(depth, constant) {
+    checkDepth(depth);
+    const token = peek();
+    if (token.kind === "punct" && token.value === "$") {
+      if (constant) throw graphqlSyntaxError("variables are not allowed here.");
+      advance();
+      return { kind: "variable", name: expectName() };
+    }
+    if (token.kind === "punct" && token.value === "[") {
+      advance();
+      const values = [];
+      while (!isPunct("]")) {
+        if (peek().kind === "eof") throw graphqlSyntaxError("unterminated list.");
+        values.push(parseValue(depth + 1, constant));
+      }
+      advance();
+      return { kind: "list", values };
+    }
+    if (token.kind === "punct" && token.value === "{") {
+      advance();
+      const fields = [];
+      while (!isPunct("}")) {
+        if (peek().kind === "eof") throw graphqlSyntaxError("unterminated object.");
+        const name = expectName();
+        expectPunct(":");
+        fields.push({ name, value: parseValue(depth + 1, constant) });
+      }
+      advance();
+      return { kind: "object", fields };
+    }
+    if (token.kind === "number" || token.kind === "string" || token.kind === "name") {
+      advance();
+      return { kind: token.kind, value: token.value };
+    }
+    throw graphqlSyntaxError("expected a value.");
+  }
+
+  function parseArguments(depth) {
+    const args = [];
+    if (!isPunct("(")) return args;
+    advance();
+    while (!isPunct(")")) {
+      if (peek().kind === "eof") throw graphqlSyntaxError("unterminated arguments.");
+      const name = expectName();
+      expectPunct(":");
+      args.push({ name, value: parseValue(depth + 1, false) });
+    }
+    advance();
+    if (args.length === 0) throw graphqlSyntaxError("empty argument list.");
+    return args;
+  }
+
+  function parseDirectives(depth) {
+    const directives = [];
+    while (isPunct("@")) {
+      advance();
+      const name = expectName();
+      directives.push({ name, arguments: parseArguments(depth) });
+    }
+    return directives;
+  }
+
+  function parseType(depth) {
+    checkDepth(depth);
+    if (isPunct("[")) {
+      advance();
+      parseType(depth + 1);
+      expectPunct("]");
+    } else {
+      expectName();
+    }
+    if (isPunct("!")) advance();
+  }
+
+  function parseSelectionSet(depth) {
+    checkDepth(depth);
+    expectPunct("{");
+    const items = [];
+    while (!isPunct("}")) {
+      if (peek().kind === "eof") throw graphqlSyntaxError("unterminated selection set.");
+      selections += 1;
+      if (selections > GRAPHQL_MAX_SELECTIONS) {
+        throw failure("graphql_too_complex", "The GraphQL document selects too many fields.");
+      }
+      if (isPunct("...")) {
+        advance();
+        if (isName() && peek().value !== "on") {
+          const name = advance().value;
+          items.push({ kind: "spread", name, directives: parseDirectives(depth) });
+          continue;
+        }
+        let typeCondition = null;
+        if (isName("on")) {
+          advance();
+          typeCondition = expectName();
+        }
+        const directives = parseDirectives(depth);
+        items.push({ kind: "inline", typeCondition, directives, selectionSet: parseSelectionSet(depth + 1) });
+        continue;
+      }
+      let name = expectName();
+      let alias = null;
+      if (isPunct(":")) {
+        advance();
+        alias = name;
+        name = expectName();
+      }
+      const args = parseArguments(depth);
+      const directives = parseDirectives(depth);
+      const selectionSet = isPunct("{") ? parseSelectionSet(depth + 1) : null;
+      items.push({ kind: "field", name, alias, arguments: args, directives, selectionSet });
+    }
+    advance();
+    if (items.length === 0) throw graphqlSyntaxError("empty selection set.");
+    return items;
+  }
+
+  const operations = [];
+  const fragments = new Map();
+  while (peek().kind !== "eof") {
+    if (isPunct("{")) {
+      operations.push({ operation: "query", name: null, directives: [], selectionSet: parseSelectionSet(1) });
+      continue;
+    }
+    if (!isName()) throw graphqlSyntaxError("expected an operation or fragment.");
+    const keyword = peek().value;
+    if (keyword === "query" || keyword === "mutation" || keyword === "subscription") {
+      advance();
+      const name = isName() ? advance().value : null;
+      if (isPunct("(")) {
+        advance();
+        while (!isPunct(")")) {
+          if (peek().kind === "eof") throw graphqlSyntaxError("unterminated variable definitions.");
+          expectPunct("$");
+          expectName();
+          expectPunct(":");
+          parseType(1);
+          if (isPunct("=")) {
+            advance();
+            parseValue(1, true);
+          }
+          parseDirectives(1);
+        }
+        advance();
+      }
+      const directives = parseDirectives(1);
+      operations.push({ operation: keyword, name, directives, selectionSet: parseSelectionSet(1) });
+      continue;
+    }
+    if (keyword === "fragment") {
+      advance();
+      const name = expectName();
+      if (name === "on") throw graphqlSyntaxError("a fragment cannot be named 'on'.");
+      if (!isName("on")) throw graphqlSyntaxError("expected 'on' after the fragment name.");
+      advance();
+      expectName();
+      const directives = parseDirectives(1);
+      if (fragments.has(name)) throw graphqlSyntaxError(`duplicate fragment ${name}.`);
+      fragments.set(name, { name, directives, selectionSet: parseSelectionSet(1) });
+      continue;
+    }
+    throw failure(
+      "graphql_unsupported",
+      "Only query, mutation, and fragment definitions are supported; schema definitions are not.",
+    );
+  }
+  return { operations, fragments };
+}
+
+function collectDirectiveNames(items, fragments, output, seen) {
+  for (const item of items) {
+    for (const directive of item.directives) output.add(directive.name);
+    if (item.kind === "spread") {
+      if (seen.has(item.name)) continue;
+      const fragment = fragments.get(item.name);
+      if (fragment === undefined) throw graphqlSyntaxError(`unknown fragment ${item.name}.`);
+      seen.add(item.name);
+      for (const directive of fragment.directives) output.add(directive.name);
+      collectDirectiveNames(fragment.selectionSet, fragments, output, seen);
+    } else if (item.selectionSet) {
+      collectDirectiveNames(item.selectionSet, fragments, output, seen);
+    }
+  }
+}
+
+function collectRootFields(items, fragments, output, path) {
+  for (const item of items) {
+    if (item.kind === "field") {
+      output.push(item);
+    } else if (item.kind === "inline") {
+      collectRootFields(item.selectionSet, fragments, output, path);
+    } else {
+      if (path.includes(item.name)) throw graphqlSyntaxError(`fragment ${item.name} spreads itself.`);
+      const fragment = fragments.get(item.name);
+      if (fragment === undefined) throw graphqlSyntaxError(`unknown fragment ${item.name}.`);
+      collectRootFields(fragment.selectionSet, fragments, output, [...path, item.name]);
+    }
+  }
+}
+
+function analyzeGraphqlRequest(document, operationName) {
+  if (typeof document !== "string" || document.trim().length === 0) {
+    throw failure("invalid_input", "document must be a non-empty GraphQL string.");
+  }
+  if (document.length > GRAPHQL_MAX_DOCUMENT_CHARS) {
+    throw failure("invalid_input", `document may contain at most ${GRAPHQL_MAX_DOCUMENT_CHARS} characters.`);
+  }
+  const { operations, fragments } = parseGraphqlDocument(document);
+  if (operations.length !== 1) {
+    throw failure(
+      "graphql_unsupported",
+      "Send exactly one query or mutation per call. Split multiple operations into separate calls.",
+    );
+  }
+  const [operation] = operations;
+  if (operationName !== undefined && operation.name !== operationName) {
+    throw failure("invalid_input", "operationName does not match the operation in the document.");
+  }
+  if (operation.operation === "subscription") {
+    throw failure("graphql_unsupported", "Subscriptions are not supported.");
+  }
+  const directiveNames = new Set(operation.directives.map((directive) => directive.name));
+  collectDirectiveNames(operation.selectionSet, fragments, directiveNames, new Set());
+  if (directiveNames.has("defer") || directiveNames.has("stream")) {
+    throw failure("graphql_unsupported", "@defer and @stream are not supported.");
+  }
+  const rootFields = [];
+  collectRootFields(operation.selectionSet, fragments, rootFields, []);
+  const fieldNames = [...new Set(rootFields.map((field) => field.name))];
+  if (operation.operation === "query") {
+    return { operation: "query", operationName: operation.name, rootFields: fieldNames, tier: "read" };
+  }
+  const meaningful = rootFields.filter((field) => field.name !== "__typename");
+  if (meaningful.length !== 1) {
+    throw failure(
+      "graphql_unsupported",
+      "A mutation must select exactly one root field so its outcome can be checked. Send one change per call.",
+    );
+  }
+  const [field] = meaningful;
+  return {
+    operation: "mutation",
+    operationName: operation.name,
+    rootFields: [field.name],
+    tier: classifyMutationField(field.name),
+  };
+}
+
+function validateGraphqlVariables(value) {
+  if (value === undefined) return {};
+  if (!isPlainObject(value)) throw failure("invalid_input", "variables must be a plain JSON object.");
+  for (const key of Object.keys(value)) {
+    if (!graphqlNamePattern.test(key)) {
+      throw failure("invalid_input", "variables contains an invalid variable name.");
+    }
+  }
+  try {
+    validateJsonTree(value);
+  } catch {
+    throw failure("invalid_input", "variables must be bounded, plain JSON values.");
+  }
+  return value;
+}
+
+function sanitizeMessage(value) {
+  if (typeof value !== "string") return null;
+  let output = "";
+  for (const character of value) {
+    const code = character.codePointAt(0);
+    output += code <= 0x1f || code === 0x7f ? " " : character;
+    if (output.length >= GRAPHQL_MAX_ERROR_MESSAGE_CHARS) break;
+  }
+  return output.trim();
+}
+
+function graphqlErrorDetails(errors) {
+  const messages = [];
+  if (Array.isArray(errors)) {
+    for (const item of errors.slice(0, GRAPHQL_MAX_ERROR_MESSAGES)) {
+      if (!isPlainObject(item)) continue;
+      const message = sanitizeMessage(item.message);
+      if (message) messages.push(message);
+    }
+  }
+  return messages;
+}
+
+function redactResponse(value, depth = 0) {
+  if (depth > MAX_JSON_DEPTH || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((item) => redactResponse(item, depth + 1));
+  const output = {};
+  for (const [key, item] of Object.entries(value)) {
+    output[key] =
+      REDACTED_RESPONSE_KEYS.test(key) && (typeof item === "string" || Array.isArray(item))
+        ? "[redacted by TritonAI]"
+        : redactResponse(item, depth + 1);
+  }
+  return output;
+}
+
+// Sends one generic GraphQL request. Unlike the fixed tools, GraphQL error messages are returned
+// (sanitized and bounded) so the assistant can correct its query. They are server text, not
+// instructions.
+async function rawGraphql(fetchImplementation, apiKey, document, variables, operationName, signal) {
+  signal.throwIfAborted();
+  const payload = { query: document, variables };
+  if (operationName) payload.operationName = operationName;
+  const body = JSON.stringify(payload);
+  if (encoder.encode(body).byteLength > MAX_REQUEST_BYTES) {
+    throw failure("request_too_large", "Kuali request exceeded the byte limit.");
+  }
+  const composed = timeoutSignal(signal);
+  try {
+    let response;
+    try {
+      response = await fetchImplementation(GRAPHQL_URL, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${apiKey}`,
+          "content-type": "application/json",
+        },
+        body,
+        redirect: "error",
+        signal: composed.signal,
+      });
+    } catch {
+      if (signal.aborted) throw signal.reason;
+      if (composed.signal.aborted) throw failure("request_timeout", "Kuali Build request timed out.", true);
+      throw failure("network_error", "The UCSD Kuali Build request failed before a response was received.", true);
+    }
+    if (!(response instanceof Response)) throw failure("invalid_response", "Kuali returned an invalid HTTP response.");
+    if (response.url && response.url !== GRAPHQL_URL) {
+      throw failure("redirect_rejected", "Kuali response origin or endpoint changed unexpectedly.");
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw failure("authentication_failed", "The UCSD Kuali Build API key was rejected.");
+    }
+    if (response.status === 429) {
+      const seconds = retryAfter(response);
+      throw failure(
+        "rate_limited",
+        "UCSD Kuali Build rate limited the request; no automatic retry was attempted.",
+        true,
+        seconds === undefined ? {} : { retryAfterSeconds: seconds },
+      );
+    }
+    const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+    const isJson = contentType === "application/json" || contentType === "application/graphql-response+json";
+    if (!response.ok && !(response.status === 400 && isJson)) {
+      throw failure(
+        "http_error",
+        `UCSD Kuali Build returned HTTP ${response.status}.`,
+        response.status >= 500,
+        { status: response.status },
+      );
+    }
+    if (!isJson) throw failure("invalid_response", "Kuali returned an unexpected response content type.");
+    let parsed;
+    try {
+      parsed = JSON.parse(decoder.decode(await boundedBody(response)));
+    } catch (error) {
+      if (error?._tag === "PluginFailure") throw error;
+      if (signal.aborted) throw signal.reason;
+      if (composed.signal.aborted) throw failure("request_timeout", "Kuali Build request timed out.", true);
+      throw failure("invalid_response", "Kuali returned malformed UTF-8 JSON.");
+    }
+    validateJsonTree(parsed);
+    if (!isPlainObject(parsed)) throw failure("invalid_response", "Kuali returned an invalid GraphQL envelope.");
+    const hasErrors = Array.isArray(parsed.errors) && parsed.errors.length > 0;
+    const hasData = Object.hasOwn(parsed, "data") && parsed.data !== null;
+    if (hasData && !isPlainObject(parsed.data)) {
+      throw failure("invalid_response", "Kuali returned an invalid GraphQL data value.");
+    }
+    if (hasErrors) {
+      const authFailure = graphqlFailure(parsed.errors, false);
+      if (authFailure.code === "authentication_failed") throw authFailure;
+    }
+    if (!hasErrors && !hasData) {
+      throw failure("invalid_response", "Kuali returned a GraphQL response without data.");
+    }
+    return {
+      data: hasData ? parsed.data : null,
+      errors: hasErrors ? graphqlErrorDetails(parsed.errors) : [],
+      executed: hasData,
+    };
+  } finally {
+    composed.cleanup();
+  }
+}
+
+const introspectionQueries = Object.freeze({
+  roots: `query KualiBuildSchemaRoots { __schema { queryType { name } mutationType { name } types { name kind } } }`,
+  type: `query KualiBuildSchemaType($name: String!) { __type(name: $name) { name kind description fields(includeDeprecated: true) { name description isDeprecated args { name type { ...TypeRef } } type { ...TypeRef } } inputFields { name description type { ...TypeRef } } enumValues(includeDeprecated: true) { name description isDeprecated } possibleTypes { name } } } fragment TypeRef on __Type { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }`,
+});
+
+function typeRefLabel(value, depth = 0) {
+  if (!isPlainObject(value) || depth > 8) return "?";
+  if (value.kind === "NON_NULL") return `${typeRefLabel(value.ofType, depth + 1)}!`;
+  if (value.kind === "LIST") return `[${typeRefLabel(value.ofType, depth + 1)}]`;
+  return typeof value.name === "string" ? value.name : "?";
+}
+
+function shortDescription(value) {
+  const text = sanitizeMessage(value);
+  if (!text) return null;
+  return text.length > SCHEMA_DESCRIPTION_CHARS ? `${text.slice(0, SCHEMA_DESCRIPTION_CHARS)}…` : text;
+}
+
+function projectSchemaType(value, mutationTypeName) {
+  if (!isPlainObject(value) || typeof value.name !== "string") {
+    throw failure("invalid_response", "Kuali returned an invalid schema type.");
+  }
+  const isMutationRoot = value.name === mutationTypeName;
+  const project = (field) => {
+    if (!isPlainObject(field) || typeof field.name !== "string") {
+      throw failure("invalid_response", "Kuali returned an invalid schema field.");
+    }
+    const output = {
+      name: field.name,
+      type: typeRefLabel(field.type),
+      description: shortDescription(field.description),
+    };
+    if (Array.isArray(field.args)) {
+      output.args = field.args.slice(0, 50).map((arg) => ({
+        name: typeof arg?.name === "string" ? arg.name : "?",
+        type: typeRefLabel(arg?.type),
+      }));
+    }
+    if (field.isDeprecated === true) output.deprecated = true;
+    if (isMutationRoot) output.permission = classifyMutationField(field.name);
+    return output;
+  };
+  const fields = Array.isArray(value.fields) ? value.fields : [];
+  const inputFields = Array.isArray(value.inputFields) ? value.inputFields : [];
+  const enumValues = Array.isArray(value.enumValues) ? value.enumValues : [];
+  return {
+    name: value.name,
+    kind: typeof value.kind === "string" ? value.kind : null,
+    description: shortDescription(value.description),
+    fields: fields.slice(0, SCHEMA_MAX_FIELDS).map(project),
+    inputFields: inputFields.slice(0, SCHEMA_MAX_FIELDS).map(project),
+    enumValues: enumValues.slice(0, SCHEMA_MAX_FIELDS).map((item) => ({
+      name: typeof item?.name === "string" ? item.name : "?",
+      description: shortDescription(item?.description),
+    })),
+    possibleTypes: Array.isArray(value.possibleTypes)
+      ? value.possibleTypes.slice(0, SCHEMA_MAX_FIELDS).map((item) => item?.name).filter((name) => typeof name === "string")
+      : [],
+    truncated:
+      fields.length > SCHEMA_MAX_FIELDS ||
+      inputFields.length > SCHEMA_MAX_FIELDS ||
+      enumValues.length > SCHEMA_MAX_FIELDS,
+  };
+}
+
+function validateGenericInput(toolName, value) {
+  if (toolName === "kuali-build.graphql.schema") {
+    const input = ownKeys(value, new Set(["typeName", "search"]), "Input");
+    const output = {};
+    if (Object.hasOwn(input, "typeName")) {
+      if (typeof input.typeName !== "string" || !graphqlNamePattern.test(input.typeName)) {
+        throw failure("invalid_input", "typeName must be a GraphQL type name.");
+      }
+      output.typeName = input.typeName;
+    }
+    if (Object.hasOwn(input, "search")) output.search = validateSearch(input.search);
+    return output;
+  }
+  const isMutation = toolName !== "kuali-build.graphql.query";
+  const allowed = new Set(["document", "variables", "operationName"]);
+  if (isMutation) allowed.add("confirmMutation");
+  const input = ownKeys(value, allowed, "Input");
+  if (isMutation && input.confirmMutation !== true) {
+    throw failure(
+      "confirmation_required",
+      "confirmMutation must be true after the exact change has been shown to the user.",
+    );
+  }
+  let operationName;
+  if (Object.hasOwn(input, "operationName")) {
+    if (typeof input.operationName !== "string" || !graphqlNamePattern.test(input.operationName)) {
+      throw failure("invalid_input", "operationName must be a GraphQL name.");
+    }
+    operationName = input.operationName;
+  }
+  const analysis = analyzeGraphqlRequest(input.document, operationName);
+  const variables = validateGraphqlVariables(input.variables);
+  if (toolName === "kuali-build.graphql.query" && analysis.operation !== "query") {
+    throw failure(
+      "wrong_tool",
+      "This tool runs queries only. Use kuali-build.graphql.mutate or kuali-build.graphql.admin for changes.",
+    );
+  }
+  if (toolName === "kuali-build.graphql.mutate") {
+    if (analysis.operation !== "mutation") {
+      throw failure("wrong_tool", "This tool runs mutations only. Use kuali-build.graphql.query for reads.");
+    }
+    if (analysis.tier !== "write") {
+      throw failure(
+        "admin_required",
+        `${analysis.rootFields[0]} is not on the reviewed Write list. Use kuali-build.graphql.admin, which requires the Admin & delete permission.`,
+        false,
+        { rootField: analysis.rootFields[0] },
+      );
+    }
+  }
+  if (toolName === "kuali-build.graphql.admin" && analysis.operation !== "mutation") {
+    throw failure("wrong_tool", "This tool runs mutations only. Use kuali-build.graphql.query for reads.");
+  }
+  return { document: input.document, variables, operationName, analysis };
 }
 
 export function createIntegrationProvider(context) {
@@ -852,6 +1558,97 @@ export function createIntegrationProvider(context) {
 
   async function execute(apiKey, operation, variables, signal) {
     return graphql(fetchImplementation, apiKey, queries[operation], variables, signal);
+  }
+
+  let schemaCache = null;
+
+  async function introspect(apiKey, operation, variables, signal) {
+    const result = await rawGraphql(
+      fetchImplementation,
+      apiKey,
+      introspectionQueries[operation],
+      variables,
+      undefined,
+      signal,
+    );
+    if (result.errors.length > 0 || result.data === null) {
+      throw failure("graphql_error", "Kuali Build rejected the schema request.", false, {
+        messages: result.errors,
+      });
+    }
+    return result.data;
+  }
+
+  async function schemaRoots(apiKey, signal) {
+    if (schemaCache !== null && schemaCache.apiKey === apiKey && schemaCache.expiresAt > Date.now()) {
+      return schemaCache;
+    }
+    const data = await introspect(apiKey, "roots", {}, signal);
+    const schema = extract(data, "__schema");
+    if (!isPlainObject(schema) || !Array.isArray(schema.types)) {
+      throw failure("invalid_response", "Kuali returned an invalid schema.");
+    }
+    const queryTypeName = isPlainObject(schema.queryType) && typeof schema.queryType.name === "string"
+      ? schema.queryType.name
+      : null;
+    const mutationTypeName = isPlainObject(schema.mutationType) && typeof schema.mutationType.name === "string"
+      ? schema.mutationType.name
+      : null;
+    const types = schema.types
+      .filter((type) => isPlainObject(type) && typeof type.name === "string" && !type.name.startsWith("__"))
+      .map((type) => ({ name: type.name, kind: typeof type.kind === "string" ? type.kind : null }));
+    schemaCache = { apiKey, expiresAt: Date.now() + SCHEMA_CACHE_MS, queryTypeName, mutationTypeName, types };
+    return schemaCache;
+  }
+
+  async function schemaType(apiKey, name, mutationTypeName, signal) {
+    const value = extract(await introspect(apiKey, "type", { name }, signal), "__type");
+    return value === null ? null : projectSchemaType(value, mutationTypeName);
+  }
+
+  async function executeGenericMutation(apiKey, parsed, invocationContext) {
+    validateWriteInvocation(invocationContext);
+    invocationContext.signal.throwIfAborted();
+    const rootField = parsed.analysis.rootFields[0];
+    const outcomeDetails = { rootField, operationName: parsed.operationName ?? null };
+    const commitSignal = await invocationContext.beginCommit();
+    if (!(commitSignal instanceof AbortSignal)) {
+      throw failure("invalid_context", "The host commit signal is invalid.");
+    }
+    commitSignal.throwIfAborted();
+    let result;
+    try {
+      result = await rawGraphql(
+        fetchImplementation,
+        apiKey,
+        parsed.document,
+        parsed.variables,
+        parsed.operationName,
+        commitSignal,
+      );
+    } catch (error) {
+      if (isAmbiguousWriteFailure(error, commitSignal)) {
+        throw externalCommitOutcomeUnknown(rootField, outcomeDetails);
+      }
+      throw error;
+    }
+    if (result.errors.length > 0) {
+      if (!result.executed) {
+        throw failure(
+          "graphql_error",
+          "Kuali Build rejected the mutation before running it. Nothing was changed.",
+          false,
+          { ...outcomeDetails, messages: result.errors, executed: false },
+        );
+      }
+      throw externalCommitOutcomeUnknown(rootField, { ...outcomeDetails, messages: result.errors });
+    }
+    return {
+      data: redactResponse(result.data),
+      rootField,
+      permission: parsed.analysis.tier,
+      committed: true,
+    };
   }
 
   async function executeMutation(
@@ -964,10 +1761,7 @@ export function createIntegrationProvider(context) {
           return {
             kind: "connected",
             flowId: crypto.randomUUID(),
-            message:
-              granted.length === 1
-                ? "Connected to UC San Diego Kuali Build with read-only tools."
-                : "Connected to UC San Diego Kuali Build with write tools enabled.",
+            message: connectionMessage(granted),
           };
         }
         const flowId = createFlow(flows, granted);
@@ -998,10 +1792,7 @@ export function createIntegrationProvider(context) {
       return {
         kind: "connected",
         flowId: submitted.flowId,
-        message:
-          flow.capabilities.length === 1
-            ? "Connected to UC San Diego Kuali Build with read-only tools."
-            : "Connected to UC San Diego Kuali Build with write tools enabled.",
+        message: connectionMessage(flow.capabilities),
       };
     },
     async disconnect(lifecycleContext) {
@@ -1323,6 +2114,71 @@ export function createIntegrationProvider(context) {
             returned: users.length,
             truncated: connection.edges.length > users.length,
           };
+        }
+        case "kuali-build.graphql.schema": {
+          const roots = await schemaRoots(credential.apiKey, invocationContext.signal);
+          if (parsed.typeName !== undefined) {
+            const type = await schemaType(
+              credential.apiKey,
+              parsed.typeName,
+              roots.mutationTypeName,
+              invocationContext.signal,
+            );
+            return { type };
+          }
+          const queryRoot = roots.queryTypeName === null
+            ? null
+            : await schemaType(credential.apiKey, roots.queryTypeName, roots.mutationTypeName, invocationContext.signal);
+          const mutationRoot = roots.mutationTypeName === null
+            ? null
+            : await schemaType(credential.apiKey, roots.mutationTypeName, roots.mutationTypeName, invocationContext.signal);
+          const needle = parsed.search?.toLowerCase();
+          const matching = needle === undefined
+            ? roots.types
+            : roots.types.filter((type) => type.name.toLowerCase().includes(needle));
+          const filterFields = (fields) => needle === undefined
+            ? fields
+            : fields.filter((field) =>
+                field.name.toLowerCase().includes(needle) ||
+                (field.description ?? "").toLowerCase().includes(needle));
+          return {
+            queries: queryRoot === null ? [] : filterFields(queryRoot.fields),
+            mutations: mutationRoot === null ? [] : filterFields(mutationRoot.fields),
+            types: matching.slice(0, SCHEMA_MAX_TYPE_NAMES),
+            typesTruncated: matching.length > SCHEMA_MAX_TYPE_NAMES,
+            grantedPermissions: credential.capabilities,
+            note: "Each mutation lists the permission it needs. Use kuali-build.graphql.schema with typeName for a type's fields and arguments.",
+          };
+        }
+        case "kuali-build.graphql.query": {
+          const result = await rawGraphql(
+            fetchImplementation,
+            credential.apiKey,
+            parsed.document,
+            parsed.variables,
+            parsed.operationName,
+            invocationContext.signal,
+          );
+          if (result.data === null) {
+            throw failure("graphql_error", "Kuali Build rejected the query.", false, {
+              messages: result.errors,
+            });
+          }
+          return {
+            data: redactResponse(result.data),
+            errors: result.errors,
+            rootFields: parsed.analysis.rootFields,
+          };
+        }
+        case "kuali-build.graphql.mutate": {
+          validateWriteInvocation(invocationContext);
+          requireCapability(credential, WRITE_CAPABILITY);
+          return executeGenericMutation(credential.apiKey, parsed, invocationContext);
+        }
+        case "kuali-build.graphql.admin": {
+          validateWriteInvocation(invocationContext);
+          requireCapability(credential, ADMIN_CAPABILITY);
+          return executeGenericMutation(credential.apiKey, parsed, invocationContext);
         }
         case "kuali-build.workflows.status": {
           const document = extract(

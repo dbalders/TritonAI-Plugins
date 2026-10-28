@@ -2,8 +2,9 @@
 
 The provider is pinned to the exact UC San Diego HTTPS origin and exact
 `/app/api/v0/graphql` endpoint. Redirects are rejected. It sends a package-scoped API key only in
-the `Authorization` header and never accepts a caller-provided URL, GraphQL document, header, or
-product/dataset selector.
+the `Authorization` header and never accepts a caller-provided URL, header, or product/dataset
+selector. The general GraphQL tools accept a caller-provided GraphQL document, which is parsed and
+classified locally before it is sent (see below).
 
 Inputs must be plain objects with exact keys. Identifiers, searches, pagination, response bytes,
 JSON depth, object breadth, array length, node count, key length, and string size are bounded.
@@ -23,12 +24,37 @@ reported as `external_commit_outcome_unknown` without including form data or cre
 must inspect Kuali before taking another action.
 
 Draft initialization and submission are separate external commits with a read-only resolution step
-between them. They are not atomic; initialization can leave an empty draft. Approval, denial,
-send-back, reassignment, withdrawal, deletion, builder administration, and arbitrary GraphQL are not
-implemented because reviewed mutation contracts were not available.
+between them. They are not atomic; initialization can leave an empty draft.
+
+## General GraphQL access
+
+The general tools expose whatever the connected user's Kuali API key can do. Kuali API keys have no
+scopes, so the plugin's permissions are the only narrowing layer, and Kuali's own user permissions
+remain the final authority.
+
+- Each document is tokenized and parsed by the plugin (no third-party parser). Exactly one query or
+  mutation is allowed; subscriptions, multiple operations, type-system definitions, `@defer`, and
+  `@stream` are refused. Documents are limited to 32,768 characters, 8,000 tokens, nesting depth 24,
+  and 1,000 selections.
+- Queries need `kuali-build.read`. A mutation must select exactly one root field. Classification uses
+  the real field name after resolving aliases, fragment spreads, and inline fragments. Only fields on
+  the reviewed Write allowlist run under `kuali-build.write`; every other mutation, including fields
+  Kuali adds without notice, requires the opt-in `kuali-build.admin` capability. A name backstop keeps
+  delete/permission/credential/configuration-style names in Admin even if allowlisted by mistake.
+- Classification is by root field name only. A Write-list field could still do something drastic
+  through its arguments; host approval of the exact document and variables is the control for that.
+- Mutations follow the same commit and no-retry rules as the dedicated tools. A response with
+  GraphQL errors and no `data` is reported as not executed; errors with `data`, 5xx responses,
+  timeouts, network loss, and cancellation after commit are `external_commit_outcome_unknown`.
+- Unlike the dedicated tools, general tools return Kuali GraphQL error messages so the assistant can
+  correct its request. Messages are limited to five, 500 characters each, with control characters
+  removed. They are server text and may echo request values.
+- Response string values under credential-like keys (`apiKey`, `secret`, `token`, `password`, and
+  similar) are replaced with `[redacted by TritonAI]`. This is a backstop, not a guarantee that
+  sensitive record data is removed.
 
 Legacy credentials that granted both former write capabilities are migrated to unified write when
-the connection is updated. A partial legacy write grant is conservatively normalized to read-only;
+the connection is updated; migration never grants `kuali-build.admin`. A partial legacy write grant is conservatively normalized to read-only;
 the user can enable unified write without re-entering the stored API key.
 
 The hostname is fixed rather than caller-controlled, and Web PKI validation remains enabled. This
