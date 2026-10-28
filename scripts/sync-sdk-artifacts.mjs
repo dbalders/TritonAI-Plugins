@@ -88,16 +88,12 @@ try {
     const generated = Path.join(temporary, id);
     const committed = Path.join(artifactsRoot, id);
     await buildPluginArtifact(Path.join(pluginsRoot, id), generated);
-    const generatedArtifact = await verifyPluginArtifact(generated, {
-      hostNodeVersion: "24.13.1",
-    });
+    const generatedArtifact = await verifyPluginArtifact(generated);
     if (generatedArtifact.manifest.id !== id) {
       throw new Error(`${id}: SDK artifact manifest id does not match its directory.`);
     }
     if (check) {
-      const committedArtifact = await verifyPluginArtifact(committed, {
-        hostNodeVersion: "24.13.1",
-      });
+      const committedArtifact = await verifyPluginArtifact(committed);
       if (committedArtifact.manifest.id !== id) {
         throw new Error(`${id}: committed SDK artifact manifest id does not match its directory.`);
       }
