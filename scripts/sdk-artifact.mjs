@@ -29,6 +29,8 @@ export const ARTIFACT_LIMITS = Object.freeze({
 const MANIFEST_PATH = ".tritonai-plugin/plugin.json";
 const ARTIFACT_PATH = "artifact.json";
 const ENTRY_PATH = "plugin.mjs";
+const NODE24_TARGET = ">=24.13.1 <25";
+const NODE24_AND_NODE26_TARGET = ">=24.13.1 <25 || >=26.8.2 <27";
 const NODE_BUILTINS = new Set(
   builtinModules.map((specifier) =>
     specifier.startsWith("node:") ? specifier : `node:${specifier}`,
@@ -260,7 +262,7 @@ function assertNoNativeSources(files) {
   }
 }
 
-function descriptorFor(manifest, payloads, nodeBuiltins) {
+function descriptorFor(manifest, payloads, nodeBuiltins, nodeTarget = NODE24_AND_NODE26_TARGET) {
   const payload = [...payloads.entries()]
     .map(([path, bytes]) => ({ path, sha256: digest(bytes), size: bytes.length }))
     .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
@@ -282,7 +284,7 @@ function descriptorFor(manifest, payloads, nodeBuiltins) {
       architecture: "any",
       environments: ["electron-main", "server"],
       module: "esm",
-      node: ">=24.13.1 <25",
+      node: nodeTarget,
       platform: "any",
       runtime: "node",
       nodeBuiltins,
@@ -437,7 +439,7 @@ function assertDescriptorShape(value) {
       Array.isArray(value.target.environments) &&
       canonicalJson(value.target.environments) === canonicalJson(["electron-main", "server"]) &&
       value.target.module === "esm" &&
-      value.target.node === ">=24.13.1 <25" &&
+      (value.target.node === NODE24_TARGET || value.target.node === NODE24_AND_NODE26_TARGET) &&
       value.target.platform === "any" &&
       value.target.runtime === "node" &&
       Array.isArray(value.target.nodeBuiltins) &&
@@ -560,7 +562,12 @@ export async function verifyPluginArtifact(
     "Artifact sdk contract does not match its manifest.",
   );
   const nodeBuiltins = await assertPayloadInvariants(manifest, payloads);
-  const expectedDescriptor = descriptorFor(manifest, payloads, nodeBuiltins);
+  const expectedDescriptor = descriptorFor(
+    manifest,
+    payloads,
+    nodeBuiltins,
+    descriptor.target.node,
+  );
   assert(
     canonicalJson(descriptor) === canonicalJson(expectedDescriptor),
     "Artifact descriptor does not match its verified payloads.",

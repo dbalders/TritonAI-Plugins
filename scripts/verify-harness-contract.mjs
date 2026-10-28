@@ -137,9 +137,7 @@ for (const directory of await discoverPluginDirectories(pluginsRoot)) {
       }
     }
     await collect(artifactRoot);
-    const verified = pluginSdkArtifactModule.verifyPluginSdkArtifact(files, {
-      hostNodeVersion: "24.13.1",
-    });
+    const verified = pluginSdkArtifactModule.verifyPluginSdkArtifact(files);
     assert(
       verified.sdkManifest.id === directory && verified.sdkManifest.version === packageJson.version,
       `${directory}: exact Harness rejected the sealed SDK artifact identity.`,

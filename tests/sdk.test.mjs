@@ -323,7 +323,7 @@ test("sealed artifact output is byte-for-byte deterministic and executable", asy
     architecture: "any",
     environments: ["electron-main", "server"],
     module: "esm",
-    node: ">=24.13.1 <25",
+    node: ">=24.13.1 <25 || >=26.8.2 <27",
     nodeBuiltins: [],
     platform: "any",
     runtime: "node",
@@ -479,6 +479,34 @@ test("artifact compatibility and byte integrity fail before module import", asyn
   assert.equal(globalThis.__tritonaiSdkImported, undefined);
 });
 
+test("sealed artifacts admit supported Node 24 and 26 hosts", async (t) => {
+  const temporary = await temporaryDirectory(t);
+  const output = Path.join(temporary, "artifact");
+  await buildPluginArtifact(conformancePlugin, output);
+  for (const hostNodeVersion of ["24.13.1", "24.17.0", "26.8.2", "26.12.1"]) {
+    await assert.doesNotReject(() => loadTestArtifact(output, { hostNodeVersion }));
+  }
+  await assert.doesNotReject(() => verifyPluginArtifact(output));
+});
+
+test("legacy Node 24 artifacts retain their original runtime restriction", async (t) => {
+  const temporary = await temporaryDirectory(t);
+  const output = Path.join(temporary, "artifact");
+  await buildPluginArtifact(conformancePlugin, output);
+  const descriptorPath = Path.join(output, "artifact.json");
+  const descriptor = JSON.parse(await Fs.readFile(descriptorPath, "utf8"));
+  descriptor.target.node = ">=24.13.1 <25";
+  await Fs.writeFile(descriptorPath, `${canonicalJson(descriptor)}\n`);
+  await assert.doesNotReject(() => loadTestArtifact(output));
+  await assert.rejects(
+    () => loadTestArtifact(output, { hostNodeVersion: "26.12.1" }),
+    /requires Node\.js/u,
+  );
+  descriptor.target.node = ">=24";
+  await Fs.writeFile(descriptorPath, `${canonicalJson(descriptor)}\n`);
+  await assert.rejects(() => loadTestArtifact(output), /target is unsupported/u);
+});
+
 test("runtime compatibility fails before module import", async (t) => {
   const temporary = await temporaryDirectory(t);
   const source = Path.join(temporary, "source");
@@ -489,10 +517,9 @@ test("runtime compatibility fails before module import", async (t) => {
   });
   await buildPluginArtifact(source, output);
   delete globalThis.__tritonaiSdkImported;
-  await assert.rejects(
-    () => loadTestArtifact(output, { hostNodeVersion: "22.23.1" }),
-    /requires Node\.js/u,
-  );
+  for (const hostNodeVersion of ["22.23.1", "24.13.0", "25.0.0", "26.8.1", "27.0.0"]) {
+    await assert.rejects(() => loadTestArtifact(output, { hostNodeVersion }), /requires Node\.js/u);
+  }
   assert.equal(globalThis.__tritonaiSdkImported, undefined);
 });
 

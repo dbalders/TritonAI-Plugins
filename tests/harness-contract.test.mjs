@@ -4,12 +4,14 @@ import * as Os from "node:os";
 import * as Path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import * as YAML from "yaml";
 
 import {
   assertSupportedEffectVersion,
   assertHarnessEffectPeerContract,
   assertTrustedHarnessCheckout,
   resolveEffectRuntimeIdentity,
+  verifyHarnessEffectRuntime,
 } from "../scripts/harness-contract.mjs";
 
 const effectVersion = "4.0.0-beta.103";
@@ -44,6 +46,41 @@ function runtimeFixture({ lockPatch = effectHash, patched = true, version = effe
       : `/fixture/node_modules/.pnpm/${selector}/node_modules/effect`,
   };
 }
+
+test("verifies the project runtime in single- and multi-document pnpm lockfiles", async (t) => {
+  const harness = await Fs.realpath(
+    await Fs.mkdtemp(Path.join(Os.tmpdir(), "plugin-host-lockfile-")),
+  );
+  t.after(() => Fs.rm(harness, { recursive: true, force: true }));
+  const fixture = runtimeFixture({ version: "4.0.5", patched: false });
+  const installed = Path.join(harness, "node_modules/.pnpm/effect@4.0.5/node_modules/effect");
+  const serverModules = Path.join(harness, "apps/server/node_modules");
+  await Fs.mkdir(installed, { recursive: true });
+  await Fs.mkdir(serverModules, { recursive: true });
+  await Fs.writeFile(Path.join(installed, "package.json"), JSON.stringify({ version: "4.0.5" }));
+  await Fs.symlink(installed, Path.join(serverModules, "effect"), "junction");
+  await Fs.writeFile(Path.join(harness, "pnpm-workspace.yaml"), YAML.stringify(fixture.workspace));
+  const project = YAML.stringify(fixture.lockfile);
+  const manager = YAML.stringify({
+    lockfileVersion: "9.0",
+    importers: { ".": { packageManagerDependencies: { pnpm: { version: "12.14.0" } } } },
+  });
+  const lockPath = Path.join(harness, "pnpm-lock.yaml");
+  for (const contents of [project, `${manager}\n---\n${project}`]) {
+    await Fs.writeFile(lockPath, contents);
+    assert.equal((await verifyHarnessEffectRuntime(harness)).version, "4.0.5");
+  }
+  for (const contents of [manager, `${project}\n---\n${project}`]) {
+    await Fs.writeFile(lockPath, contents);
+    await assert.rejects(
+      () => verifyHarnessEffectRuntime(harness),
+      /exactly one project lockfile/u,
+    );
+  }
+  fixture.lockfile.importers["apps/server"].dependencies.effect.version = "4.0.4";
+  await Fs.writeFile(lockPath, `${manager}\n---\n${YAML.stringify(fixture.lockfile)}`);
+  await assert.rejects(() => verifyHarnessEffectRuntime(harness), /server importer/u);
+});
 
 test("enforces the published provider host-runtime boundaries", () => {
   for (const version of [

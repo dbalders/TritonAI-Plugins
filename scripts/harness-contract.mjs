@@ -171,7 +171,18 @@ export async function verifyHarnessEffectRuntime(harness) {
   const workspace = YAML.parse(
     await Fs.readFile(Path.join(harness, "pnpm-workspace.yaml"), "utf8"),
   );
-  const lockfile = YAML.parse(await Fs.readFile(Path.join(harness, "pnpm-lock.yaml"), "utf8"));
+  const lockfiles = YAML.parseAllDocuments(
+    await Fs.readFile(Path.join(harness, "pnpm-lock.yaml"), "utf8"),
+  ).map((document) => {
+    if (document.errors.length > 0) throw document.errors[0];
+    return document.toJS();
+  });
+  // pnpm 12 prepends a separate lock document for the package manager itself.
+  const projectLockfiles = lockfiles.filter((lockfile) =>
+    isRecord(lockfile?.importers?.["apps/server"]),
+  );
+  assert(projectLockfiles.length === 1, "Harness must contain exactly one project lockfile.");
+  const [lockfile] = projectLockfiles;
   const installedRoot = Path.join(harness, "apps/server/node_modules/effect");
   const installedPackage = JSON.parse(
     await Fs.readFile(Path.join(installedRoot, "package.json"), "utf8"),
