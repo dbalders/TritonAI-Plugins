@@ -2,7 +2,9 @@ export declare const PLUGIN_API_VERSION: "tritonai.plugin/v1";
 export declare const PLUGIN_KIND: "IntegrationPlugin";
 export declare const PLUGIN_MANIFEST_VERSION: 1;
 export declare const SDK_API_MAJOR: 1;
-export declare const HOST_CONTRACT_LEVEL: 2;
+export declare const HOST_CONTRACT_LEVEL: 3;
+/** The first host contract level that understands manifest `serviceEnvironments`. */
+export declare const SERVICE_ENVIRONMENTS_HOST_CONTRACT_LEVEL: 3;
 
 export type JsonPrimitive = null | boolean | number | string;
 export type JsonValue = JsonPrimitive | JsonObject | readonly JsonValue[];
@@ -37,6 +39,18 @@ export interface PluginSkill {
   readonly description: string;
   readonly capabilities: readonly string[];
 }
+/**
+ * One deployment of the plugin's external service, such as Prod or Dev. The host persists the
+ * user's choice and passes its id to every provider operation as `serviceEnvironment`.
+ */
+export interface PluginServiceEnvironment {
+  /** Lowercase stable id, `^[a-z][a-z0-9-]{0,31}$`, unique within the manifest. */
+  readonly id: string;
+  /** Short label shown in the host's switch, at most 32 characters. */
+  readonly displayName: string;
+  /** Plain-text detail such as the hostname, at most 120 characters. */
+  readonly description: string;
+}
 export interface PluginManifestV1 {
   readonly apiVersion: "tritonai.plugin/v1";
   readonly kind: "IntegrationPlugin";
@@ -52,6 +66,11 @@ export interface PluginManifestV1 {
   readonly capabilities: readonly PluginCapability[];
   readonly tools: readonly PluginTool[];
   readonly skills: readonly PluginSkill[];
+  /**
+   * Optional list of 2–4 service environments; the first is the default. Declaring it requires
+   * `sdk.requiredHostContractLevel >= 3`. Omit it for a single-environment plugin.
+   */
+  readonly serviceEnvironments?: readonly PluginServiceEnvironment[];
 }
 
 export interface PluginFailure {
@@ -78,6 +97,12 @@ export interface IntegrationSecretStore {
 }
 export interface IntegrationOperationContext {
   readonly signal: AbortSignal;
+  /**
+   * Host level 3: the user-selected service environment id, present on every operation for a
+   * plugin that declares `serviceEnvironments` and absent otherwise. Providers keep each
+   * environment's credentials separate and treat a missing value as the first environment.
+   */
+  readonly serviceEnvironment?: string;
 }
 export interface IntegrationLifecycleContext extends IntegrationOperationContext {
   /** Admit one final externally visible lifecycle mutation, such as credential rotation. */

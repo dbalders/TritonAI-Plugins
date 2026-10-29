@@ -4,6 +4,7 @@ import type {
   IntegrationConnectionSubmission,
   IntegrationInvocationContext,
   IntegrationLifecycleContext,
+  IntegrationOperationContext,
   IntegrationProviderPollResult,
   IntegrationProviderStatus,
   IntegrationSecretStore,
@@ -18,6 +19,7 @@ export type {
   IntegrationConnectionSubmission,
   IntegrationInvocationContext,
   IntegrationLifecycleContext,
+  IntegrationOperationContext,
   IntegrationProviderPollResult,
   IntegrationProviderStatus,
   IntegrationSecretStore,
@@ -60,7 +62,7 @@ export interface IntegrationProviderTool {
 export interface IntegrationProvider {
   readonly id: string;
   readonly tools: ReadonlyArray<IntegrationProviderTool>;
-  status(context?: { readonly signal: AbortSignal }): Promise<IntegrationProviderStatus>;
+  status(context?: IntegrationOperationContext): Promise<IntegrationProviderStatus>;
   prepare?(context?: IntegrationLifecycleContext): Promise<void>;
   connect?(
     capabilities: ReadonlyArray<string>,

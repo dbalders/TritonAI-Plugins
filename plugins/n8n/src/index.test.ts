@@ -95,6 +95,8 @@ describe("n8n SDK plugin factory", () => {
       { serverUrl: 42 },
       { serverUrl: sentinel },
       { serverUrl: "http://n8n.tritonai.ucsd.edu/mcp-server/http" },
+      // Dev is selected per operation by Harness, never by managed configuration.
+      { serverUrl: "https://n8n-dev.tritonai.ucsd.edu/mcp-server/http" },
       { serverUrl: "https://n8n.tritonai.ucsd.edu/mcp-server/http", extra: sentinel },
       Object.create({ serverUrl: "https://n8n.tritonai.ucsd.edu/mcp-server/http" }),
     ]) {

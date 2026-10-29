@@ -4,7 +4,7 @@ import * as Path from "node:path";
 import { canonicalJson, validateManifestV1 } from "../../../packages/plugin-sdk/index.mjs";
 import * as Schema from "effect/Schema";
 
-import { N8N_TOOLS } from "../.sdk-build/N8nProvider.js";
+import { N8N_SERVICE_ENVIRONMENTS, N8N_TOOLS } from "../.sdk-build/N8nProvider.js";
 
 const manifestPath = Path.resolve(import.meta.dirname, "..", ".tritonai-plugin", "plugin.json");
 const current = JSON.parse(await Fs.readFile(manifestPath, "utf8"));
@@ -54,7 +54,7 @@ const manifest = validateManifestV1({
   name: current.name,
   description: current.description,
   version: current.version,
-  sdk: { apiMajor: 1, requiredHostContractLevel: 2 },
+  sdk: { apiMajor: 1, requiredHostContractLevel: 3 },
   entry: "dist/index.mjs",
   provider: current.provider,
   configurationSchema: {
@@ -75,5 +75,10 @@ const manifest = validateManifestV1({
   })),
   tools,
   skills: current.skills,
+  serviceEnvironments: N8N_SERVICE_ENVIRONMENTS.map(({ id, displayName, description }) => ({
+    id,
+    displayName,
+    description,
+  })),
 });
 await Fs.writeFile(manifestPath, `${canonicalJson(manifest)}\n`);

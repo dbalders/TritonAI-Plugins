@@ -1,3 +1,23 @@
+// src/host-contract.ts
+var IntegrationProviderPublicError = class extends Error {
+  _tag = "PluginFailure";
+  code = "n8n_operation_failed";
+  retryable = false;
+  constructor(message) {
+    super(message.trim() || "n8n operation failed.");
+    this.name = "PluginFailure";
+  }
+};
+var ExternalCommitOutcomeUnknownError = class extends Error {
+  _tag = "ExternalCommitOutcomeUnknown";
+  code = "external_commit_outcome_unknown";
+  retryable = false;
+  constructor(message = "The external commit may have completed. Do not retry automatically.") {
+    super(message);
+    this.name = "ExternalCommitOutcomeUnknown";
+  }
+};
+
 // ../../node_modules/.pnpm/effect@4.0.0-beta.102/node_modules/effect/dist/Pipeable.js
 var pipeArguments = (self, args2) => {
   switch (args2.length) {
@@ -6295,26 +6315,6 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeHttp from "node:http";
 import * as NodeUtil2 from "node:util";
 
-// src/host-contract.ts
-var IntegrationProviderPublicError = class extends Error {
-  _tag = "PluginFailure";
-  code = "n8n_operation_failed";
-  retryable = false;
-  constructor(message) {
-    super(message.trim() || "n8n operation failed.");
-    this.name = "PluginFailure";
-  }
-};
-var ExternalCommitOutcomeUnknownError = class extends Error {
-  _tag = "ExternalCommitOutcomeUnknown";
-  code = "external_commit_outcome_unknown";
-  retryable = false;
-  constructor(message = "The external commit may have completed. Do not retry automatically.") {
-    super(message);
-    this.name = "ExternalCommitOutcomeUnknown";
-  }
-};
-
 // src/upstream-schema.ts
 import * as NodeUtil from "node:util";
 var EmptyInput = Record(String4, Unknown2).pipe(
@@ -10414,7 +10414,28 @@ var UPSTREAM_TOOLS = [
 var N8N_PROVIDER_ID = "n8n";
 var N8N_SECRET_SUFFIX = "oauth";
 var N8N_REVOCATION_SECRET_SUFFIX = "oauth-revocation";
-var REVIEWED_SERVER_URL = "https://n8n.tritonai.ucsd.edu/mcp-server/http";
+var N8N_SERVICE_ENVIRONMENTS = [
+  {
+    id: "production",
+    displayName: "Prod",
+    description: "n8n.tritonai.ucsd.edu",
+    serverUrl: "https://n8n.tritonai.ucsd.edu/mcp-server/http",
+    secretPrefix: ""
+  },
+  {
+    id: "development",
+    displayName: "Dev",
+    description: "n8n-dev.tritonai.ucsd.edu",
+    serverUrl: "https://n8n-dev.tritonai.ucsd.edu/mcp-server/http",
+    secretPrefix: "development."
+  }
+];
+function n8nCredentialSecretName(environment) {
+  return `${environment.secretPrefix}${N8N_SECRET_SUFFIX}`;
+}
+function n8nRevocationSecretName(environment) {
+  return `${environment.secretPrefix}${N8N_REVOCATION_SECRET_SUFFIX}`;
+}
 var CALLBACK_PATH = "/oauth2/callback";
 var MCP_PROTOCOL_VERSION = "2026-07-28";
 var MCP_PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion";
@@ -11444,12 +11465,15 @@ function validateServerUrl(value) {
   try {
     url = new URL(normalized);
   } catch {
-    throw new Error("n8n requires the reviewed HTTPS MCP server URL.");
+    throw new Error("n8n requires a reviewed HTTPS MCP server URL.");
   }
-  if (url.toString() !== REVIEWED_SERVER_URL || url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "" || url.port !== "" || url.hostname !== "n8n.tritonai.ucsd.edu" || url.pathname !== "/mcp-server/http") {
-    throw new Error("n8n requires the reviewed HTTPS MCP server URL.");
+  const environment = N8N_SERVICE_ENVIRONMENTS.find(
+    (candidate) => url.toString() === candidate.serverUrl
+  );
+  if (!environment || url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "" || url.port !== "" || url.hostname !== new URL(environment.serverUrl).hostname || url.pathname !== "/mcp-server/http") {
+    throw new Error("n8n requires a reviewed HTTPS MCP server URL.");
   }
-  return url;
+  return { url, environment };
 }
 function sameOriginEndpoint(value, path, origin, label) {
   const raw = boundedString(value, 2048, label);
@@ -11814,6 +11838,8 @@ var N8nProvider = class {
   tools = N8N_TOOLS;
   #secrets;
   #server;
+  #credentialSecretName;
+  #revocationSecretName;
   #fetch;
   #requestTimeoutMs;
   #pending = /* @__PURE__ */ new Map();
@@ -11835,7 +11861,10 @@ var N8nProvider = class {
   #sessionMutation = Promise.resolve();
   constructor(secrets, configuration2, fetchImplementation = globalThis.fetch, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
     this.#secrets = secrets;
-    this.#server = validateServerUrl(configuration2.serverUrl);
+    const { url, environment } = validateServerUrl(configuration2.serverUrl);
+    this.#server = url;
+    this.#credentialSecretName = n8nCredentialSecretName(environment);
+    this.#revocationSecretName = n8nRevocationSecretName(environment);
     if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 3e4) {
       throw new Error("n8n requires a bounded request timeout.");
     }
@@ -12015,13 +12044,13 @@ var N8nProvider = class {
   }
   async #readCredential(signal) {
     if (signal?.aborted) throw new IntegrationProviderPublicError("n8n request was cancelled.");
-    const value = await this.#secrets.get(N8N_SECRET_SUFFIX);
+    const value = await this.#secrets.get(this.#credentialSecretName);
     if (signal?.aborted) throw new IntegrationProviderPublicError("n8n request was cancelled.");
     return value === null ? null : parseCredential(value, this.#server.toString());
   }
   async #writeCredential(credential, signal, onPersisted) {
     signal.throwIfAborted();
-    await this.#secrets.set(N8N_SECRET_SUFFIX, JSON.stringify(credential));
+    await this.#secrets.set(this.#credentialSecretName, JSON.stringify(credential));
     onPersisted?.();
     signal.throwIfAborted();
   }
@@ -12405,7 +12434,7 @@ var N8nProvider = class {
         throw new Error("n8n connection changed during status.");
       }
       if (!credential) {
-        const revocationPending = await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX) !== null;
+        const revocationPending = await this.#secrets.get(this.#revocationSecretName) !== null;
         return {
           state: this.#pending.size > 0 ? "connecting" : "not_connected",
           accountLabel: null,
@@ -12723,7 +12752,7 @@ var N8nProvider = class {
         responseSettled = true;
         if (!response.ok) {
           if (response.status === 400 && json.error === "invalid_grant") {
-            await this.#secrets.remove(N8N_SECRET_SUFFIX);
+            await this.#secrets.remove(this.#credentialSecretName);
             this.#accessToken = null;
             this.#credentialRevision += 1;
             this.#sessionId = null;
@@ -12775,16 +12804,16 @@ var N8nProvider = class {
     });
   }
   async #readPendingRevocations() {
-    const encoded = await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX);
+    const encoded = await this.#secrets.get(this.#revocationSecretName);
     return encoded === null ? [] : parsePendingRevocations(encoded);
   }
   async #writePendingRevocations(grants) {
     if (grants.length === 0) {
-      await this.#secrets.remove(N8N_REVOCATION_SECRET_SUFFIX);
+      await this.#secrets.remove(this.#revocationSecretName);
       return;
     }
     await this.#secrets.set(
-      N8N_REVOCATION_SECRET_SUFFIX,
+      this.#revocationSecretName,
       JSON.stringify({
         version: 2,
         serverUrl: this.#server.toString(),
@@ -12793,7 +12822,7 @@ var N8nProvider = class {
     );
   }
   async #retryPendingRevocations(discovery, signal) {
-    if (await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX) === null) return;
+    if (await this.#secrets.get(this.#revocationSecretName) === null) return;
     const budget = AbortSignal.timeout(
       Math.min(REVOCATION_RETRY_BUDGET_MS, this.#requestTimeoutMs)
     );
@@ -12825,7 +12854,7 @@ var N8nProvider = class {
       await this.#clearPendingFlows();
       let admitted = false;
       try {
-        const encoded = await this.#secrets.get(N8N_SECRET_SUFFIX);
+        const encoded = await this.#secrets.get(this.#credentialSecretName);
         context2?.signal?.throwIfAborted();
         let credential = null;
         if (encoded !== null) {
@@ -12851,7 +12880,7 @@ var N8nProvider = class {
             ]);
           }
         }
-        await this.#secrets.remove(N8N_SECRET_SUFFIX);
+        await this.#secrets.remove(this.#credentialSecretName);
         this.#accessToken = null;
         this.#credentialRevision += 1;
         this.#uncertainCredentialState = false;
@@ -12992,6 +13021,15 @@ var N8nProvider = class {
     }
     throw failure;
   }
+  /**
+   * Abandon sign-ins still waiting in the browser: close their loopback listeners and forget their
+   * flows. A stored credential is untouched. Used when the user switches to another environment.
+   */
+  async cancelPendingSignIn() {
+    if (this.#pending.size === 0) return;
+    this.#connectAttempt += 1;
+    await this.#clearPendingFlows();
+  }
   async close() {
     if (this.#closed) return;
     this.#closed = true;
@@ -13007,6 +13045,122 @@ var N8nProvider = class {
   }
 };
 
+// src/N8nEnvironmentProvider.ts
+var UNKNOWN_ENVIRONMENT_MESSAGE = "This n8n environment is not available in this plugin version.";
+var SWITCHED_ENVIRONMENT_MESSAGE = "n8n switched environments while this request was starting, so it was not run. Try again.";
+var N8nEnvironmentProvider = class {
+  id = N8N_PROVIDER_ID;
+  tools = N8N_TOOLS;
+  #secrets;
+  #providers;
+  #activeEnvironmentId;
+  constructor(secrets, configuration2, fetchImplementation, requestTimeoutMs) {
+    if (configuration2.serverUrl !== N8N_SERVICE_ENVIRONMENTS[0].serverUrl) {
+      throw new Error("n8n configuration must contain only the reviewed server URL.");
+    }
+    this.#secrets = secrets;
+    this.#providers = new Map(
+      N8N_SERVICE_ENVIRONMENTS.map((environment) => [
+        environment.id,
+        new N8nProvider(
+          secrets,
+          { serverUrl: environment.serverUrl },
+          fetchImplementation,
+          requestTimeoutMs
+        )
+      ])
+    );
+  }
+  #environment(context2) {
+    const selected = context2?.serviceEnvironment;
+    if (selected === void 0) return N8N_SERVICE_ENVIRONMENTS[0];
+    const environment = N8N_SERVICE_ENVIRONMENTS.find(({ id }) => id === selected);
+    if (!environment) throw new IntegrationProviderPublicError(UNKNOWN_ENVIRONMENT_MESSAGE);
+    return environment;
+  }
+  /**
+   * The host sends operations for the selected environment only, so the environment of the latest
+   * operation is the one in use. Every operation cancels sign-ins still pending in the others (they
+   * were abandoned by switching; stored credentials stay), including one that finished starting
+   * after the switch. Work that would act on an environment the user has since left is refused
+   * before it starts, unless it only reads status.
+   */
+  async #enter(environment, options) {
+    this.#activeEnvironmentId = environment.id;
+    await Promise.allSettled(
+      [...this.#providers].filter(([id]) => id !== environment.id).map(([, provider]) => provider.cancelPendingSignIn())
+    );
+    if (options.current && this.#activeEnvironmentId !== environment.id) {
+      throw new IntegrationProviderPublicError(SWITCHED_ENVIRONMENT_MESSAGE);
+    }
+    return this.#providers.get(environment.id);
+  }
+  #provider(context2) {
+    return this.#enter(this.#environment(context2), { current: true });
+  }
+  /** A stored credential is a cheap hint that the user can switch back without signing in. */
+  async #signedInElsewhere(selected, signal) {
+    const signedIn = [];
+    for (const environment of N8N_SERVICE_ENVIRONMENTS) {
+      if (environment.id === selected.id) continue;
+      if (signal?.aborted) break;
+      try {
+        if (await this.#secrets.get(n8nCredentialSecretName(environment)) !== null) {
+          signedIn.push(environment);
+        }
+      } catch {
+      }
+    }
+    return signedIn;
+  }
+  async status(context2) {
+    let environment;
+    try {
+      environment = this.#environment(context2);
+    } catch {
+      return {
+        state: "error",
+        accountLabel: null,
+        grantedCapabilities: [],
+        message: UNKNOWN_ENVIRONMENT_MESSAGE
+      };
+    }
+    const status = await (await this.#enter(environment, { current: false })).status(context2);
+    if (status.state === "error") return status;
+    const others = await this.#signedInElsewhere(environment, context2?.signal);
+    if (others.length === 0) return status;
+    const names = others.map(({ displayName }) => displayName).join(" and ");
+    const note = status.state === "connected" ? `Also signed in to ${names}.` : `Still signed in to ${names}.`;
+    return { ...status, message: status.message ? `${status.message} ${note}` : note };
+  }
+  async prepare(context2) {
+    return (await this.#provider(context2)).prepare(context2);
+  }
+  async connect(capabilities, context2, submission) {
+    const environment = this.#environment(context2);
+    const provider = await this.#enter(environment, { current: true });
+    const result2 = await provider.connect(capabilities, context2, submission);
+    if (this.#activeEnvironmentId !== environment.id) await provider.cancelPendingSignIn();
+    return result2;
+  }
+  async poll(flowId, context2) {
+    return (await this.#provider(context2)).poll(flowId, context2);
+  }
+  async disconnect(context2) {
+    return (await this.#provider(context2)).disconnect(context2);
+  }
+  async invoke(toolName, input, context2) {
+    return (await this.#provider(context2)).invoke(toolName, input, context2);
+  }
+  async close() {
+    const results = await Promise.allSettled(
+      [...this.#providers.values()].map((provider) => provider.close())
+    );
+    const failure = results.find((result2) => result2.status === "rejected");
+    if (failure) throw failure.reason;
+  }
+};
+
 // src/index.ts
 var SERVER_URL = "https://n8n.tritonai.ucsd.edu/mcp-server/http";
 function configuration(value) {
@@ -13018,7 +13172,7 @@ function configuration(value) {
 var createIntegrationProvider = ({
   secrets,
   configuration: input
-}) => new N8nProvider(secrets, configuration(input));
+}) => new N8nEnvironmentProvider(secrets, configuration(input));
 export {
   createIntegrationProvider
 };

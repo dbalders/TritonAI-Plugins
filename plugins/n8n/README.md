@@ -12,14 +12,30 @@ Read only grants the complete read bundle, while All grants Read and Write. Harn
 grant instead of offering a competing capability switch. There is no API key, shared account,
 client secret, embedded browser, generic REST client, or n8n API reimplementation.
 
-## Configuration
+## Configuration and environments
 
-The reviewed endpoint is declared in the sealed SDK manifest:
+The plugin can reach two reviewed n8n deployments, and the user picks one in Harness:
 
-The factory accepts exactly `https://n8n.tritonai.ucsd.edu/mcp-server/http`, rejects extra
-configuration, and keeps OAuth discovery and all advertised endpoints on that origin.
+| Environment    | MCP endpoint                                        | Stored sign-in                                      |
+| -------------- | --------------------------------------------------- | --------------------------------------------------- |
+| Prod (default) | `https://n8n.tritonai.ucsd.edu/mcp-server/http`     | `oauth`, `oauth-revocation`                         |
+| Dev            | `https://n8n-dev.tritonai.ucsd.edu/mcp-server/http` | `development.oauth`, `development.oauth-revocation` |
 
-The n8n instance administrator must add `http://127.0.0.1/oauth2/callback` under
+The managed configuration still accepts exactly
+`{ "serverUrl": "https://n8n.tritonai.ucsd.edu/mcp-server/http" }` and rejects extra fields or any
+other URL, including Dev. Dev is a reviewed constant in the plugin, selected only through the
+host's service-environment choice. Each environment keeps OAuth discovery and every advertised
+endpoint on its own origin, and its credential is bound to that endpoint and issuer.
+
+The manifest declares both as `serviceEnvironments` (Prod first), which requires Harness host
+contract level 3. Harness saves the user's choice and passes it to every operation as
+`context.serviceEnvironment`. Each environment has its own sign-in, session, and stored
+credential, so switching never signs the user out of the other one. Disconnecting affects only the
+selected environment. A host that sends no selection gets Prod, and existing Prod sign-ins keep
+working without reconnecting. When the other environment also has a stored sign-in, the status
+message says so (for example, "Also signed in to Dev.").
+
+An administrator of **each** n8n instance must add `http://127.0.0.1/oauth2/callback` under
 **Settings → Instance-level MCP → Allowed OAuth Redirect URLs**. The provider uses an ephemeral
 loopback port for each sign-in; n8n permits that varying port while still matching the callback's
 scheme, host, and path. Without this entry, n8n rejects authorization with

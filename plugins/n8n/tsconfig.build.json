@@ -11,6 +11,7 @@
     "sourceMap": false
   },
   "include": [
+    "src/N8nEnvironmentProvider.ts",
     "src/N8nProvider.ts",
     "src/host-contract.ts",
     "src/index.ts",

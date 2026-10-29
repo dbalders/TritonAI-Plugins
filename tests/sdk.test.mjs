@@ -527,15 +527,75 @@ test("host contract levels are monotonic", async (t) => {
   const temporary = await temporaryDirectory(t);
   const source = Path.join(temporary, "source");
   const output = Path.join(temporary, "artifact");
-  await writeFixture(source, { manifest: { sdk: { apiMajor: 1, requiredHostContractLevel: 3 } } });
+  await writeFixture(source, { manifest: { sdk: { apiMajor: 1, requiredHostContractLevel: 4 } } });
   await buildPluginArtifact(source, output);
   await assert.rejects(() => verifyTestArtifact(output), /newer host contract/u);
   await assert.doesNotReject(() =>
-    verifyTestArtifact(output, { sdkApiMajor: 1, hostContractLevel: 3 }),
-  );
-  await assert.doesNotReject(() =>
     verifyTestArtifact(output, { sdkApiMajor: 1, hostContractLevel: 4 }),
   );
+  await assert.doesNotReject(() =>
+    verifyTestArtifact(output, { sdkApiMajor: 1, hostContractLevel: 5 }),
+  );
+});
+
+test("service environments require level 3 and a bounded, exact shape", async (t) => {
+  const environments = [
+    { id: "production", displayName: "Prod", description: "service.example.edu" },
+    { id: "development", displayName: "Dev", description: "service-dev.example.edu" },
+  ];
+  const temporary = await temporaryDirectory(t);
+  const source = Path.join(temporary, "source");
+  const output = Path.join(temporary, "artifact");
+  const manifest = await writeFixture(source, {
+    manifest: {
+      sdk: { apiMajor: 1, requiredHostContractLevel: 3 },
+      serviceEnvironments: environments,
+    },
+  });
+  assert.deepEqual(validateManifestV1(manifest).serviceEnvironments, environments);
+  await buildPluginArtifact(source, output);
+  await assert.doesNotReject(() => verifyTestArtifact(output));
+  await assert.rejects(
+    () => verifyTestArtifact(output, { sdkApiMajor: 1, hostContractLevel: 2 }),
+    /newer host contract/u,
+  );
+
+  assert.throws(
+    () =>
+      validateManifestV1({
+        ...manifest,
+        sdk: { apiMajor: 1, requiredHostContractLevel: 2 },
+      }),
+    /serviceEnvironments require host contract level 3/u,
+  );
+  const invalid = [
+    [[environments[0]], /2 to 4 environments/u],
+    [[...environments, ...["a", "b", "c"].map((id) => ({ ...environments[0], id }))], /2 to 4/u],
+    [{ production: environments[0] }, /2 to 4 environments/u],
+    [[environments[0], { ...environments[1], id: "production" }], /Duplicate service environment/u],
+    [[environments[0], { ...environments[1], id: "Dev" }], /environment id is invalid/u],
+    [[environments[0], { ...environments[1], id: "1dev" }], /environment id is invalid/u],
+    [[environments[0], { ...environments[1], id: "d".repeat(33) }], /environment id is invalid/u],
+    [[environments[0], { ...environments[1], id: "dev.one" }], /environment id is invalid/u],
+    [[environments[0], { ...environments[1], displayName: "" }], /displayName is required/u],
+    [[environments[0], { ...environments[1], displayName: " Dev" }], /displayName is required/u],
+    [
+      [environments[0], { ...environments[1], displayName: "D".repeat(33) }],
+      /displayName is required/u,
+    ],
+    [
+      [environments[0], { ...environments[1], description: "d".repeat(121) }],
+      /description is required/u,
+    ],
+    [[environments[0], { id: "development", displayName: "Dev" }], /exactly id, displayName/u],
+    [[environments[0], { ...environments[1], url: "https://x" }], /exactly id, displayName/u],
+    [[environments[0], "development"], /exactly id, displayName/u],
+  ];
+  for (const [serviceEnvironments, message] of invalid) {
+    assert.throws(() => validateManifestV1({ ...manifest, serviceEnvironments }), message);
+  }
+  const { serviceEnvironments: _omitted, ...singleEnvironment } = manifest;
+  assert.equal(validateManifestV1(singleEnvironment).serviceEnvironments, undefined);
 });
 
 test("source inspection admits declared Node builtins and rejects unresolved dependencies", async (t) => {
