@@ -1894,9 +1894,11 @@ const BUILDER_TOOLS = Object.freeze({
         return UNKNOWN_OUTCOME;
       }
       const status = data.submitDocumentV2.status;
-      return ["validationFailed", "formOutOfDate", "submissionsDisabled", "Invalid Operation"].includes(status)
-        ? { reason: status, validations: data.submitDocumentV2.validations ?? null }
-        : null;
+      if (["validationFailed", "formOutOfDate", "submissionsDisabled", "Invalid Operation"].includes(status)) {
+        return { reason: status, validations: data.submitDocumentV2.validations ?? null };
+      }
+      // Any status Kuali uses for a finished step counts as done; anything unrecognized is unconfirmed.
+      return ACT_SUCCESS_STATUSES.has(status) ? null : UNKNOWN_OUTCOME;
     },
   },
   "kuali-build.documents.sendback": {
@@ -1964,6 +1966,16 @@ function errorResultRejection(result, successType) {
 }
 
 const UNKNOWN_OUTCOME = Object.freeze({ unknown: true });
+
+const ACT_SUCCESS_STATUSES = new Set([
+  "completed",
+  "approved",
+  "task completed",
+  "acknowledged",
+  "rejected",
+  "denied",
+  "submitted",
+]);
 
 function validateBuilderInput(toolName, value) {
   const tool = BUILDER_TOOLS[toolName];
@@ -2682,6 +2694,19 @@ export function createIntegrationProvider(context) {
           validateWriteInvocation(invocationContext);
           requireCapability(credential, tier === "admin" ? ADMIN_CAPABILITY : WRITE_CAPABILITY);
           const outcome = await executeGenericMutation(credential.apiKey, parsed, invocationContext);
+          // Every dedicated tool needs a real answer: null proves nothing, and false means Kuali
+          // declined (for example a delete that did not happen).
+          const rootValue = outcome.data?.[parsed.analysis.responseKey];
+          if (rootValue === null || rootValue === undefined) {
+            throw externalCommitOutcomeUnknown(outcome.rootField, { rootField: outcome.rootField });
+          }
+          if (rootValue === false) {
+            throw failure("kuali_rejected_action", "Kuali Build did not perform the action.", false, {
+              rootField: outcome.rootField,
+              committed: false,
+              reason: "Kuali returned false",
+            });
+          }
           const rejected = BUILDER_TOOLS[toolName].rejection?.(outcome.data);
           if (rejected === UNKNOWN_OUTCOME) {
             throw externalCommitOutcomeUnknown(outcome.rootField, { rootField: outcome.rootField });

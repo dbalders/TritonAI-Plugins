@@ -1015,3 +1015,38 @@ test("council round 4: aliased boolean credential results stay visible; successf
   );
   assert.equal(sent.committed, true);
 });
+
+test("PR review: dedicated tools need a confirmed result", async () => {
+  const template = { type: "Section" };
+  for (const [tool, input, data, code] of [
+    [
+      "kuali-build.forms.update",
+      { appId: APP_ID, template, confirmChange: true },
+      { updateForm: null },
+      "external_commit_outcome_unknown",
+    ],
+    [
+      "kuali-build.documents.act",
+      { documentId: DOCUMENT_ID, actionId: "a1", status: "approved", confirmChange: true },
+      { submitDocumentV2: { id: DOCUMENT_ID, status: "mystery" } },
+      "external_commit_outcome_unknown",
+    ],
+  ]) {
+    const { provider: kuali } = provider([READ, WRITE], [json({ data })]);
+    await assert.rejects(
+      () => kuali.invoke(tool, input, writeContext()),
+      (error) => error.code === code,
+      tool,
+    );
+  }
+  const { provider: admin } = provider([READ, ADMIN], [json({ data: { deleteApp: false } })]);
+  await assert.rejects(
+    () =>
+      admin.invoke(
+        "kuali-build.apps.delete",
+        { appId: APP_ID, confirmChange: true },
+        writeContext(),
+      ),
+    (error) => error.code === "kuali_rejected_action" && error.details.committed === false,
+  );
+});

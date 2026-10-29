@@ -52,7 +52,8 @@ remain the final authority.
   validated IDs and JSON inputs. Where the web app treats a returned value as a refusal (for example
   `validationFailed`, `submissionsDisabled`, `Invalid Operation`, or an error-type result with a
   reason), the tool reports `kuali_rejected_action` with `committed: false` instead of success. A
-  missing or unrecognized result is reported as `external_commit_outcome_unknown`. The tools are
+  missing, null, or unrecognized result (including an unrecognized `documents.act` status) is
+  reported as `external_commit_outcome_unknown`, and a `false` result is a refusal. The tools are
   classified by the same rules at call time, so a delete tool cannot run under Write.
 - A mutation whose name suggests it creates or reveals a credential (`apiKey`, `token`, `secret`,
   `password`, `credential`) has its whole result withheld from the assistant unless the result is
