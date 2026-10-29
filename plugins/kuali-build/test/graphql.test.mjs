@@ -1161,8 +1161,7 @@ test("live test: Kuali's permission refusal is a proven no-change, other errors 
     kuali.invoke("kuali-build.apps.create", { name: "X", confirmChange: true }, writeContext());
   await assert.rejects(
     create,
-    (error) =>
-      error.code === "kuali_permission_denied" && error.details.committed === false,
+    (error) => error.code === "kuali_permission_denied" && error.details.committed === false,
   );
   await assert.rejects(create, (error) => error.code === "external_commit_outcome_unknown");
   await assert.rejects(create, (error) => error.code === "external_commit_outcome_unknown");
