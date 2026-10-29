@@ -255,6 +255,7 @@ test("mutation failures after dispatch are never retried and report unknown outc
     new Error("socket closed"),
     json({ errors: [{ message: "boom" }] }, 500),
     json({ data: { deleteDocument: null }, errors: [{ message: "Failed halfway" }] }),
+    json({ data: null, errors: [{ message: "Non-null field failed during execution" }] }),
   ]) {
     const { provider: kuali, mock } = provider([READ, ADMIN], [response]);
     await assert.rejects(
@@ -434,4 +435,101 @@ test("a full legacy write grant does not silently gain admin", async () => {
   const legacy = [READ, "kuali-build.documents.write", "kuali-build.workflows.write"];
   const { provider: kuali } = provider(legacy, [json({ data: { apps: [] } })]);
   assert.deepEqual((await kuali.status(readContext())).grantedCapabilities, [READ, WRITE]);
+});
+
+test("review regressions: errors after execution always mean an unknown outcome", async () => {
+  const input = { document: DELETE, variables: { id: DOCUMENT_ID }, confirmMutation: true };
+  for (const response of [
+    json({
+      data: { deleteDocument: null },
+      errors: [{ message: "Downstream denied", extensions: { code: "FORBIDDEN" } }],
+    }),
+    json({ data: null, errors: [{ message: "" }] }),
+    json({ data: null, errors: [{ message: "Non-null failure" }] }, 400),
+    json({ data: {} }),
+  ]) {
+    const { provider: kuali, mock } = provider([READ, ADMIN], [response]);
+    await assert.rejects(
+      () => kuali.invoke("kuali-build.graphql.admin", input, writeContext()),
+      (error) => error.code === "external_commit_outcome_unknown",
+    );
+    assert.equal(mock.requests.length, 1);
+  }
+  const { provider: kuali } = provider(
+    [READ, ADMIN],
+    [json({ errors: [{ message: "\n\t" }] }, 400)],
+  );
+  await assert.rejects(
+    () => kuali.invoke("kuali-build.graphql.admin", input, writeContext()),
+    (error) => error.code === "graphql_error" && error.details.executed === false,
+  );
+});
+
+test("review regressions: exponential fragment expansion is bounded", async () => {
+  const { provider: kuali, mock } = provider([READ], [json({ data: { __typename: "Query" } })]);
+  const fragments = ["fragment F0 on Query { __typename }"];
+  for (let level = 1; level <= 22; level += 1) {
+    fragments.push(`fragment F${level} on Query { ...F${level - 1} ...F${level - 1} }`);
+  }
+  const started = Date.now();
+  await kuali.invoke(
+    "kuali-build.graphql.query",
+    { document: `query { ...F22 } ${fragments.join(" ")}` },
+    readContext(),
+  );
+  assert.ok(Date.now() - started < 1_000, "classification stays linear in fragment count");
+  assert.equal(mock.requests.length, 1);
+
+  const deep = ["fragment D0 on Query { __typename }"];
+  for (let level = 1; level <= 40; level += 1)
+    deep.push(`fragment D${level} on Query { ...D${level - 1} }`);
+  await assert.rejects(
+    () =>
+      kuali.invoke(
+        "kuali-build.graphql.query",
+        { document: `query { ...D40 } ${deep.join(" ")}` },
+        readContext(),
+      ),
+    (error) => error.code === "graphql_too_complex",
+  );
+});
+
+test("review regressions: aliased credential fields and nested secrets are redacted", async () => {
+  const { provider: kuali } = provider(
+    [READ],
+    [
+      json({
+        data: { app: { harmless: "credential", secret: { value: "nested" }, name: "Travel" } },
+      }),
+    ],
+  );
+  const result = await kuali.invoke(
+    "kuali-build.graphql.query",
+    { document: `query { app(id: "${APP_ID}") { harmless: apiKey secret { value } name } }` },
+    readContext(),
+  );
+  assert.deepEqual(result.data.app, {
+    harmless: "[redacted by TritonAI]",
+    secret: "[redacted by TritonAI]",
+    name: "Travel",
+  });
+});
+
+test("review regressions: conditional mutation roots are refused before dispatch", async () => {
+  const { provider: kuali, mock } = provider([READ, WRITE], []);
+  for (const document of [
+    `mutation { initializeWorkflow(args: { id: "${APP_ID}" }) @skip(if: true) { actionId } }`,
+    `mutation ($go: Boolean!) { ... @include(if: $go) { initializeWorkflow(args: { id: "${APP_ID}" }) { actionId } } }`,
+  ]) {
+    await assert.rejects(
+      () =>
+        kuali.invoke(
+          "kuali-build.graphql.mutate",
+          { document, variables: { go: true }, confirmMutation: true },
+          writeContext(),
+        ),
+      (error) => error.code === "graphql_unsupported",
+    );
+  }
+  assert.equal(mock.requests.length, 0);
 });

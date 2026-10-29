@@ -1197,35 +1197,73 @@ function parseGraphqlDocument(source) {
   return { operations, fragments };
 }
 
-function collectDirectiveNames(items, fragments, output, seen) {
+function isConditional(directives) {
+  return directives.some((directive) => directive.name === "skip" || directive.name === "include");
+}
+
+// Walks every selection once (fragments are visited once each) to collect directive names and the
+// response keys of credential-like fields, so aliases cannot hide them from redaction.
+function scanDocument(items, fragments, output, seen) {
   for (const item of items) {
-    for (const directive of item.directives) output.add(directive.name);
-    if (item.kind === "spread") {
+    for (const directive of item.directives) output.directives.add(directive.name);
+    if (item.kind === "field") {
+      if (REDACTED_RESPONSE_KEYS.test(item.name)) output.sensitiveKeys.add(item.alias ?? item.name);
+      if (item.selectionSet) scanDocument(item.selectionSet, fragments, output, seen);
+    } else if (item.kind === "inline") {
+      scanDocument(item.selectionSet, fragments, output, seen);
+    } else {
       if (seen.has(item.name)) continue;
       const fragment = fragments.get(item.name);
       if (fragment === undefined) throw graphqlSyntaxError(`unknown fragment ${item.name}.`);
       seen.add(item.name);
-      for (const directive of fragment.directives) output.add(directive.name);
-      collectDirectiveNames(fragment.selectionSet, fragments, output, seen);
-    } else if (item.selectionSet) {
-      collectDirectiveNames(item.selectionSet, fragments, output, seen);
+      for (const directive of fragment.directives) output.directives.add(directive.name);
+      scanDocument(fragment.selectionSet, fragments, output, seen);
     }
   }
 }
 
-function collectRootFields(items, fragments, output, path) {
+// Returns the operation's root selections keyed by response key, without materializing repeated
+// fragment expansions. Each fragment's result is computed once and reused.
+function collectRootSelections(items, fragments, memo, stack) {
+  if (stack.length > GRAPHQL_MAX_DEPTH) {
+    throw failure("graphql_too_complex", "Fragments are nested too deeply.");
+  }
+  const result = new Map();
+  const merge = (key, entry) => {
+    const existing = result.get(key);
+    if (existing === undefined) {
+      result.set(key, entry);
+      return;
+    }
+    if (existing.name !== entry.name) {
+      throw graphqlSyntaxError(`response key ${key} selects two different fields.`);
+    }
+    if (entry.conditional) result.set(key, { name: existing.name, conditional: true });
+  };
   for (const item of items) {
+    const conditional = isConditional(item.directives);
     if (item.kind === "field") {
-      output.push(item);
-    } else if (item.kind === "inline") {
-      collectRootFields(item.selectionSet, fragments, output, path);
+      merge(item.alias ?? item.name, { name: item.name, conditional });
+      continue;
+    }
+    let nested;
+    if (item.kind === "inline") {
+      nested = collectRootSelections(item.selectionSet, fragments, memo, stack);
     } else {
-      if (path.includes(item.name)) throw graphqlSyntaxError(`fragment ${item.name} spreads itself.`);
-      const fragment = fragments.get(item.name);
-      if (fragment === undefined) throw graphqlSyntaxError(`unknown fragment ${item.name}.`);
-      collectRootFields(fragment.selectionSet, fragments, output, [...path, item.name]);
+      if (stack.includes(item.name)) throw graphqlSyntaxError(`fragment ${item.name} spreads itself.`);
+      nested = memo.get(item.name);
+      if (nested === undefined) {
+        const fragment = fragments.get(item.name);
+        if (fragment === undefined) throw graphqlSyntaxError(`unknown fragment ${item.name}.`);
+        nested = collectRootSelections(fragment.selectionSet, fragments, memo, [...stack, item.name]);
+        memo.set(item.name, nested);
+      }
+    }
+    for (const [key, entry] of nested) {
+      merge(key, conditional ? { name: entry.name, conditional: true } : entry);
     }
   }
+  return result;
 }
 
 function analyzeGraphqlRequest(document, operationName) {
@@ -1249,30 +1287,38 @@ function analyzeGraphqlRequest(document, operationName) {
   if (operation.operation === "subscription") {
     throw failure("graphql_unsupported", "Subscriptions are not supported.");
   }
-  const directiveNames = new Set(operation.directives.map((directive) => directive.name));
-  collectDirectiveNames(operation.selectionSet, fragments, directiveNames, new Set());
-  if (directiveNames.has("defer") || directiveNames.has("stream")) {
+  const scan = { directives: new Set(operation.directives.map((directive) => directive.name)), sensitiveKeys: new Set() };
+  scanDocument(operation.selectionSet, fragments, scan, new Set());
+  if (scan.directives.has("defer") || scan.directives.has("stream")) {
     throw failure("graphql_unsupported", "@defer and @stream are not supported.");
   }
-  const rootFields = [];
-  collectRootFields(operation.selectionSet, fragments, rootFields, []);
-  const fieldNames = [...new Set(rootFields.map((field) => field.name))];
+  const roots = collectRootSelections(operation.selectionSet, fragments, new Map(), []);
+  const fieldNames = [...new Set([...roots.values()].map((entry) => entry.name))];
+  const sensitiveKeys = [...scan.sensitiveKeys];
   if (operation.operation === "query") {
-    return { operation: "query", operationName: operation.name, rootFields: fieldNames, tier: "read" };
+    return { operation: "query", operationName: operation.name, rootFields: fieldNames, tier: "read", sensitiveKeys };
   }
-  const meaningful = rootFields.filter((field) => field.name !== "__typename");
+  const meaningful = [...roots.entries()].filter(([, entry]) => entry.name !== "__typename");
   if (meaningful.length !== 1) {
     throw failure(
       "graphql_unsupported",
       "A mutation must select exactly one root field so its outcome can be checked. Send one change per call.",
     );
   }
-  const [field] = meaningful;
+  const [[responseKey, field]] = meaningful;
+  if (field.conditional) {
+    throw failure(
+      "graphql_unsupported",
+      "A mutation's root field cannot use @skip or @include. Send the change only when it should run.",
+    );
+  }
   return {
     operation: "mutation",
     operationName: operation.name,
     rootFields: [field.name],
+    responseKey,
     tier: classifyMutationField(field.name),
+    sensitiveKeys,
   };
 }
 
@@ -1315,15 +1361,15 @@ function graphqlErrorDetails(errors) {
   return messages;
 }
 
-function redactResponse(value, depth = 0) {
+function redactResponse(value, sensitiveKeys = new Set(), depth = 0) {
   if (depth > MAX_JSON_DEPTH || value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map((item) => redactResponse(item, depth + 1));
+  if (Array.isArray(value)) return value.map((item) => redactResponse(item, sensitiveKeys, depth + 1));
   const output = {};
   for (const [key, item] of Object.entries(value)) {
     output[key] =
-      REDACTED_RESPONSE_KEYS.test(key) && (typeof item === "string" || Array.isArray(item))
+      item !== null && (REDACTED_RESPONSE_KEYS.test(key) || sensitiveKeys.has(key))
         ? "[redacted by TritonAI]"
-        : redactResponse(item, depth + 1);
+        : redactResponse(item, sensitiveKeys, depth + 1);
   }
   return output;
 }
@@ -1398,11 +1444,14 @@ async function rawGraphql(fetchImplementation, apiKey, document, variables, oper
     validateJsonTree(parsed);
     if (!isPlainObject(parsed)) throw failure("invalid_response", "Kuali returned an invalid GraphQL envelope.");
     const hasErrors = Array.isArray(parsed.errors) && parsed.errors.length > 0;
-    const hasData = Object.hasOwn(parsed, "data") && parsed.data !== null;
+    // GraphQL omits "data" only when a request fails before execution. "data": null still means
+    // execution started, so a mutation may have partly run.
+    const executionStarted = Object.hasOwn(parsed, "data");
+    const hasData = executionStarted && parsed.data !== null;
     if (hasData && !isPlainObject(parsed.data)) {
       throw failure("invalid_response", "Kuali returned an invalid GraphQL data value.");
     }
-    if (hasErrors) {
+    if (hasErrors && !executionStarted) {
       const authFailure = graphqlFailure(parsed.errors, false);
       if (authFailure.code === "authentication_failed") throw authFailure;
     }
@@ -1411,8 +1460,9 @@ async function rawGraphql(fetchImplementation, apiKey, document, variables, oper
     }
     return {
       data: hasData ? parsed.data : null,
+      hasErrors,
       errors: hasErrors ? graphqlErrorDetails(parsed.errors) : [],
-      executed: hasData,
+      executed: executionStarted,
     };
   } finally {
     composed.cleanup();
@@ -1571,7 +1621,7 @@ export function createIntegrationProvider(context) {
       undefined,
       signal,
     );
-    if (result.errors.length > 0 || result.data === null) {
+    if (result.hasErrors || result.data === null) {
       throw failure("graphql_error", "Kuali Build rejected the schema request.", false, {
         messages: result.errors,
       });
@@ -1632,7 +1682,7 @@ export function createIntegrationProvider(context) {
       }
       throw error;
     }
-    if (result.errors.length > 0) {
+    if (result.hasErrors) {
       if (!result.executed) {
         throw failure(
           "graphql_error",
@@ -1643,8 +1693,14 @@ export function createIntegrationProvider(context) {
       }
       throw externalCommitOutcomeUnknown(rootField, { ...outcomeDetails, messages: result.errors });
     }
+    if (
+      result.data === null ||
+      !Object.hasOwn(result.data, parsed.analysis.responseKey)
+    ) {
+      throw externalCommitOutcomeUnknown(rootField, outcomeDetails);
+    }
     return {
-      data: redactResponse(result.data),
+      data: redactResponse(result.data, new Set(parsed.analysis.sensitiveKeys)),
       rootField,
       permission: parsed.analysis.tier,
       committed: true,
@@ -2165,7 +2221,7 @@ export function createIntegrationProvider(context) {
             });
           }
           return {
-            data: redactResponse(result.data),
+            data: redactResponse(result.data, new Set(parsed.analysis.sensitiveKeys)),
             errors: result.errors,
             rootFields: parsed.analysis.rootFields,
           };

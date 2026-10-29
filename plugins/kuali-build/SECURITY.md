@@ -35,7 +35,8 @@ remain the final authority.
 - Each document is tokenized and parsed by the plugin (no third-party parser). Exactly one query or
   mutation is allowed; subscriptions, multiple operations, type-system definitions, `@defer`, and
   `@stream` are refused. Documents are limited to 32,768 characters, 8,000 tokens, nesting depth 24,
-  and 1,000 selections.
+  1,000 selections, and fragment-spread depth 24. Fragment expansion is computed once per
+  fragment, so repeated spreads cannot blow up classification work.
 - Queries need `kuali-build.read`. A mutation must select exactly one root field. Classification uses
   the real field name after resolving aliases, fragment spreads, and inline fragments. Only fields on
   the reviewed Write allowlist run under `kuali-build.write`; every other mutation, including fields
@@ -43,15 +44,19 @@ remain the final authority.
   delete/permission/credential/configuration-style names in Admin even if allowlisted by mistake.
 - Classification is by root field name only. A Write-list field could still do something drastic
   through its arguments; host approval of the exact document and variables is the control for that.
-- Mutations follow the same commit and no-retry rules as the dedicated tools. A response with
-  GraphQL errors and no `data` is reported as not executed; errors with `data`, 5xx responses,
-  timeouts, network loss, and cancellation after commit are `external_commit_outcome_unknown`.
+- A mutation root field cannot use `@skip` or `@include`.
+- Mutations follow the same commit and no-retry rules as the dedicated tools. Only a response with
+  GraphQL errors and no `data` member at all is reported as not executed. Errors alongside any
+  `data` member (including `data: null` and authorization error codes), a success response missing
+  the mutation's result, 5xx responses, timeouts, network loss, and cancellation after commit are
+  `external_commit_outcome_unknown`.
 - Unlike the dedicated tools, general tools return Kuali GraphQL error messages so the assistant can
   correct its request. Messages are limited to five, 500 characters each, with control characters
   removed. They are server text and may echo request values.
-- Response string values under credential-like keys (`apiKey`, `secret`, `token`, `password`, and
-  similar) are replaced with `[redacted by TritonAI]`. This is a backstop, not a guarantee that
-  sensitive record data is removed.
+- In general-tool responses, values under credential-like keys (`apiKey`, `secret`, `token`,
+  `password`, and similar), including aliased selections of those fields and whole nested objects,
+  are replaced with `[redacted by TritonAI]`. This is a backstop, not a guarantee that sensitive
+  record data is removed; the dedicated tools return document data as before.
 
 Legacy credentials that granted both former write capabilities are migrated to unified write when
 the connection is updated; migration never grants `kuali-build.admin`. A partial legacy write grant is conservatively normalized to read-only;

@@ -56,7 +56,8 @@ renaming a field cannot move it into a lower permission. Any mutation not on the
 including fields Kuali adds later, needs Admin & delete. Names suggesting deletion, access control,
 credentials, or configuration are always Admin even if added to the Write list by mistake.
 
-Responses redact string values under keys such as `apiKey`, `secret`, `token`, and `password`.
+General-tool responses redact values under credential-like keys such as `apiKey`, `secret`, `token`,
+and `password`, including aliased selections of those fields.
 HR feed import (REST), PDF export (callback URL), and attachment transfer (temporary URLs) are not
 GraphQL operations and are not covered.
 
