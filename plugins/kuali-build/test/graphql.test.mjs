@@ -963,3 +963,37 @@ test("council round 2: approval comments may span lines", async () => {
   );
   assert.equal(mock.requests[0].body.variables.comment, comment);
 });
+
+test("council round 3: missing action results are unknown; boolean credential results stay visible", async () => {
+  for (const [tool, input, data] of [
+    [
+      "kuali-build.documents.act",
+      { documentId: DOCUMENT_ID, actionId: "a1", status: "approved", confirmChange: true },
+      { submitDocumentV2: null },
+    ],
+    [
+      "kuali-build.documents.act",
+      { documentId: DOCUMENT_ID, actionId: "a1", status: "approved", confirmChange: true },
+      { submitDocumentV2: { id: DOCUMENT_ID } },
+    ],
+    [
+      "kuali-build.documents.sendback",
+      { documentId: DOCUMENT_ID, stepId: "s1", confirmChange: true },
+      { sendbackDocument: null },
+    ],
+  ]) {
+    const { provider: kuali } = provider([READ, WRITE], [json({ data })]);
+    await assert.rejects(
+      () => kuali.invoke(tool, input, writeContext()),
+      (error) => error.code === "external_commit_outcome_unknown",
+    );
+  }
+  const { provider: admin } = provider([READ, ADMIN], [json({ data: { revokeApiKey: false } })]);
+  const revoked = await admin.invoke(
+    "kuali-build.graphql.delete",
+    { document: `mutation { revokeApiKey(id: "k1") }`, confirmMutation: true },
+    writeContext(),
+  );
+  assert.equal(revoked.data.revokeApiKey, false);
+  assert.equal(revoked.secretWithheld, undefined);
+});

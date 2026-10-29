@@ -55,7 +55,8 @@ remain the final authority.
   missing or unrecognized result is reported as `external_commit_outcome_unknown`. The tools are
   classified by the same rules at call time, so a delete tool cannot run under Write.
 - A mutation whose name suggests it creates or reveals a credential (`apiKey`, `token`, `secret`,
-  `password`, `credential`) has its whole result withheld from the assistant.
+  `password`, `credential`) has its whole result withheld from the assistant when the result is a
+  string, object, or list. True/false and null results are passed through so a failed revoke is visible.
 - A mutation root field cannot use `@skip` or `@include`.
 - Mutations follow the same commit and no-retry rules as the dedicated tools. Only a response with
   GraphQL errors and no `data` member at all is reported as not executed. Errors alongside any

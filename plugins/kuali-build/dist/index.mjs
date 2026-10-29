@@ -1889,7 +1889,10 @@ const BUILDER_TOOLS = Object.freeze({
     },
     // The web app treats these statuses as "not submitted".
     rejection: (data) => {
-      const status = data.submitDocumentV2?.status;
+      if (!isPlainObject(data.submitDocumentV2) || typeof data.submitDocumentV2.status !== "string") {
+        return UNKNOWN_OUTCOME;
+      }
+      const status = data.submitDocumentV2.status;
       return ["validationFailed", "formOutOfDate", "submissionsDisabled", "Invalid Operation"].includes(status)
         ? { reason: status, validations: data.submitDocumentV2?.validations ?? null }
         : null;
@@ -1905,7 +1908,10 @@ const BUILDER_TOOLS = Object.freeze({
       data: optional(input, "data", (value) => builderJson(value, "data")),
       body: optional(input, "body", (value) => builderJson(value, "body")),
     }),
-    rejection: (data) => (data.sendbackDocument === "Invalid Operation" ? { reason: "Invalid Operation" } : null),
+    rejection: (data) => {
+      if (typeof data.sendbackDocument !== "string") return UNKNOWN_OUTCOME;
+      return data.sendbackDocument === "Invalid Operation" ? { reason: "Invalid Operation" } : null;
+    },
   },
   "kuali-build.documents.withdraw": {
     tier: "write",
@@ -2093,7 +2099,8 @@ export function createIntegrationProvider(context) {
     ) {
       throw externalCommitOutcomeUnknown(rootField, outcomeDetails);
     }
-    if (CREDENTIAL_MUTATION_PATTERN.test(rootField)) {
+    const rootValue = result.data[parsed.analysis.responseKey];
+    if (CREDENTIAL_MUTATION_PATTERN.test(rootField) && (typeof rootValue === "string" || isPlainObject(rootValue) || Array.isArray(rootValue))) {
       return {
         data: { [parsed.analysis.responseKey]: "[redacted by TritonAI]" },
         rootField,
