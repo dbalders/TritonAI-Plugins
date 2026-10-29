@@ -62,20 +62,25 @@ to do; never automatically retry.
 
 Work like the Kuali builder: read, change, save, then publish.
 
-1. Create a new app with `kuali-build.apps.create`, or find an existing one with
-   `kuali-build.apps.list`.
+1. Create a new app with `kuali-build.apps.create` or `kuali-build.apps.copy`, or find an existing
+   one with `kuali-build.apps.list`.
 2. Read its current setup with `kuali-build.apps.configuration.get`. The form `template` and
    `workflow` are Kuali's own JSON formats. Keep their structure and IDs; change only what the user
    asked for. For a new app, look at an existing app's template to see the format.
 3. Save with `kuali-build.forms.update` (the whole template) or `kuali-build.workflows.update` (the
    whole `steps` array). Saving changes the draft only.
-4. Read the setup back to confirm, then publish with `kuali-build.apps.publish` once the user agrees.
-   Publishing changes what every new submission sees and may not be reversible. Say so first.
+4. Read the setup back to confirm, then publish once the user agrees: `kuali-build.apps.publish` for
+   the app's form and main workflow, or `kuali-build.workflows.secondary.publish` for a secondary
+   workflow (publishing the app does not publish it). Publishing changes what every new submission
+   sees and may not be reversible. Say so first. Read back again after publishing.
 
 ## Act on documents in a workflow
 
-- `kuali-build.documents.act` submits or approves (`status: "completed"`) or denies
-  (`status: "rejected"`) the step identified by `actionId`, with an optional comment.
+- `kuali-build.documents.act` approves (`status: "approved"`), denies (`status: "rejected"`), or
+  submits or completes a task (`status: "completed"`) for the step identified by `actionId`, with an
+  optional comment.
+- A `kuali_rejected_action` error means Kuali answered but did not do it (for example
+  `validationFailed` with field messages, or `Invalid Operation`). Report the reason; nothing changed.
 - `kuali-build.documents.sendback`, `kuali-build.documents.withdraw`, and
   `kuali-build.documents.duplicate` do what their names say.
 - Deleting needs the Admin permission and its own tools.

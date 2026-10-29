@@ -45,11 +45,13 @@ template, workflow, secondary workflows), and the general `kuali-build.graphql.s
 
 **Building and editing (Write):** these send the same requests the Kuali Build web app sends.
 
-- Apps: `apps.create`, `apps.update` (name, color, icon), `apps.publish`
+- Apps: `apps.create`, `apps.copy`, `apps.update` (name, color, icon), `apps.publish`
 - Forms: `forms.update` saves a full form template to the draft
-- Workflows: `workflows.update` saves the workflow steps; `workflows.secondary.create`
+- Workflows: `workflows.update` saves the workflow steps; `workflows.secondary.create` and
+  `workflows.secondary.publish` (secondary workflows publish separately from the app)
 - Documents: the original `documents.update`, `documents.drafts.initialize`, and `documents.submit`,
-  plus `documents.act` (submit/approve with status `completed`, deny with `rejected`),
+  plus `documents.act` (approve with status `approved`, deny with `rejected`, submit or complete a
+  task with `completed`),
   `documents.sendback`, `documents.withdraw`, `documents.duplicate`
 - Anything else: `graphql.mutate` runs any mutation that doesn't delete
 

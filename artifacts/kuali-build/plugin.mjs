@@ -695,7 +695,7 @@ function exactCapabilities(value) {
   ) {
     throw failure(
       "invalid_capabilities",
-      "The connection must request kuali-build.read first and may additionally request kuali-build.write and kuali-build.admin.",
+      "The connection must request kuali-build.read first and may additionally request kuali-build.edit and kuali-build.admin.",
     );
   }
   return CAPABILITIES.filter((capability) => value.includes(capability));
@@ -1757,6 +1757,21 @@ const BUILDER_TOOLS = Object.freeze({
     variables: (input) => ({
       args: withoutUndefined({
         name: builderText(input.name, "name"),
+        type: "app",
+        backgroundColor: optional(input, "backgroundColor", (value) => builderText(value, "backgroundColor", 64)),
+        iconName: optional(input, "iconName", (value) => builderText(value, "iconName", 128)),
+        spaceId: optional(input, "spaceId", (value) => builderId(value, "spaceId")),
+      }),
+    }),
+  },
+  "kuali-build.apps.copy": {
+    tier: "write",
+    keys: ["sourceAppId", "name", "backgroundColor", "iconName", "spaceId"],
+    document: `mutation KualiBuildCopyApp($args: CopyAppInput!) { app: copyApp(args: $args) { id name spaceId } }`,
+    variables: (input) => ({
+      args: withoutUndefined({
+        sourceId: builderId(input.sourceAppId, "sourceAppId"),
+        name: builderText(input.name, "name"),
         backgroundColor: optional(input, "backgroundColor", (value) => builderText(value, "backgroundColor", 64)),
         iconName: optional(input, "iconName", (value) => builderText(value, "iconName", 128)),
         spaceId: optional(input, "spaceId", (value) => builderId(value, "spaceId")),
@@ -1828,13 +1843,26 @@ const BUILDER_TOOLS = Object.freeze({
       }),
     }),
   },
+  "kuali-build.workflows.secondary.publish": {
+    tier: "write",
+    keys: ["appId", "pageId", "workflowId"],
+    document: `mutation KualiBuildPublishSecondaryWorkflow($workflowId: ID!, $appId: ID!, $pageId: ID) { publishSecondaryWorkflow(workflowId: $workflowId) { query { app(id: $appId, isConfiguration: true) { id dataset(id: $pageId) { id secondaryWorkflows } } } } }`,
+    variables: (input) => withoutUndefined({
+      workflowId: builderId(input.workflowId, "workflowId"),
+      appId: builderId(input.appId, "appId"),
+      pageId: optional(input, "pageId", (value) => builderId(value, "pageId")),
+    }),
+  },
   "kuali-build.documents.act": {
     tier: "write",
     keys: ["documentId", "actionId", "status", "data", "comment"],
     document: `mutation KualiBuildActOnDocument($documentId: ID!, $data: JSON, $actionId: ID!, $status: String, $comment: String, $timeZone: String) { submitDocumentV2(id: $documentId, data: $data, actionId: $actionId, status: $status, comment: $comment, timeZone: $timeZone) { id status label validations { formKeys label message } } }`,
     variables: (input) => {
-      if (!["completed", "rejected"].includes(input.status)) {
-        throw failure("invalid_input", "status must be completed (submit or approve) or rejected (deny).");
+      if (!["completed", "approved", "rejected"].includes(input.status)) {
+        throw failure(
+          "invalid_input",
+          "status must be completed (submit or complete a task), approved (approve), or rejected (deny).",
+        );
       }
       return withoutUndefined({
         documentId: builderId(input.documentId, "documentId"),
@@ -1844,6 +1872,13 @@ const BUILDER_TOOLS = Object.freeze({
         comment: optional(input, "comment", (value) => builderText(value, "comment", 4_000)),
         timeZone: DEFAULT_TIMEZONE,
       });
+    },
+    // The web app treats these statuses as "nothing was submitted".
+    rejection: (data) => {
+      const status = data.submitDocumentV2?.status;
+      return status === "validationFailed" || status === "formOutOfDate"
+        ? { reason: status, validations: data.submitDocumentV2?.validations ?? null }
+        : null;
     },
   },
   "kuali-build.documents.sendback": {
@@ -1856,18 +1891,27 @@ const BUILDER_TOOLS = Object.freeze({
       data: optional(input, "data", (value) => builderJson(value, "data")),
       body: optional(input, "body", (value) => builderJson(value, "body")),
     }),
+    rejection: (data) => (data.sendbackDocument === "Invalid Operation" ? { reason: "Invalid Operation" } : null),
   },
   "kuali-build.documents.withdraw": {
     tier: "write",
     keys: ["documentId"],
-    document: `mutation KualiBuildWithdrawDocument($id: ID!, $timezone: String!) { withdrawSubmission(args: { id: $id, timezone: $timezone }) { __typename ... on Error { reason } } }`,
+    document: `mutation KualiBuildWithdrawDocument($id: ID!, $timezone: String!) { withdrawSubmission(args: { id: $id, timezone: $timezone }) { __typename ... on Success { success } ... on Error { reason } } }`,
     variables: (input) => ({ id: builderId(input.documentId, "documentId"), timezone: DEFAULT_TIMEZONE }),
+    rejection: (data) => {
+      const result = data.withdrawSubmission;
+      return result?.__typename === "Success" ? null : { reason: result?.reason ?? result?.__typename ?? "unknown" };
+    },
   },
   "kuali-build.documents.duplicate": {
     tier: "write",
     keys: ["documentId"],
     document: `mutation KualiBuildDuplicateDocument($id: ID!, $timezone: String!) { duplicateDocument(id: $id, timezone: $timezone) { __typename ... on Redirect { url newActionId } ... on Error { reason } } }`,
     variables: (input) => ({ id: builderId(input.documentId, "documentId"), timezone: DEFAULT_TIMEZONE }),
+    rejection: (data) => {
+      const result = data.duplicateDocument;
+      return result?.__typename === "Redirect" ? null : { reason: result?.reason ?? result?.__typename ?? "unknown" };
+    },
   },
   "kuali-build.apps.delete": {
     tier: "admin",
@@ -2563,6 +2607,8 @@ export function createIntegrationProvider(context) {
         }
         case "kuali-build.apps.configuration.get":
         case "kuali-build.apps.create":
+        case "kuali-build.apps.copy":
+        case "kuali-build.workflows.secondary.publish":
         case "kuali-build.apps.update":
         case "kuali-build.forms.update":
         case "kuali-build.apps.publish":
@@ -2592,7 +2638,17 @@ export function createIntegrationProvider(context) {
           }
           validateWriteInvocation(invocationContext);
           requireCapability(credential, tier === "admin" ? ADMIN_CAPABILITY : WRITE_CAPABILITY);
-          return executeGenericMutation(credential.apiKey, parsed, invocationContext);
+          const outcome = await executeGenericMutation(credential.apiKey, parsed, invocationContext);
+          const rejected = BUILDER_TOOLS[toolName].rejection?.(outcome.data);
+          if (rejected) {
+            // Kuali answered and reported that it did not perform the action.
+            throw failure("kuali_rejected_action", "Kuali Build did not perform the action.", false, {
+              rootField: outcome.rootField,
+              committed: false,
+              ...rejected,
+            });
+          }
+          return outcome;
         }
         case "kuali-build.workflows.status": {
           const document = extract(

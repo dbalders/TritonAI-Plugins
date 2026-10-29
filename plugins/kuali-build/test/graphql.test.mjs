@@ -806,7 +806,7 @@ test("approving or denying sends Kuali's status values only", async () => {
     () =>
       kuali.invoke(
         "kuali-build.documents.act",
-        { documentId: DOCUMENT_ID, actionId: "a1", status: "approved", confirmChange: true },
+        { documentId: DOCUMENT_ID, actionId: "a1", status: "approve", confirmChange: true },
         writeContext(),
       ),
     (error) => error.code === "invalid_input",
@@ -824,4 +824,69 @@ test("approving or denying sends Kuali's status values only", async () => {
   );
   assert.equal(mock.requests[0].body.variables.status, "rejected");
   assert.equal(mock.requests[0].body.variables.comment, "Missing receipt");
+});
+
+test("council review: Kuali refusals returned as data are reported as not done", async () => {
+  const cases = [
+    [
+      "kuali-build.documents.act",
+      { documentId: DOCUMENT_ID, actionId: "a1", status: "approved", confirmChange: true },
+      {
+        submitDocumentV2: {
+          id: DOCUMENT_ID,
+          status: "validationFailed",
+          label: "x",
+          validations: [{ formKeys: ["a"], label: "A", message: "Required" }],
+        },
+      },
+    ],
+    [
+      "kuali-build.documents.sendback",
+      { documentId: DOCUMENT_ID, stepId: "s1", confirmChange: true },
+      { sendbackDocument: "Invalid Operation" },
+    ],
+    [
+      "kuali-build.documents.withdraw",
+      { documentId: DOCUMENT_ID, confirmChange: true },
+      { withdrawSubmission: { __typename: "PermissionError", reason: "Not allowed" } },
+    ],
+    [
+      "kuali-build.documents.duplicate",
+      { documentId: DOCUMENT_ID, confirmChange: true },
+      { duplicateDocument: { __typename: "InvalidDocumentError", reason: "Gone" } },
+    ],
+  ];
+  for (const [tool, input, data] of cases) {
+    const { provider: kuali, mock } = provider([READ, WRITE], [json({ data })]);
+    await assert.rejects(
+      () => kuali.invoke(tool, input, writeContext()),
+      (error) => error.code === "kuali_rejected_action" && error.details.committed === false,
+      tool,
+    );
+    assert.equal(mock.requests.length, 1);
+  }
+  const { provider: kuali, mock } = provider(
+    [READ, WRITE],
+    [
+      json({
+        data: {
+          submitDocumentV2: { id: DOCUMENT_ID, status: "approved", label: "x", validations: [] },
+        },
+      }),
+      json({ data: { app: { id: APP_ID, name: "Copy", spaceId: null } } }),
+    ],
+  );
+  const approved = await kuali.invoke(
+    "kuali-build.documents.act",
+    { documentId: DOCUMENT_ID, actionId: "a1", status: "approved", confirmChange: true },
+    writeContext(),
+  );
+  assert.equal(approved.committed, true);
+  assert.equal(mock.requests[0].body.variables.status, "approved");
+  await kuali.invoke(
+    "kuali-build.apps.copy",
+    { sourceAppId: APP_ID, name: "Copy", confirmChange: true },
+    writeContext(),
+  );
+  assert.deepEqual(mock.requests[1].body.variables, { args: { sourceId: APP_ID, name: "Copy" } });
 });
