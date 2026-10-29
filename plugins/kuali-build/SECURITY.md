@@ -48,7 +48,8 @@ remain the final authority.
 - Mutations follow the same commit and no-retry rules as the dedicated tools. Only a response with
   GraphQL errors and no `data` member at all is reported as not executed. Errors alongside any
   `data` member (including `data: null`, authorization error codes, and 4xx/5xx statuses that still
-  carry `data`), a success response missing
+  carry `data`), any other error status without a GraphQL error envelope (for example a 429 or 403
+  with an HTML or empty body), a success response missing
   the mutation's result, 5xx responses, timeouts, network loss, and cancellation after commit are
   `external_commit_outcome_unknown`.
 - Unlike the dedicated tools, general tools return Kuali GraphQL error messages so the assistant can

@@ -1497,9 +1497,14 @@ async function rawGraphql(fetchImplementation, apiKey, document, variables, oper
     // so a dispatched mutation is treated as an unknown outcome.
     if (bodyError !== undefined) throw bodyError;
     const executionEvidence = isPlainObject(parsed) && Object.hasOwn(parsed, "data");
+    // Only a GraphQL error envelope without data proves Kuali rejected the request before running it.
+    const rejectedBeforeExecution =
+      !executionEvidence && isPlainObject(parsed) && Array.isArray(parsed.errors) && parsed.errors.length > 0;
     if (!executionEvidence) {
       if (response.status === 401 || response.status === 403) {
-        throw failure("authentication_failed", "The UCSD Kuali Build API key was rejected.");
+        throw failure("authentication_failed", "The UCSD Kuali Build API key was rejected.", false, {
+          rejectedBeforeExecution,
+        });
       }
       if (response.status === 429) {
         const seconds = retryAfter(response);
@@ -1507,7 +1512,9 @@ async function rawGraphql(fetchImplementation, apiKey, document, variables, oper
           "rate_limited",
           "UCSD Kuali Build rate limited the request; no automatic retry was attempted.",
           true,
-          seconds === undefined ? {} : { retryAfterSeconds: seconds },
+          seconds === undefined
+            ? { rejectedBeforeExecution }
+            : { retryAfterSeconds: seconds, rejectedBeforeExecution },
         );
       }
       if (!response.ok && !(response.status === 400 && isJson)) {
@@ -1515,7 +1522,7 @@ async function rawGraphql(fetchImplementation, apiKey, document, variables, oper
           "http_error",
           `UCSD Kuali Build returned HTTP ${response.status}.`,
           response.status >= 500,
-          { status: response.status },
+          { status: response.status, rejectedBeforeExecution },
         );
       }
       if (!isJson) throw failure("invalid_response", "Kuali returned an unexpected response content type.");
@@ -1764,7 +1771,11 @@ export function createIntegrationProvider(context) {
         commitSignal,
       );
     } catch (error) {
-      if (isAmbiguousWriteFailure(error, commitSignal)) {
+      const unprovenStatusFailure =
+        error?._tag === "PluginFailure" &&
+        ["authentication_failed", "rate_limited", "http_error"].includes(error.code) &&
+        error.details?.rejectedBeforeExecution !== true;
+      if (unprovenStatusFailure || isAmbiguousWriteFailure(error, commitSignal)) {
         throw externalCommitOutcomeUnknown(rootField, outcomeDetails);
       }
       throw error;

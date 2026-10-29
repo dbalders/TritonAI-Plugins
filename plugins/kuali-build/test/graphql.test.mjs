@@ -632,3 +632,26 @@ test("review round 3: unreadable or non-GraphQL error bodies never prove a mutat
   );
   assert.deepEqual(result.errors, ["Kuali returned HTTP 502."]);
 });
+
+test("PR review: error statuses after dispatch are unknown unless Kuali returned a GraphQL rejection", async () => {
+  const input = { document: DELETE, variables: { id: DOCUMENT_ID }, confirmMutation: true };
+  const html = new Response("<html>Too Many Requests</html>", {
+    status: 429,
+    headers: { "content-type": "text/html" },
+  });
+  for (const response of [html, json({}, 429), json({}, 403), json({ error: "nope" }, 404)]) {
+    const { provider: kuali } = provider([READ, ADMIN], [response]);
+    await assert.rejects(
+      () => kuali.invoke("kuali-build.graphql.admin", input, writeContext()),
+      (error) => error.code === "external_commit_outcome_unknown",
+    );
+  }
+  const { provider: limited } = provider(
+    [READ, ADMIN],
+    [json({ errors: [{ message: "Slow down" }] }, 429)],
+  );
+  await assert.rejects(
+    () => limited.invoke("kuali-build.graphql.admin", input, writeContext()),
+    (error) => error.code === "rate_limited" && error.details.rejectedBeforeExecution === true,
+  );
+});
