@@ -25,6 +25,8 @@ import {
 type Fetch = typeof globalThis.fetch;
 
 const UNKNOWN_ENVIRONMENT_MESSAGE = "This n8n environment is not available in this plugin version.";
+const SWITCHED_ENVIRONMENT_MESSAGE =
+  "n8n switched environments while this request was starting, so it was not run. Try again.";
 
 /**
  * Routes each host operation to the n8n deployment the user selected in Harness. Every deployment
@@ -71,24 +73,30 @@ export class N8nEnvironmentProvider implements IntegrationProvider {
   }
 
   /**
-   * The host sends every operation for the selected environment only, so an operation for a
-   * different environment than the last one means the user switched. Sign-ins still pending in
-   * the environments they left are cancelled then; stored credentials stay.
+   * The host sends operations for the selected environment only, so the environment of the latest
+   * operation is the one in use. Every operation cancels sign-ins still pending in the others (they
+   * were abandoned by switching; stored credentials stay), including one that finished starting
+   * after the switch. Work that would act on an environment the user has since left is refused
+   * before it starts, unless it only reads status.
    */
-  async #enter(environment: N8nServiceEnvironment): Promise<N8nProvider> {
-    if (this.#activeEnvironmentId !== environment.id) {
-      this.#activeEnvironmentId = environment.id;
-      await Promise.allSettled(
-        [...this.#providers]
-          .filter(([id]) => id !== environment.id)
-          .map(([, provider]) => provider.cancelPendingSignIn()),
-      );
+  async #enter(
+    environment: N8nServiceEnvironment,
+    options: { readonly current: boolean },
+  ): Promise<N8nProvider> {
+    this.#activeEnvironmentId = environment.id;
+    await Promise.allSettled(
+      [...this.#providers]
+        .filter(([id]) => id !== environment.id)
+        .map(([, provider]) => provider.cancelPendingSignIn()),
+    );
+    if (options.current && this.#activeEnvironmentId !== environment.id) {
+      throw new IntegrationProviderPublicError(SWITCHED_ENVIRONMENT_MESSAGE);
     }
     return this.#providers.get(environment.id)!;
   }
 
   #provider(context?: IntegrationOperationContext): Promise<N8nProvider> {
-    return this.#enter(this.#environment(context));
+    return this.#enter(this.#environment(context), { current: true });
   }
 
   /** A stored credential is a cheap hint that the user can switch back without signing in. */
@@ -123,7 +131,7 @@ export class N8nEnvironmentProvider implements IntegrationProvider {
         message: UNKNOWN_ENVIRONMENT_MESSAGE,
       };
     }
-    const status = await (await this.#enter(environment)).status(context);
+    const status = await (await this.#enter(environment, { current: false })).status(context);
     if (status.state === "error") return status;
     const others = await this.#signedInElsewhere(environment, context?.signal);
     if (others.length === 0) return status;

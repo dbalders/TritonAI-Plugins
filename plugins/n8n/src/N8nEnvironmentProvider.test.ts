@@ -337,6 +337,52 @@ describe("N8nEnvironmentProvider", () => {
     await provider.close();
   });
 
+  it("never leaves a Dev sign-in running after a switch that overlaps its start", async () => {
+    const mock = twoInstanceFetch();
+    let releaseRegistration!: () => void;
+    const registrationHeld = new Promise<void>((resolve) => {
+      releaseRegistration = resolve;
+    });
+    let registrationStarted!: () => void;
+    const registrationReached = new Promise<void>((resolve) => {
+      registrationStarted = resolve;
+    });
+    const fetchImplementation = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.origin === DEV_ORIGIN && url.pathname === "/mcp-oauth/register") {
+        registrationStarted();
+        await registrationHeld;
+      }
+      return mock.fetchImplementation(input, init);
+    }) as typeof fetch;
+    const provider = new N8nEnvironmentProvider(
+      memorySecrets().service,
+      { serverUrl: PROD },
+      fetchImplementation,
+    );
+    await provider.status(status(prod));
+
+    // A Dev sign-in whose start is overtaken by Prod is refused before it reaches n8n.
+    const overtaken = provider.connect(["read", "write"], lifecycle(dev));
+    await provider.status(status(prod));
+    await expect(overtaken).rejects.toThrow(/switched environments/u);
+    expect(mock.requests.some(({ origin }) => origin === DEV_ORIGIN)).toBe(false);
+
+    // A Dev sign-in already registering when the user switches finishes starting, then the next
+    // Prod operation closes it.
+    const starting = provider.connect(["read", "write"], lifecycle(dev));
+    await registrationReached;
+    await provider.status(status(prod));
+    releaseRegistration();
+    const flow = await starting;
+    if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
+    const callback = new URL(new URL(flow.authorizationUrl).searchParams.get("redirect_uri")!);
+    await provider.status(status(prod));
+    await expect(fetch(callback)).rejects.toThrow();
+    await expect(provider.poll(flow.flowId, lifecycle(dev))).rejects.toThrow(/not found/u);
+    await provider.close();
+  });
+
   it("keeps an existing Prod sign-in working without re-authorizing", async () => {
     const secrets = memorySecrets();
     secrets.values.set(N8N_SECRET_SUFFIX, storedCredential(PROD, PROD_ORIGIN, "existing-client"));
