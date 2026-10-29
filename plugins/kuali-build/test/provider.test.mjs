@@ -18,25 +18,34 @@ test.after(() => {
   globalThis.fetch = originalFetch;
 });
 
-test("manifest exposes exactly read and unified write permissions", () => {
+test("manifest exposes read, write (create and edit), and admin (delete) permissions", () => {
   assert.deepEqual(
     manifest.capabilities.map(({ id, displayName, access }) => ({ id, displayName, access })),
     [
-      {
-        id: "kuali-build.read",
-        displayName: "Read UCSD Kuali Build",
-        access: "default",
-      },
-      {
-        id: "kuali-build.write",
-        displayName: "Create, edit, and submit Build documents",
-        access: "opt-in",
-      },
+      { id: "kuali-build.read", displayName: "Read UCSD Kuali Build", access: "default" },
+      { id: "kuali-build.edit", displayName: "Create and edit in Kuali Build", access: "opt-in" },
+      { id: "kuali-build.admin", displayName: "Admin: delete in Kuali Build", access: "opt-in" },
     ],
   );
+  const writeTools = manifest.tools.filter((tool) => tool.effect === "write");
   assert.deepEqual(
-    manifest.tools.filter((tool) => tool.effect === "write").map((tool) => tool.capabilities),
-    [["kuali-build.write"], ["kuali-build.write"], ["kuali-build.write"]],
+    writeTools
+      .filter((tool) => tool.capabilities[0] === "kuali-build.admin")
+      .map((tool) => tool.name),
+    [
+      "kuali-build.graphql.delete",
+      "kuali-build.apps.delete",
+      "kuali-build.documents.delete",
+      "kuali-build.workflows.secondary.delete",
+    ],
+  );
+  assert.ok(writeTools.every((tool) => tool.capabilities.length === 1));
+  assert.ok(
+    manifest.tools
+      .filter((tool) => tool.effect === "read")
+      .every(
+        (tool) => tool.capabilities.length === 1 && tool.capabilities[0] === "kuali-build.read",
+      ),
   );
 });
 
@@ -209,7 +218,7 @@ test("API-key lifecycle validates remotely and commits only after host admission
   assert.deepEqual(await provider.status(lifecycle()), {
     state: "connected",
     accountLabel: "UC San Diego Kuali Build",
-    grantedCapabilities: ["kuali-build.read"],
+    grantedCapabilities: ["kuali-build.read", "kuali-build.edit", "kuali-build.admin"],
     message: null,
   });
   assert.equal(mock.requests[0].url, endpoint);
@@ -491,7 +500,7 @@ test("connection exposes and stores one unified write capability", async (t) => 
     secrets.service,
     sequence([json({ data: { apps: [] } }), json({ data: { apps: [] } })]).implementation,
   );
-  const capabilities = ["kuali-build.read", "kuali-build.write"];
+  const capabilities = ["kuali-build.read", "kuali-build.edit"];
   const flow = await provider.connect(capabilities, lifecycle());
   await provider.connect(capabilities, lifecycle(), {
     kind: "api_key",
@@ -499,7 +508,11 @@ test("connection exposes and stores one unified write capability", async (t) => 
     value: API_KEY,
   });
   assert.deepEqual(JSON.parse(secrets.value()).capabilities, capabilities);
-  assert.deepEqual((await provider.status(lifecycle())).grantedCapabilities, capabilities);
+  assert.deepEqual((await provider.status(lifecycle())).grantedCapabilities, [
+    "kuali-build.read",
+    "kuali-build.edit",
+    "kuali-build.admin",
+  ]);
 });
 
 test("an existing read-only connection can add unified write without exposing its key", async (t) => {
@@ -507,7 +520,7 @@ test("an existing read-only connection can add unified write without exposing it
   const mock = sequence([json({ data: { apps: [] } })]);
   const provider = factory(t, secrets.service, mock.implementation);
   const events = [];
-  const capabilities = ["kuali-build.read", "kuali-build.write"];
+  const capabilities = ["kuali-build.read", "kuali-build.edit"];
 
   const result = await provider.connect(capabilities, lifecycle(events));
 
@@ -520,59 +533,32 @@ test("an existing read-only connection can add unified write without exposing it
   assert.equal(mock.requests[0].init.headers.authorization, `Bearer ${API_KEY}`);
 });
 
-test("a full legacy write grant migrates to unified write without asking for the key", async (t) => {
-  const legacyCapabilities = [
-    "kuali-build.read",
-    "kuali-build.documents.write",
-    "kuali-build.workflows.write",
-  ];
-  const capabilities = ["kuali-build.read", "kuali-build.write"];
-  const secrets = memorySecrets(storedCredential(API_KEY, legacyCapabilities));
-  const mock = sequence([json({ data: { apps: [] } }), json({ data: { apps: [] } })]);
-  const provider = factory(t, secrets.service, mock.implementation);
+test("earlier write grants keep working and never need the key again", async (t) => {
+  for (const earlier of [
+    ["kuali-build.read", "kuali-build.documents.write", "kuali-build.workflows.write"],
+    ["kuali-build.read", "kuali-build.write"],
+  ]) {
+    const secrets = memorySecrets(storedCredential(API_KEY, earlier));
+    const mock = sequence([json({ data: { apps: [] } }), json({ data: { apps: [] } })]);
+    const provider = factory(t, secrets.service, mock.implementation);
 
-  assert.deepEqual((await provider.status(lifecycle())).grantedCapabilities, capabilities);
-  const events = [];
-  const result = await provider.connect(capabilities, lifecycle(events));
+    assert.deepEqual((await provider.status(lifecycle())).grantedCapabilities, [
+      "kuali-build.read",
+      "kuali-build.edit",
+      "kuali-build.admin",
+    ]);
+    const capabilities = ["kuali-build.read", "kuali-build.edit"];
+    const events = [];
+    const result = await provider.connect(capabilities, lifecycle(events));
 
-  assert.equal(result.kind, "connected");
-  assert.deepEqual(events, ["beginCommit"]);
-  assert.deepEqual(JSON.parse(secrets.value()), { version: 1, apiKey: API_KEY, capabilities });
-  assert.equal(JSON.stringify(result).includes(API_KEY), false);
+    assert.equal(result.kind, "connected");
+    assert.deepEqual(events, ["beginCommit"]);
+    assert.deepEqual(JSON.parse(secrets.value()), { version: 1, apiKey: API_KEY, capabilities });
+    assert.equal(JSON.stringify(result).includes(API_KEY), false);
+  }
 });
 
-test("a partial legacy write grant stays read-only until unified write is enabled", async (t) => {
-  const legacyCapabilities = ["kuali-build.read", "kuali-build.documents.write"];
-  const capabilities = ["kuali-build.read", "kuali-build.write"];
-  const secrets = memorySecrets(storedCredential(API_KEY, legacyCapabilities));
-  const mock = sequence([json({ data: { apps: [] } }), json({ data: { apps: [] } })]);
-  const provider = factory(t, secrets.service, mock.implementation);
-
-  assert.deepEqual((await provider.status(lifecycle())).grantedCapabilities, ["kuali-build.read"]);
-  await assert.rejects(
-    () =>
-      provider.invoke(
-        "kuali-build.documents.update",
-        {
-          documentId: DOCUMENT_ID,
-          data: { fieldA: "new value" },
-          expectedUpdatedAt: "2026-09-01T00:00:00.000Z",
-          confirmUpdate: true,
-        },
-        writeInvocation(),
-      ),
-    (error) => error.code === "capability_not_granted",
-  );
-  assert.equal(mock.requests.length, 1);
-  const events = [];
-  await provider.connect(capabilities, lifecycle(events));
-
-  assert.deepEqual(events, ["beginCommit"]);
-  assert.deepEqual(JSON.parse(secrets.value()), { version: 1, apiKey: API_KEY, capabilities });
-  assert.equal(mock.requests.length, 2);
-});
-
-test("write tools require host approval and unified write before preflight", async (t) => {
+test("write tools require host approval before preflight", async (t) => {
   const readOnly = memorySecrets(storedCredential());
   let calls = 0;
   const provider = factory(t, readOnly.service, async () => {
@@ -589,16 +575,12 @@ test("write tools require host approval and unified write before preflight", asy
     () => provider.invoke("kuali-build.documents.update", input, invocation()),
     (error) => error.code === "write_not_approved",
   );
-  await assert.rejects(
-    () => provider.invoke("kuali-build.documents.update", input, writeInvocation()),
-    (error) => error.code === "capability_not_granted",
-  );
   assert.equal(calls, 0);
 });
 
 test("document update stale-checks, normalizes form keys, and commits exactly once", async (t) => {
   const secrets = memorySecrets(
-    storedCredential(API_KEY, ["kuali-build.read", "kuali-build.write"]),
+    storedCredential(API_KEY, ["kuali-build.read", "kuali-build.edit"]),
   );
   const trace = [];
   const requests = [];
@@ -648,7 +630,7 @@ test("document update stale-checks, normalizes form keys, and commits exactly on
 
 test("document update rejects stale versions and unconfirmed nulls without committing", async (t) => {
   const secrets = memorySecrets(
-    storedCredential(API_KEY, ["kuali-build.read", "kuali-build.write"]),
+    storedCredential(API_KEY, ["kuali-build.read", "kuali-build.edit"]),
   );
   const events = [];
   const provider = factory(t, secrets.service, async () =>
@@ -695,7 +677,7 @@ test("document update rejects stale versions and unconfirmed nulls without commi
 });
 
 test("document creation is an explicit non-atomic initialize, resolve, submit sequence", async (t) => {
-  const capabilities = ["kuali-build.read", "kuali-build.write"];
+  const capabilities = ["kuali-build.read", "kuali-build.edit"];
   const secrets = memorySecrets(storedCredential(API_KEY, capabilities));
   const trace = [];
   const responses = [
@@ -766,7 +748,7 @@ test("document creation is an explicit non-atomic initialize, resolve, submit se
 });
 
 test("draft submission rejects mismatched action and document IDs before commit", async (t) => {
-  const capabilities = ["kuali-build.read", "kuali-build.write"];
+  const capabilities = ["kuali-build.read", "kuali-build.edit"];
   const secrets = memorySecrets(storedCredential(API_KEY, capabilities));
   const events = [];
   const provider = factory(t, secrets.service, async () =>
@@ -799,7 +781,7 @@ test("draft submission rejects mismatched action and document IDs before commit"
 
 test("ambiguous failures after mutation admission become non-retryable unknown outcomes", async (t) => {
   const secrets = memorySecrets(
-    storedCredential(API_KEY, ["kuali-build.read", "kuali-build.write"]),
+    storedCredential(API_KEY, ["kuali-build.read", "kuali-build.edit"]),
   );
   const responses = [
     json({
@@ -854,7 +836,7 @@ test("server, partial-data, and malformed success ambiguity also map to unknown 
   ];
   for (const ambiguous of ambiguousResponses) {
     const secrets = memorySecrets(
-      storedCredential(API_KEY, ["kuali-build.read", "kuali-build.write"]),
+      storedCredential(API_KEY, ["kuali-build.read", "kuali-build.edit"]),
     );
     const provider = factory(
       t,
@@ -894,7 +876,7 @@ test("server, partial-data, and malformed success ambiguity also map to unknown 
 
 test("caller cancellation after mutation admission is an unknown external outcome", async (t) => {
   const secrets = memorySecrets(
-    storedCredential(API_KEY, ["kuali-build.read", "kuali-build.write"]),
+    storedCredential(API_KEY, ["kuali-build.read", "kuali-build.edit"]),
   );
   const controller = new AbortController();
   let request = 0;
@@ -946,7 +928,7 @@ test("caller cancellation after mutation admission is an unknown external outcom
 
 test("document validation errors with a null mutation result remain determinate failures", async (t) => {
   const secrets = memorySecrets(
-    storedCredential(API_KEY, ["kuali-build.read", "kuali-build.write"]),
+    storedCredential(API_KEY, ["kuali-build.read", "kuali-build.edit"]),
   );
   const provider = factory(
     t,

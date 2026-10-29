@@ -1,8 +1,11 @@
 # UC San Diego Kuali Build
 
-This dependency-free TritonAI plugin provides bounded reads and tightly allowlisted document writes
-for the UC San Diego Kuali Build tenant at `https://ucsd.kualibuild.com`. It calls the documented
-Kuali Build GraphQL endpoint directly over HTTPS and does not install or launch Kuali Connector.
+This dependency-free TritonAI plugin gives the assistant the same Kuali Build GraphQL API access
+the connected user's API key has, for the UC San Diego tenant at `https://ucsd.kualibuild.com`.
+Dedicated tools cover building apps, forms, and workflows and working with documents, the way the
+Kuali Build web app does; general GraphQL tools cover everything else. Access is split into Read,
+Write (create and edit), and Admin (delete) permissions. It calls the Kuali Build GraphQL endpoint directly
+over HTTPS and does not install or launch Kuali Connector.
 
 ## Connection
 
@@ -17,28 +20,67 @@ The only accepted tenant configuration is `https://ucsd.kualibuild.com`; an omit
 defaults to that exact origin. Paths, query strings, credentials, non-HTTPS URLs, lookalike hosts,
 and alternate ports are rejected.
 
-## Scope
+## Permissions
 
-The plugin exposes fixed reads for Build apps, form schemas, Build documents, users, workflow
-metadata, and initialized draft actions. Its single opt-in **Create, edit, and submit Build
-documents** permission provides only the mutation shapes established by the official Build GraphQL
-guides:
+| Permission                     | Default | What it allows                                                                                                                      |
+| ------------------------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Read UCSD Kuali Build          | On      | Read anything the user can see: apps, app setup (forms and workflows), documents, users, workflow status, and any GraphQL **query** |
+| Create and edit in Kuali Build | Off     | Create and edit anything: apps, forms, workflows, documents; publish; approve, deny, send back, withdraw, duplicate                 |
+| Admin: delete in Kuali Build   | Off     | Delete apps, documents, and workflows, and any other request that deletes or discards data                                          |
 
-- update explicitly supplied fields on an existing document;
-- initialize an empty draft for one exact app;
-- resolve the initialized draft ID from its action ID; and
-- submit that matching draft with fixed status `completed`, starting its configured workflow.
+Kuali still applies the connected user's own permissions to every request. These switches never give
+anyone access they don't already have in Kuali.
 
-Document lists return IDs and pagination only; fetching form data or workflow metadata requires an
-exact document ID. It deliberately excludes Kuali Curriculum, Sponsored Programs, product datasets,
-arbitrary GraphQL, attachments, exports, administrative APIs, app/form builder operations,
-deletion, approval, denial, send-back, reassignment, withdrawal, cancellation, and secondary
-workflow administration.
+An API key already carries the user's full Kuali permissions, so connecting once is enough. The
+switches alone decide which tools run, and the Harness checks them on every call; turning one on or
+off never asks for the key again. The Write permission's id changed from `kuali-build.write` to
+`kuali-build.edit` when it grew from document work to building anything, so users who had the
+earlier write switch on turn the new one on once. Admin is never turned on automatically.
+
+## Tools
+
+**Reading:** app list/get, published form fields, document list/get, user lookup, workflow status,
+draft resolution, `kuali-build.apps.configuration.get` (an app's full builder setup: pages, form
+template, workflow, secondary workflows), and the general `kuali-build.graphql.schema` and
+`kuali-build.graphql.query`.
+
+**Building and editing (Write):** these send the same requests the Kuali Build web app sends.
+
+- Apps: `apps.create`, `apps.copy`, `apps.update` (name, color, icon), `apps.publish`
+- Forms: `forms.update` saves a full form template to the draft
+- Workflows: `workflows.update` saves the workflow steps; `workflows.secondary.create` and
+  `workflows.secondary.publish` (secondary workflows publish separately from the app)
+- Documents: the original `documents.update`, `documents.drafts.initialize`, and `documents.submit`,
+  plus `documents.act` (status by step type: `completed` to submit, `approved` or `rejected` for an
+  approval, `task completed` for a task, `acknowledged` for an acknowledgement),
+  `documents.sendback`, `documents.withdraw`, `documents.duplicate`
+- Anything else: `graphql.mutate` runs any mutation that doesn't delete
+
+**Deleting (Admin):** `apps.delete`, `documents.delete`, `workflows.secondary.delete`, and
+`graphql.delete` for any other delete-type mutation.
+
+All tool names start with `kuali-build.`. Edits to forms and workflows work like the builder: read the
+current setup, change it, save the whole structure back, then publish. The form template and workflow
+step formats are Kuali's own and are not documented publicly; start from what
+`apps.configuration.get` returns.
+
+Every general request is parsed before it is sent. The plugin accepts exactly one query or mutation
+(fragments allowed) and refuses subscriptions, multiple operations, schema definitions, `@defer`, and
+`@stream`. A mutation must select exactly one root field so its outcome can be checked. Aliases,
+fragment spreads, and inline fragments are resolved to the real field name before classification.
+Mutations whose names contain delete, remove, archive, purge, destroy, discard, trash, or revoke need
+Admin; every other mutation needs Write.
+
+General-tool responses redact values under credential-like keys such as `apiKey`, `secret`, `token`,
+and `password`, including aliased selections of those fields.
+HR feed import (REST), PDF export (callback URL), and attachment transfer (temporary URLs) are not
+GraphQL operations and are not covered.
 
 ## Write safety and creation phases
 
-Every mutation requires the unified `kuali-build.write` permission, host write approval, and exactly
-one `beginCommit` call immediately before the request. Network, timeout, oversized/malformed response,
+Every change requires its permission (`kuali-build.edit` to create or edit, `kuali-build.admin` to
+delete), host write approval, explicit confirmation in the tool input, and exactly one
+`beginCommit` call immediately before the request. Network, timeout, oversized/malformed response,
 post-commit cancellation, partial-data, and server-side ambiguity are returned as
 `external_commit_outcome_unknown`; writes are never automatically retried.
 
@@ -51,10 +93,10 @@ empty draft, resolve its document ID, then submit it. These phases are not atomi
 initialization can leave an empty draft when a later phase fails, and an unknown initialization or
 submission outcome must be inspected in Kuali before any further action.
 
-Existing connections do not need to reveal or re-enter their API key when changing permissions.
-Connections that previously granted both legacy write permissions are recognized as unified write.
-A connection with only one legacy write permission is treated as read-only until the user enables
-the new unified write permission, preventing a silent expansion of access.
+Changing permissions never needs a reconnect or the API key again. Saved keys from earlier versions
+keep working; the earlier write switch (`kuali-build.write` or the older document/workflow pair) no
+longer exists, so those users turn on the new Write switch once. Admin is never turned on
+automatically.
 
 References:
 
