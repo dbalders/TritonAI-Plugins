@@ -8,7 +8,8 @@ const DOCUMENT_ID = "5f6a389d77d701400f543a29";
 const APP_ID = "5d5f337395a039001e48a649";
 const endpoint = "https://ucsd.kualibuild.com/app/api/v0/graphql";
 const READ = "kuali-build.read";
-const WRITE = "kuali-build.write";
+const WRITE = "kuali-build.edit";
+const PREVIOUS_WRITE = "kuali-build.write";
 const ADMIN = "kuali-build.admin";
 const originalFetch = globalThis.fetch;
 
@@ -201,12 +202,12 @@ test("aliases and fragments cannot disguise an admin mutation as a write", async
   assert.equal(mock.requests.length, 0);
 });
 
-test("unknown mutations need the admin permission and host approval", async () => {
+test("delete mutations need the admin permission and host approval", async () => {
   const { provider: writeOnly, mock: writeMock } = provider([READ, WRITE], []);
   await assert.rejects(
     () =>
       writeOnly.invoke(
-        "kuali-build.graphql.admin",
+        "kuali-build.graphql.delete",
         { document: DELETE, variables: { id: DOCUMENT_ID }, confirmMutation: true },
         writeContext(),
       ),
@@ -221,7 +222,7 @@ test("unknown mutations need the admin permission and host approval", async () =
   await assert.rejects(
     () =>
       admin.invoke(
-        "kuali-build.graphql.admin",
+        "kuali-build.graphql.delete",
         { document: DELETE, variables: { id: DOCUMENT_ID }, confirmMutation: true },
         readContext(),
       ),
@@ -230,7 +231,7 @@ test("unknown mutations need the admin permission and host approval", async () =
   await assert.rejects(
     () =>
       admin.invoke(
-        "kuali-build.graphql.admin",
+        "kuali-build.graphql.delete",
         { document: DELETE, variables: { id: DOCUMENT_ID } },
         writeContext(),
       ),
@@ -239,7 +240,7 @@ test("unknown mutations need the admin permission and host approval", async () =
   assert.equal(mock.requests.length, 0);
   const events = [];
   const result = await admin.invoke(
-    "kuali-build.graphql.admin",
+    "kuali-build.graphql.delete",
     { document: DELETE, variables: { id: DOCUMENT_ID }, confirmMutation: true },
     writeContext(events),
   );
@@ -259,7 +260,7 @@ test("mutation failures after dispatch are never retried and report unknown outc
   ]) {
     const { provider: kuali, mock } = provider([READ, ADMIN], [response]);
     await assert.rejects(
-      () => kuali.invoke("kuali-build.graphql.admin", input, writeContext()),
+      () => kuali.invoke("kuali-build.graphql.delete", input, writeContext()),
       (error) => {
         assert.equal(error.code, "external_commit_outcome_unknown");
         assert.equal(error.retryable, false);
@@ -284,7 +285,7 @@ test("mutations Kuali rejects before running are reported as not executed", asyn
   await assert.rejects(
     () =>
       kuali.invoke(
-        "kuali-build.graphql.admin",
+        "kuali-build.graphql.delete",
         { document: DELETE, variables: { id: DOCUMENT_ID }, confirmMutation: true },
         writeContext(),
       ),
@@ -403,7 +404,7 @@ test("schema browsing lists roots with each mutation's permission and caches the
     [
       ["updateDocument", "write"],
       ["deleteApp", "admin"],
-      ["approveDocument", "admin"],
+      ["approveDocument", "write"],
     ],
   );
   assert.equal(overview.mutations[0].args[0].type, "UpdateDocumentInput!");
@@ -432,10 +433,9 @@ test("existing connections keep their grants and can add admin without re-enteri
   assert.deepEqual(JSON.parse(secrets.value()).capabilities, [READ, WRITE, ADMIN]);
 });
 
-test("a full legacy write grant does not silently gain admin", async () => {
-  const legacy = [READ, "kuali-build.documents.write", "kuali-build.workflows.write"];
-  const { provider: kuali } = provider(legacy, [json({ data: { apps: [] } })]);
-  assert.deepEqual((await kuali.status(readContext())).grantedCapabilities, [READ, WRITE]);
+test("earlier write grants never carry over to the broader Write or Admin", async () => {
+  const { provider: kuali } = provider([READ, PREVIOUS_WRITE], [json({ data: { apps: [] } })]);
+  assert.deepEqual((await kuali.status(readContext())).grantedCapabilities, [READ]);
 });
 
 test("review regressions: errors after execution always mean an unknown outcome", async () => {
@@ -451,7 +451,7 @@ test("review regressions: errors after execution always mean an unknown outcome"
   ]) {
     const { provider: kuali, mock } = provider([READ, ADMIN], [response]);
     await assert.rejects(
-      () => kuali.invoke("kuali-build.graphql.admin", input, writeContext()),
+      () => kuali.invoke("kuali-build.graphql.delete", input, writeContext()),
       (error) => error.code === "external_commit_outcome_unknown",
     );
     assert.equal(mock.requests.length, 1);
@@ -461,7 +461,7 @@ test("review regressions: errors after execution always mean an unknown outcome"
     [json({ errors: [{ message: "\n\t" }] }, 400)],
   );
   await assert.rejects(
-    () => kuali.invoke("kuali-build.graphql.admin", input, writeContext()),
+    () => kuali.invoke("kuali-build.graphql.delete", input, writeContext()),
     (error) => error.code === "graphql_error" && error.details.executed === false,
   );
 });
@@ -549,7 +549,7 @@ test("review round 2: error statuses with execution evidence stay unknown outcom
   ]) {
     const { provider: kuali } = provider([READ, ADMIN], [response]);
     await assert.rejects(
-      () => kuali.invoke("kuali-build.graphql.admin", input, writeContext()),
+      () => kuali.invoke("kuali-build.graphql.delete", input, writeContext()),
       (error) => error.code === "external_commit_outcome_unknown",
     );
   }
@@ -558,7 +558,7 @@ test("review round 2: error statuses with execution evidence stay unknown outcom
     [json({ errors: [{ message: "bad key" }] }, 401)],
   );
   await assert.rejects(
-    () => rejected.invoke("kuali-build.graphql.admin", input, writeContext()),
+    () => rejected.invoke("kuali-build.graphql.delete", input, writeContext()),
     (error) => error.code === "authentication_failed",
   );
 });
@@ -617,7 +617,7 @@ test("review round 3: unreadable or non-GraphQL error bodies never prove a mutat
   ]) {
     const { provider: kuali } = provider([READ, ADMIN], [response]);
     await assert.rejects(
-      () => kuali.invoke("kuali-build.graphql.admin", input, writeContext()),
+      () => kuali.invoke("kuali-build.graphql.delete", input, writeContext()),
       (error) => error.code === "external_commit_outcome_unknown",
     );
   }
@@ -642,7 +642,7 @@ test("PR review: error statuses after dispatch are unknown unless Kuali returned
   for (const response of [html, json({}, 429), json({}, 403), json({ error: "nope" }, 404)]) {
     const { provider: kuali } = provider([READ, ADMIN], [response]);
     await assert.rejects(
-      () => kuali.invoke("kuali-build.graphql.admin", input, writeContext()),
+      () => kuali.invoke("kuali-build.graphql.delete", input, writeContext()),
       (error) => error.code === "external_commit_outcome_unknown",
     );
   }
@@ -651,7 +651,7 @@ test("PR review: error statuses after dispatch are unknown unless Kuali returned
     [json({ errors: [{ message: "Slow down" }] }, 429)],
   );
   await assert.rejects(
-    () => limited.invoke("kuali-build.graphql.admin", input, writeContext()),
+    () => limited.invoke("kuali-build.graphql.delete", input, writeContext()),
     (error) => error.code === "rate_limited" && error.details.rejectedBeforeExecution === true,
   );
 });
@@ -674,4 +674,154 @@ test("PR review: oversized mutations are refused before commit admission", async
   );
   assert.deepEqual(events, []);
   assert.equal(mock.requests.length, 0);
+});
+
+test("Write covers any create or edit mutation and the delete tool covers only deletes", async () => {
+  const publish = `mutation { publishApp(args: { id: "${APP_ID}" }) { id } }`;
+  const { provider: kuali, mock } = provider(
+    [READ, WRITE],
+    [json({ data: { publishApp: { id: APP_ID } } })],
+  );
+  const result = await kuali.invoke(
+    "kuali-build.graphql.mutate",
+    { document: publish, confirmMutation: true },
+    writeContext(),
+  );
+  assert.equal(result.permission, "write");
+  assert.equal(mock.requests.length, 1);
+
+  const { provider: admin, mock: adminMock } = provider([READ, ADMIN], []);
+  await assert.rejects(
+    () =>
+      admin.invoke(
+        "kuali-build.graphql.delete",
+        { document: publish, confirmMutation: true },
+        writeContext(),
+      ),
+    (error) => error.code === "wrong_tool",
+  );
+  await assert.rejects(
+    () =>
+      admin.invoke(
+        "kuali-build.graphql.mutate",
+        { document: publish, confirmMutation: true },
+        writeContext(),
+      ),
+    (error) => error.code === "capability_not_granted",
+  );
+  assert.equal(adminMock.requests.length, 0);
+});
+
+test("app-building tools send Kuali's builder requests under the right permission", async () => {
+  const template = {
+    type: "Section",
+    children: [{ type: "Text", formKey: "name", label: "Name" }],
+  };
+  const { provider: kuali, mock } = provider(
+    [READ, WRITE],
+    [
+      json({ data: { updateForm: { id: "form1" } } }),
+      json({
+        data: {
+          updateWorkflowV2: {
+            query: { app: { id: APP_ID, hasDraft: true, dataset: { id: APP_ID } } },
+          },
+        },
+      }),
+      json({
+        data: { app: { id: APP_ID, name: "Travel", dataset: { form: { id: "f", template } } } },
+      }),
+    ],
+  );
+  await assert.rejects(
+    () => kuali.invoke("kuali-build.forms.update", { appId: APP_ID, template }, writeContext()),
+    (error) => error.code === "confirmation_required",
+  );
+  const saved = await kuali.invoke(
+    "kuali-build.forms.update",
+    { appId: APP_ID, template, confirmChange: true },
+    writeContext(),
+  );
+  assert.equal(saved.rootField, "updateForm");
+  assert.match(
+    mock.requests[0].body.query,
+    /updateForm\(args: \{ appId: \$appId, pageId: \$pageId, template: \$template \}\)/u,
+  );
+  assert.deepEqual(mock.requests[0].body.variables, { appId: APP_ID, template });
+
+  const steps = [{ type: "Approval", label: "Supervisor" }];
+  await kuali.invoke(
+    "kuali-build.workflows.update",
+    { appId: APP_ID, workflowId: "wf1", steps, confirmChange: true },
+    writeContext(),
+  );
+  assert.deepEqual(mock.requests[1].body.variables, {
+    appId: APP_ID,
+    args: { appId: APP_ID, id: "wf1", steps },
+  });
+
+  const setup = await kuali.invoke(
+    "kuali-build.apps.configuration.get",
+    { appId: APP_ID },
+    readContext(),
+  );
+  assert.deepEqual(setup.data.app.dataset.form.template, template);
+
+  await assert.rejects(
+    () =>
+      kuali.invoke(
+        "kuali-build.apps.delete",
+        { appId: APP_ID, confirmChange: true },
+        writeContext(),
+      ),
+    (error) => error.code === "capability_not_granted",
+  );
+  assert.equal(mock.requests.length, 3);
+
+  const { provider: admin, mock: adminMock } = provider(
+    [READ, ADMIN],
+    [json({ data: { deleteApp: true } })],
+  );
+  const deleted = await admin.invoke(
+    "kuali-build.apps.delete",
+    { appId: APP_ID, confirmChange: true },
+    writeContext(),
+  );
+  assert.equal(deleted.permission, "admin");
+  assert.deepEqual(adminMock.requests[0].body.variables, { id: APP_ID });
+});
+
+test("approving or denying sends Kuali's status values only", async () => {
+  const { provider: kuali, mock } = provider(
+    [READ, WRITE],
+    [
+      json({
+        data: {
+          submitDocumentV2: { id: DOCUMENT_ID, status: "completed", label: "x", validations: [] },
+        },
+      }),
+    ],
+  );
+  await assert.rejects(
+    () =>
+      kuali.invoke(
+        "kuali-build.documents.act",
+        { documentId: DOCUMENT_ID, actionId: "a1", status: "approved", confirmChange: true },
+        writeContext(),
+      ),
+    (error) => error.code === "invalid_input",
+  );
+  await kuali.invoke(
+    "kuali-build.documents.act",
+    {
+      documentId: DOCUMENT_ID,
+      actionId: "a1",
+      status: "rejected",
+      comment: "Missing receipt",
+      confirmChange: true,
+    },
+    writeContext(),
+  );
+  assert.equal(mock.requests[0].body.variables.status, "rejected");
+  assert.equal(mock.requests[0].body.variables.comment, "Missing receipt");
 });

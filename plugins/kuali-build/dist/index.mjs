@@ -1,13 +1,17 @@
 const PROVIDER_ID = "kuali-build";
 const READ_CAPABILITY = "kuali-build.read";
-const WRITE_CAPABILITY = "kuali-build.write";
+// Write covers creating and editing anything (documents, apps, forms, workflows). Admin covers
+// deletes. The id changed from kuali-build.write when Write grew beyond document work, so earlier
+// grants never silently gain the broader access.
+const WRITE_CAPABILITY = "kuali-build.edit";
 const ADMIN_CAPABILITY = "kuali-build.admin";
+const PREVIOUS_DOCUMENT_WRITE_CAPABILITY = "kuali-build.write";
 const LEGACY_DOCUMENT_WRITE_CAPABILITY = "kuali-build.documents.write";
 const LEGACY_WORKFLOW_WRITE_CAPABILITY = "kuali-build.workflows.write";
 const CAPABILITIES = Object.freeze([READ_CAPABILITY, WRITE_CAPABILITY, ADMIN_CAPABILITY]);
 const CAPABILITY_SET = new Set(CAPABILITIES);
 const LEGACY_CAPABILITY_SET = new Set([
-  READ_CAPABILITY,
+  PREVIOUS_DOCUMENT_WRITE_CAPABILITY,
   LEGACY_DOCUMENT_WRITE_CAPABILITY,
   LEGACY_WORKFLOW_WRITE_CAPABILITY,
 ]);
@@ -401,9 +405,10 @@ function validateInput(toolName, value) {
     case "kuali-build.graphql.schema":
     case "kuali-build.graphql.query":
     case "kuali-build.graphql.mutate":
-    case "kuali-build.graphql.admin":
+    case "kuali-build.graphql.delete":
       return validateGenericInput(toolName, value);
     default:
+      if (Object.hasOwn(BUILDER_TOOLS, toolName)) return validateBuilderInput(toolName, value);
       throw failure("tool_not_found", "The requested tool is not provided by this plugin.");
   }
 }
@@ -643,26 +648,21 @@ function parseSecret(value) {
       parsed.version !== 1 ||
       !Array.isArray(parsed.capabilities) ||
       parsed.capabilities.length < 1 ||
-      parsed.capabilities.length > LEGACY_CAPABILITY_SET.size ||
+      parsed.capabilities.length > CAPABILITY_SET.size + LEGACY_CAPABILITY_SET.size ||
       parsed.capabilities[0] !== READ_CAPABILITY ||
-      new Set(parsed.capabilities).size !== parsed.capabilities.length
+      new Set(parsed.capabilities).size !== parsed.capabilities.length ||
+      parsed.capabilities.some(
+        (capability) => !CAPABILITY_SET.has(capability) && !LEGACY_CAPABILITY_SET.has(capability),
+      )
     ) return undefined;
-    const isCurrent = parsed.capabilities.every((capability) => CAPABILITY_SET.has(capability));
-    const isLegacy = parsed.capabilities.every((capability) => LEGACY_CAPABILITY_SET.has(capability));
-    if (!isCurrent && !isLegacy) return undefined;
-    const hadBothLegacyWriteCapabilities =
-      parsed.capabilities.includes(LEGACY_DOCUMENT_WRITE_CAPABILITY) &&
-      parsed.capabilities.includes(LEGACY_WORKFLOW_WRITE_CAPABILITY);
-    const capabilities = isCurrent
-      ? CAPABILITIES.filter((capability) => parsed.capabilities.includes(capability))
-      : hadBothLegacyWriteCapabilities
-        ? [READ_CAPABILITY, WRITE_CAPABILITY]
-        : [READ_CAPABILITY];
+    // Earlier write grants are dropped, not translated: the user turns on the new switches once.
+    const capabilities = CAPABILITIES.filter((capability) => parsed.capabilities.includes(capability));
+    const needsMigration = parsed.capabilities.some((capability) => LEGACY_CAPABILITY_SET.has(capability));
     return {
       version: 1,
       apiKey: validateApiKey(parsed.apiKey),
       capabilities,
-      needsMigration: !isCurrent,
+      needsMigration,
     };
   } catch {
     return undefined;
@@ -859,8 +859,8 @@ function createFlow(flows, capabilities) {
 // is allowed to run. Every request is parsed here first so it can be sorted into a permission
 // tier before anything reaches Kuali:
 //   - queries need kuali-build.read;
-//   - a mutation whose one root field is on the reviewed allowlist needs kuali-build.write;
-//   - every other mutation, including fields Kuali adds later, needs kuali-build.admin.
+//   - a mutation that creates or edits anything needs kuali-build.edit (Write);
+//   - a mutation whose name indicates deleting or discarding needs kuali-build.admin.
 // Mutations are never retried. Kuali's server still enforces the user's own Kuali permissions.
 
 const GRAPHQL_MAX_DOCUMENT_CHARS = 32_768;
@@ -875,23 +875,14 @@ const SCHEMA_DESCRIPTION_CHARS = 300;
 const SCHEMA_CACHE_MS = 60 * 60 * 1_000;
 const graphqlNamePattern = /^[_A-Za-z][_0-9A-Za-z]{0,127}$/u;
 
-// Routine document work. Keep this list short and reviewed; anything absent needs Admin.
-const WRITE_MUTATION_FIELDS = Object.freeze(new Set([
-  "updateDocument",
-  "initializeWorkflow",
-  "submitDocument",
-]));
-
-// Backstop: names that suggest deletion, access control, credentials, or configuration are always
-// Admin, even if someone later adds them to the Write allowlist by mistake.
-const ADMIN_NAME_PATTERN =
-  /delete|remove|archive|purge|destroy|revoke|permission|role|group|policy|apikey|token|secret|password|credential|integration|webhook|setting|config|publish|transfer|bypass|skip|reassign|import|user|space|tenant|admin/iu;
+// Mutations whose names indicate deleting or discarding something need Admin. Every other mutation
+// (creating or editing documents, apps, forms, workflows) needs Write.
+const DELETE_NAME_PATTERN = /delete|remove|archive|purge|destroy|discard|trash|revoke/iu;
 
 const REDACTED_RESPONSE_KEYS = /^(?:api[_-]?key|apikeys?|secret|client[_-]?secret|password|token|access[_-]?token|refresh[_-]?token|private[_-]?key)$/iu;
 
 function classifyMutationField(name) {
-  if (WRITE_MUTATION_FIELDS.has(name) && !ADMIN_NAME_PATTERN.test(name)) return "write";
-  return "admin";
+  return DELETE_NAME_PATTERN.test(name) ? "admin" : "write";
 }
 
 const GRAPHQL_PUNCTUATORS = new Set(["!", "$", "&", "(", ")", ":", "=", "@", "[", "]", "{", "|", "}"]);
@@ -1668,7 +1659,7 @@ function validateGenericInput(toolName, value) {
   if (toolName === "kuali-build.graphql.query" && analysis.operation !== "query") {
     throw failure(
       "wrong_tool",
-      "This tool runs queries only. Use kuali-build.graphql.mutate or kuali-build.graphql.admin for changes.",
+      "This tool runs queries only. Use kuali-build.graphql.mutate to create or edit, or kuali-build.graphql.delete to delete.",
     );
   }
   if (toolName === "kuali-build.graphql.mutate") {
@@ -1678,16 +1669,246 @@ function validateGenericInput(toolName, value) {
     if (analysis.tier !== "write") {
       throw failure(
         "admin_required",
-        `${analysis.rootFields[0]} is not on the reviewed Write list. Use kuali-build.graphql.admin, which requires the Admin & delete permission.`,
+        `${analysis.rootFields[0]} deletes or discards data. Use kuali-build.graphql.delete, which requires the Admin permission.`,
         false,
         { rootField: analysis.rootFields[0] },
       );
     }
   }
-  if (toolName === "kuali-build.graphql.admin" && analysis.operation !== "mutation") {
-    throw failure("wrong_tool", "This tool runs mutations only. Use kuali-build.graphql.query for reads.");
+  if (toolName === "kuali-build.graphql.delete") {
+    if (analysis.operation !== "mutation") {
+      throw failure("wrong_tool", "This tool runs mutations only. Use kuali-build.graphql.query for reads.");
+    }
+    if (analysis.tier !== "admin") {
+      throw failure(
+        "wrong_tool",
+        `${analysis.rootFields[0]} creates or edits rather than deletes. Use kuali-build.graphql.mutate, which requires the Write permission.`,
+        false,
+        { rootField: analysis.rootFields[0] },
+      );
+    }
   }
   return { document: input.document, variables, operationName, analysis };
+}
+
+// ---------------------------------------------------------------------------
+// App-building tools.
+//
+// These send the same GraphQL requests the Kuali Build web app sends when someone uses its
+// builder (Kuali's developer guide recommends copying them from the app). Each one is classified
+// by the same rules as the general tools, so deletes still need Admin.
+
+const BUILDER_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
+const DEFAULT_TIMEZONE = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Los_Angeles";
+  } catch {
+    return "America/Los_Angeles";
+  }
+})();
+
+function builderId(value, label) {
+  if (typeof value !== "string" || !BUILDER_ID_PATTERN.test(value)) {
+    throw failure("invalid_input", `${label} must be a Kuali ID.`);
+  }
+  return value;
+}
+
+function builderText(value, label, maximum = 256) {
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > maximum || hasControlCharacters(value)) {
+    throw failure("invalid_input", `${label} must be 1-${maximum} visible characters.`);
+  }
+  return value;
+}
+
+function builderJson(value, label, { array = false } = {}) {
+  const valid = array ? Array.isArray(value) : isPlainObject(value);
+  if (!valid) throw failure("invalid_input", `${label} must be a JSON ${array ? "array" : "object"}.`);
+  try {
+    validateJsonTree(value);
+  } catch {
+    throw failure("invalid_input", `${label} must contain bounded, plain JSON values.`);
+  }
+  return value;
+}
+
+function optional(input, key, validate) {
+  return Object.hasOwn(input, key) ? validate(input[key]) : undefined;
+}
+
+function withoutUndefined(object) {
+  return Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined));
+}
+
+const BUILDER_TOOLS = Object.freeze({
+  "kuali-build.apps.configuration.get": {
+    tier: "read",
+    keys: ["appId", "pageId"],
+    document: `query KualiBuildAppConfiguration($appId: ID!, $pageId: ID) { app(id: $appId, isConfiguration: true) { id name type hasDraft pages { id type subtype label { value } } dataset(id: $pageId) { id hasDraft isPublished form: formVersion { id template } workflow secondaryWorkflows } } }`,
+    variables: (input) => withoutUndefined({
+      appId: builderId(input.appId, "appId"),
+      pageId: optional(input, "pageId", (value) => builderId(value, "pageId")),
+    }),
+  },
+  "kuali-build.apps.create": {
+    tier: "write",
+    keys: ["name", "backgroundColor", "iconName", "spaceId"],
+    document: `mutation KualiBuildCreateApp($args: CreateAppTileInput!) { app: createAppTile(args: $args) { id name spaceId tileOptions { backgroundColor iconName } } }`,
+    variables: (input) => ({
+      args: withoutUndefined({
+        name: builderText(input.name, "name"),
+        backgroundColor: optional(input, "backgroundColor", (value) => builderText(value, "backgroundColor", 64)),
+        iconName: optional(input, "iconName", (value) => builderText(value, "iconName", 128)),
+        spaceId: optional(input, "spaceId", (value) => builderId(value, "spaceId")),
+      }),
+    }),
+  },
+  "kuali-build.apps.update": {
+    tier: "write",
+    keys: ["appId", "name", "backgroundColor", "iconName"],
+    document: `mutation KualiBuildUpdateApp($args: UpdateAppTileInput!) { updateAppTile(args: $args) { id name tileOptions { backgroundColor iconName } } }`,
+    variables: (input) => ({
+      args: withoutUndefined({
+        id: builderId(input.appId, "appId"),
+        name: builderText(input.name, "name"),
+        backgroundColor: optional(input, "backgroundColor", (value) => builderText(value, "backgroundColor", 64)),
+        iconName: optional(input, "iconName", (value) => builderText(value, "iconName", 128)),
+      }),
+    }),
+  },
+  "kuali-build.forms.update": {
+    tier: "write",
+    keys: ["appId", "pageId", "template"],
+    document: `mutation KualiBuildUpdateForm($appId: ID!, $pageId: ID, $template: JSON) { updateForm(args: { appId: $appId, pageId: $pageId, template: $template }) { id } }`,
+    variables: (input) => withoutUndefined({
+      appId: builderId(input.appId, "appId"),
+      pageId: optional(input, "pageId", (value) => builderId(value, "pageId")),
+      template: builderJson(input.template, "template"),
+    }),
+  },
+  "kuali-build.apps.publish": {
+    tier: "write",
+    keys: ["appId", "pageId"],
+    document: `mutation KualiBuildPublishApp($id: ID!, $pageId: ID) { publishApp(args: { id: $id, pageId: $pageId }) { id hasDraft } }`,
+    variables: (input) => withoutUndefined({
+      id: builderId(input.appId, "appId"),
+      pageId: optional(input, "pageId", (value) => builderId(value, "pageId")),
+    }),
+  },
+  "kuali-build.workflows.update": {
+    tier: "write",
+    keys: ["appId", "pageId", "workflowId", "steps"],
+    document: `mutation KualiBuildUpdateWorkflow($appId: ID!, $pageId: ID, $args: UpdateWorkflowInput!) { updateWorkflowV2(args: $args) { query { app(id: $appId, isConfiguration: true) { id hasDraft dataset(id: $pageId) { id } } } } }`,
+    variables: (input) => {
+      const appId = builderId(input.appId, "appId");
+      const pageId = optional(input, "pageId", (value) => builderId(value, "pageId"));
+      return withoutUndefined({
+        appId,
+        pageId,
+        args: withoutUndefined({
+          appId,
+          id: optional(input, "workflowId", (value) => builderId(value, "workflowId")),
+          pageId,
+          steps: builderJson(input.steps, "steps", { array: true }),
+        }),
+      });
+    },
+  },
+  "kuali-build.workflows.secondary.create": {
+    tier: "write",
+    keys: ["appId", "pageId", "formId", "name", "triggerType"],
+    document: `mutation KualiBuildCreateSecondaryWorkflow($args: CreateSecondaryWorkflowInput!) { createSecondaryWorkflow(args: $args) }`,
+    variables: (input) => ({
+      args: withoutUndefined({
+        workflowName: builderText(input.name, "name"),
+        triggerType: builderText(input.triggerType, "triggerType", 64),
+        appId: builderId(input.appId, "appId"),
+        formId: optional(input, "formId", (value) => builderId(value, "formId")),
+        pageId: optional(input, "pageId", (value) => builderId(value, "pageId")),
+      }),
+    }),
+  },
+  "kuali-build.documents.act": {
+    tier: "write",
+    keys: ["documentId", "actionId", "status", "data", "comment"],
+    document: `mutation KualiBuildActOnDocument($documentId: ID!, $data: JSON, $actionId: ID!, $status: String, $comment: String, $timeZone: String) { submitDocumentV2(id: $documentId, data: $data, actionId: $actionId, status: $status, comment: $comment, timeZone: $timeZone) { id status label validations { formKeys label message } } }`,
+    variables: (input) => {
+      if (!["completed", "rejected"].includes(input.status)) {
+        throw failure("invalid_input", "status must be completed (submit or approve) or rejected (deny).");
+      }
+      return withoutUndefined({
+        documentId: builderId(input.documentId, "documentId"),
+        actionId: builderId(input.actionId, "actionId"),
+        status: input.status,
+        data: optional(input, "data", (value) => builderJson(value, "data")),
+        comment: optional(input, "comment", (value) => builderText(value, "comment", 4_000)),
+        timeZone: DEFAULT_TIMEZONE,
+      });
+    },
+  },
+  "kuali-build.documents.sendback": {
+    tier: "write",
+    keys: ["documentId", "stepId", "data", "body"],
+    document: `mutation KualiBuildSendBackDocument($documentId: ID!, $data: JSON, $stepId: ID!, $body: JSON) { sendbackDocument(id: $documentId, data: $data, stepId: $stepId, body: $body) }`,
+    variables: (input) => withoutUndefined({
+      documentId: builderId(input.documentId, "documentId"),
+      stepId: builderId(input.stepId, "stepId"),
+      data: optional(input, "data", (value) => builderJson(value, "data")),
+      body: optional(input, "body", (value) => builderJson(value, "body")),
+    }),
+  },
+  "kuali-build.documents.withdraw": {
+    tier: "write",
+    keys: ["documentId"],
+    document: `mutation KualiBuildWithdrawDocument($id: ID!, $timezone: String!) { withdrawSubmission(args: { id: $id, timezone: $timezone }) { __typename ... on Error { reason } } }`,
+    variables: (input) => ({ id: builderId(input.documentId, "documentId"), timezone: DEFAULT_TIMEZONE }),
+  },
+  "kuali-build.documents.duplicate": {
+    tier: "write",
+    keys: ["documentId"],
+    document: `mutation KualiBuildDuplicateDocument($id: ID!, $timezone: String!) { duplicateDocument(id: $id, timezone: $timezone) { __typename ... on Redirect { url newActionId } ... on Error { reason } } }`,
+    variables: (input) => ({ id: builderId(input.documentId, "documentId"), timezone: DEFAULT_TIMEZONE }),
+  },
+  "kuali-build.apps.delete": {
+    tier: "admin",
+    keys: ["appId"],
+    document: `mutation KualiBuildDeleteApp($id: ID!) { deleteApp(id: $id) }`,
+    variables: (input) => ({ id: builderId(input.appId, "appId") }),
+  },
+  "kuali-build.documents.delete": {
+    tier: "admin",
+    keys: ["documentId"],
+    document: `mutation KualiBuildDeleteDocument($id: ID!) { deleteDocument(id: $id) }`,
+    variables: (input) => ({ id: builderId(input.documentId, "documentId") }),
+  },
+  "kuali-build.workflows.secondary.delete": {
+    tier: "admin",
+    keys: ["workflowId"],
+    document: `mutation KualiBuildDeleteSecondaryWorkflow($workflowId: ID!) { deleteSecondaryWorkflow(workflowId: $workflowId) { query { __typename } } }`,
+    variables: (input) => ({ workflowId: builderId(input.workflowId, "workflowId") }),
+  },
+});
+
+function validateBuilderInput(toolName, value) {
+  const tool = BUILDER_TOOLS[toolName];
+  const changes = tool.tier !== "read";
+  const input = ownKeys(value, new Set(changes ? [...tool.keys, "confirmChange"] : tool.keys), "Input");
+  if (changes && input.confirmChange !== true) {
+    throw failure(
+      "confirmation_required",
+      "confirmChange must be true after the exact change has been shown to the user.",
+    );
+  }
+  const analysis = analyzeGraphqlRequest(tool.document);
+  if (analysis.tier !== tool.tier) {
+    throw failure("invalid_plugin_state", "A built-in Kuali request is classified inconsistently.");
+  }
+  return {
+    document: tool.document,
+    variables: tool.variables(input),
+    operationName: analysis.operationName ?? undefined,
+    analysis,
+  };
 }
 
 export function createIntegrationProvider(context) {
@@ -2335,9 +2556,42 @@ export function createIntegrationProvider(context) {
           requireCapability(credential, WRITE_CAPABILITY);
           return executeGenericMutation(credential.apiKey, parsed, invocationContext);
         }
-        case "kuali-build.graphql.admin": {
+        case "kuali-build.graphql.delete": {
           validateWriteInvocation(invocationContext);
           requireCapability(credential, ADMIN_CAPABILITY);
+          return executeGenericMutation(credential.apiKey, parsed, invocationContext);
+        }
+        case "kuali-build.apps.configuration.get":
+        case "kuali-build.apps.create":
+        case "kuali-build.apps.update":
+        case "kuali-build.forms.update":
+        case "kuali-build.apps.publish":
+        case "kuali-build.workflows.update":
+        case "kuali-build.workflows.secondary.create":
+        case "kuali-build.documents.act":
+        case "kuali-build.documents.sendback":
+        case "kuali-build.documents.withdraw":
+        case "kuali-build.documents.duplicate":
+        case "kuali-build.apps.delete":
+        case "kuali-build.documents.delete":
+        case "kuali-build.workflows.secondary.delete": {
+          const tier = BUILDER_TOOLS[toolName].tier;
+          if (tier === "read") {
+            const result = await rawGraphql(
+              fetchImplementation,
+              credential.apiKey,
+              parsed.document,
+              parsed.variables,
+              parsed.operationName,
+              invocationContext.signal,
+            );
+            if (result.data === null) {
+              throw failure("graphql_error", "Kuali Build rejected the request.", false, { messages: result.errors });
+            }
+            return { data: redactResponse(result.data, parsed.analysis.selection), errors: result.errors };
+          }
+          validateWriteInvocation(invocationContext);
+          requireCapability(credential, tier === "admin" ? ADMIN_CAPABILITY : WRITE_CAPABILITY);
           return executeGenericMutation(credential.apiKey, parsed, invocationContext);
         }
         case "kuali-build.workflows.status": {

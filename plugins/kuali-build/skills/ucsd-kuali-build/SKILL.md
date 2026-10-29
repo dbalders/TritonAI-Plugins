@@ -1,6 +1,6 @@
 ---
 name: ucsd-kuali-build
-description: Read and change UC San Diego Kuali Build safely, using the dedicated document tools first and general GraphQL queries and mutations when they don't cover the task.
+description: Read, build, and edit UC San Diego Kuali Build apps, forms, workflows, and documents safely, using the dedicated tools first and general GraphQL when they don't cover the task.
 ---
 
 # UC San Diego Kuali Build
@@ -10,11 +10,12 @@ institutions.
 
 The connection offers three permissions:
 
-- **Read** (on by default): dedicated read tools, `kuali-build.graphql.schema`, and
-  `kuali-build.graphql.query`.
-- **Create, edit, and submit Build documents** (opt-in): the dedicated document tools and
-  `kuali-build.graphql.mutate` for mutations on the reviewed Write list.
-- **Admin & delete** (opt-in): `kuali-build.graphql.admin` for any other mutation.
+- **Read** (on by default): read tools, `kuali-build.apps.configuration.get`,
+  `kuali-build.graphql.schema`, and `kuali-build.graphql.query`.
+- **Create and edit** (opt-in): the document, app, form, and workflow tools, and
+  `kuali-build.graphql.mutate` for any other change that isn't a delete.
+- **Admin: delete** (opt-in): `kuali-build.apps.delete`, `kuali-build.documents.delete`,
+  `kuali-build.workflows.secondary.delete`, and `kuali-build.graphql.delete`.
 
 The host must still approve each individual change.
 
@@ -57,19 +58,41 @@ draft merely because the sequence did not finish. If a write reports
 `external_commit_outcome_unknown`, inspect the document, action, or workflow before deciding what
 to do; never automatically retry.
 
+## Build or edit an app, form, or workflow
+
+Work like the Kuali builder: read, change, save, then publish.
+
+1. Create a new app with `kuali-build.apps.create`, or find an existing one with
+   `kuali-build.apps.list`.
+2. Read its current setup with `kuali-build.apps.configuration.get`. The form `template` and
+   `workflow` are Kuali's own JSON formats. Keep their structure and IDs; change only what the user
+   asked for. For a new app, look at an existing app's template to see the format.
+3. Save with `kuali-build.forms.update` (the whole template) or `kuali-build.workflows.update` (the
+   whole `steps` array). Saving changes the draft only.
+4. Read the setup back to confirm, then publish with `kuali-build.apps.publish` once the user agrees.
+   Publishing changes what every new submission sees and may not be reversible. Say so first.
+
+## Act on documents in a workflow
+
+- `kuali-build.documents.act` submits or approves (`status: "completed"`) or denies
+  (`status: "rejected"`) the step identified by `actionId`, with an optional comment.
+- `kuali-build.documents.sendback`, `kuali-build.documents.withdraw`, and
+  `kuali-build.documents.duplicate` do what their names say.
+- Deleting needs the Admin permission and its own tools.
+
+Set `confirmChange: true` only after showing the user exactly what will change.
+
 ## Everything else: general GraphQL
 
-Prefer the dedicated tools above when they fit; they add stale checks and draft verification that
-the general tools don't. For anything else (workflow history, approvals, send-back, form and
-workflow editing, app settings, deletes):
+Prefer the dedicated tools above when they fit. For anything else:
 
 1. Call `kuali-build.graphql.schema` to find the root query or mutation. Each mutation lists the
    permission it needs (`write` or `admin`). Call it again with `typeName` for argument and input
    types. Don't guess field names.
 2. Read first with `kuali-build.graphql.query` to confirm the exact records and current values.
 3. For a change, send exactly one mutation with one root field. Use `kuali-build.graphql.mutate`
-   for `write` fields and `kuali-build.graphql.admin` for `admin` fields. If the mutate tool returns
-   `admin_required`, tell the user it needs the Admin & delete permission; don't try to reword the
+   for `write` fields and `kuali-build.graphql.delete` for `admin` fields. If the mutate tool returns
+   `admin_required`, tell the user deleting needs the Admin permission; don't try to reword the
    request to get around it.
 4. Before setting `confirmMutation: true`, show the user in plain language what will change, which
    records it affects, and whether it can be undone, plus the exact mutation and variables.

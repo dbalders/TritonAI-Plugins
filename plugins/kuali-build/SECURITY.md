@@ -12,8 +12,8 @@ Prototype-related keys are rejected. HTTP and GraphQL failures are normalized wi
 response bodies, server messages, request headers, or API keys. Reads are never automatically
 retried; retryable and rate-limit failures are surfaced to the Harness.
 
-Writes require an opt-in capability (`kuali-build.write` for the dedicated tools and Write-list
-mutations, `kuali-build.admin` for every other mutation), host `writeApproved`, explicit tool-level
+Writes require an opt-in capability (`kuali-build.edit` to create or edit, `kuali-build.admin` to
+delete), host `writeApproved`, explicit tool-level
 confirmation fields, and exactly one `beginCommit` admission immediately before each mutation.
 Document edits use a pre-write `meta.updatedAt` stale check, normalize only bounded Kuali form keys,
 and require extra confirmation for null values. The stale check is not atomic because the
@@ -39,12 +39,18 @@ remain the final authority.
   1,000 selections, and fragment-spread chains 24 deep anywhere in the document. Fragment expansion is computed once per
   fragment, so repeated spreads cannot blow up classification work.
 - Queries need `kuali-build.read`. A mutation must select exactly one root field. Classification uses
-  the real field name after resolving aliases, fragment spreads, and inline fragments. Only fields on
-  the reviewed Write allowlist run under `kuali-build.write`; every other mutation, including fields
-  Kuali adds without notice, requires the opt-in `kuali-build.admin` capability. A name backstop keeps
-  delete/permission/credential/configuration-style names in Admin even if allowlisted by mistake.
-- Classification is by root field name only. A Write-list field could still do something drastic
-  through its arguments; host approval of the exact document and variables is the control for that.
+  the real field name after resolving aliases, fragment spreads, and inline fragments. Fields whose
+  names contain delete, remove, archive, purge, destroy, discard, trash, or revoke need the opt-in
+  `kuali-build.admin` capability; every other mutation needs the opt-in `kuali-build.edit`
+  capability. This is David's chosen boundary: Write means create or edit anything, Admin means
+  delete.
+- Classification is by root field name only. Write therefore includes powerful non-delete changes
+  (publishing, workflow and permission edits, user changes, API key creation, integrations) and a
+  write field can still be drastic through its arguments. Host approval of the exact document and
+  variables is the control for that.
+- The app-building tools send fixed request documents copied from the Kuali Build web app, with
+  validated IDs and JSON inputs. They are classified by the same rules at call time, so a delete
+  tool cannot run under Write.
 - A mutation root field cannot use `@skip` or `@include`.
 - Mutations follow the same commit and no-retry rules as the dedicated tools. Only a response with
   GraphQL errors and no `data` member at all is reported as not executed. Errors alongside any
