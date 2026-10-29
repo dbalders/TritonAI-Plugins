@@ -1234,6 +1234,12 @@ test("live test: free-form JSON inputs also arrive as text when an agent layer e
 
   for (const input of [
     { appId: APP_ID, template, templateJson: JSON.stringify(template), confirmChange: true },
+    {
+      appId: APP_ID,
+      template: "junk",
+      templateJson: JSON.stringify(template),
+      confirmChange: true,
+    },
     { appId: APP_ID, templateJson: "{not json", confirmChange: true },
     { appId: APP_ID, templateJson: "{}", confirmChange: true },
   ]) {

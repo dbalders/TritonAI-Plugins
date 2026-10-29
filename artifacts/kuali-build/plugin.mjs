@@ -1808,10 +1808,13 @@ function acceptJsonText(toolName, input) {
     if (typeof text !== "string" || text.length === 0 || text.length > JSON_TEXT_MAX_CHARS) {
       throw failure("invalid_input", `${textKey} must be JSON text.`);
     }
+    // Codex sends an empty object or array for the object form, so only those may sit beside the text.
     const supplied = input[key];
-    const suppliedObject = isPlainObject(supplied) && Object.keys(supplied).length > 0;
-    const suppliedArray = Array.isArray(supplied) && supplied.length > 0;
-    if (suppliedObject || suppliedArray) {
+    const empty =
+      supplied === undefined ||
+      (isPlainObject(supplied) && Object.keys(supplied).length === 0) ||
+      (Array.isArray(supplied) && supplied.length === 0);
+    if (!empty) {
       throw failure("invalid_input", `Send ${key} or ${textKey}, not both.`);
     }
     let value;
