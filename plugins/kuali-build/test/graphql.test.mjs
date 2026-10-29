@@ -1067,3 +1067,19 @@ test("PR review: a GraphQL sign-in rejection without data proves the mutation di
       error.code === "authentication_failed" && error.details.rejectedBeforeExecution === true,
   );
 });
+
+test("council round 6: a withdraw that reports success false is a refusal", async () => {
+  const { provider: kuali } = provider(
+    [READ, WRITE],
+    [json({ data: { withdrawSubmission: { __typename: "Success", success: false } } })],
+  );
+  await assert.rejects(
+    () =>
+      kuali.invoke(
+        "kuali-build.documents.withdraw",
+        { documentId: DOCUMENT_ID, confirmChange: true },
+        writeContext(),
+      ),
+    (error) => error.code === "kuali_rejected_action",
+  );
+});

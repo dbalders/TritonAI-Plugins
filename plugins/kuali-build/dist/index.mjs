@@ -1923,7 +1923,10 @@ const BUILDER_TOOLS = Object.freeze({
     keys: ["documentId"],
     document: `mutation KualiBuildWithdrawDocument($id: ID!, $timezone: String!) { withdrawSubmission(args: { id: $id, timezone: $timezone }) { __typename ... on Success { success } ... on Error { reason } } }`,
     variables: (input) => ({ id: builderId(input.documentId, "documentId"), timezone: DEFAULT_TIMEZONE }),
-    rejection: (data) => errorResultRejection(data.withdrawSubmission, "Success"),
+    rejection: (data) =>
+      data.withdrawSubmission?.__typename === "Success" && data.withdrawSubmission.success === false
+        ? { reason: "Kuali returned success: false" }
+        : errorResultRejection(data.withdrawSubmission, "Success"),
   },
   "kuali-build.documents.duplicate": {
     tier: "write",
