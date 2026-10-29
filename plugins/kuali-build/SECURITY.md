@@ -21,8 +21,8 @@ documented Kuali mutation does not expose compare-and-set semantics.
 
 No mutation is automatically retried. Ambiguous failures after commit—including cancellation,
 timeout, network loss, a 5xx response, invalid or oversized responses, or GraphQL partial data—are
-reported as `external_commit_outcome_unknown` without including form data or credentials. Operators
-must inspect Kuali before taking another action.
+reported as `external_commit_outcome_unknown` without including credentials. Operators must inspect
+Kuali before taking another action.
 
 Draft initialization and submission are separate external commits with a read-only resolution step
 between them. They are not atomic; initialization can leave an empty draft.
@@ -65,10 +65,14 @@ remain the final authority.
   carry `data`), any other error status without a GraphQL error envelope (for example a 429 or 403
   with an HTML or empty body), a success response missing
   the mutation's result, 5xx responses, timeouts, network loss, and cancellation after commit are
-  `external_commit_outcome_unknown`.
-- Unlike the dedicated tools, general tools return Kuali GraphQL error messages so the assistant can
-  correct its request. Messages are limited to five, 500 characters each, with control characters
-  removed. They are server text and may echo request values.
+  `external_commit_outcome_unknown`. One exception: when every error is Kuali's exact "User does not
+  have the correct permissions" refusal on the mutation's root field (error path of length one) and
+  there is no result, Kuali refused before running it, so the tool reports `kuali_permission_denied`
+  with `committed: false`. A refusal on a nested field stays unknown, because it can follow a write.
+- General tools and the app-building tools that share their mutation path return Kuali GraphQL error
+  messages so the assistant can correct its request; an unknown outcome includes up to three of them.
+  Messages are limited to five, 500 characters each, with control characters removed. They are
+  server text and may echo request values.
 - In general-tool responses, values under credential-like keys (`apiKey`, `secret`, `token`,
   `password`, and similar), including aliased selections of those fields (matched by response path) and whole nested objects,
   are replaced with `[redacted by TritonAI]`. This is a backstop, not a guarantee that sensitive
