@@ -879,6 +879,10 @@ const graphqlNamePattern = /^[_A-Za-z][_0-9A-Za-z]{0,127}$/u;
 // (creating or editing documents, apps, forms, workflows) needs Write.
 const DELETE_NAME_PATTERN = /delete|remove|archive|purge|destroy|discard|trash|revoke/iu;
 
+// Mutations that create or reveal credentials (for example createApiKey) may return the secret as
+// the field's value; their whole result is withheld from the assistant.
+const CREDENTIAL_MUTATION_PATTERN = /api[_-]?key|token|secret|password|credential/iu;
+
 const REDACTED_RESPONSE_KEYS = /^(?:api[_-]?key|apikeys?|secret|client[_-]?secret|password|token|access[_-]?token|refresh[_-]?token|private[_-]?key)$/iu;
 
 function classifyMutationField(name) {
@@ -1858,10 +1862,12 @@ const BUILDER_TOOLS = Object.freeze({
     keys: ["documentId", "actionId", "status", "data", "comment"],
     document: `mutation KualiBuildActOnDocument($documentId: ID!, $data: JSON, $actionId: ID!, $status: String, $comment: String, $timeZone: String) { submitDocumentV2(id: $documentId, data: $data, actionId: $actionId, status: $status, comment: $comment, timeZone: $timeZone) { id status label validations { formKeys label message } } }`,
     variables: (input) => {
-      if (!["completed", "approved", "rejected"].includes(input.status)) {
+      // The web app picks the status from the step type: Initiate "completed", Approval "approved",
+      // Task "task completed", Acknowledge "acknowledged"; denying sends "rejected".
+      if (!["completed", "approved", "task completed", "acknowledged", "rejected"].includes(input.status)) {
         throw failure(
           "invalid_input",
-          "status must be completed (submit or complete a task), approved (approve), or rejected (deny).",
+          'status must match the step: "completed" (submit), "approved" or "rejected" (approval), "task completed" (task), or "acknowledged" (acknowledge).',
         );
       }
       return withoutUndefined({
@@ -1873,10 +1879,10 @@ const BUILDER_TOOLS = Object.freeze({
         timeZone: DEFAULT_TIMEZONE,
       });
     },
-    // The web app treats these statuses as "nothing was submitted".
+    // The web app treats these statuses as "not submitted".
     rejection: (data) => {
       const status = data.submitDocumentV2?.status;
-      return status === "validationFailed" || status === "formOutOfDate"
+      return ["validationFailed", "formOutOfDate", "submissionsDisabled", "Invalid Operation"].includes(status)
         ? { reason: status, validations: data.submitDocumentV2?.validations ?? null }
         : null;
     },
@@ -1898,20 +1904,14 @@ const BUILDER_TOOLS = Object.freeze({
     keys: ["documentId"],
     document: `mutation KualiBuildWithdrawDocument($id: ID!, $timezone: String!) { withdrawSubmission(args: { id: $id, timezone: $timezone }) { __typename ... on Success { success } ... on Error { reason } } }`,
     variables: (input) => ({ id: builderId(input.documentId, "documentId"), timezone: DEFAULT_TIMEZONE }),
-    rejection: (data) => {
-      const result = data.withdrawSubmission;
-      return result?.__typename === "Success" ? null : { reason: result?.reason ?? result?.__typename ?? "unknown" };
-    },
+    rejection: (data) => errorResultRejection(data.withdrawSubmission, "Success"),
   },
   "kuali-build.documents.duplicate": {
     tier: "write",
     keys: ["documentId"],
     document: `mutation KualiBuildDuplicateDocument($id: ID!, $timezone: String!) { duplicateDocument(id: $id, timezone: $timezone) { __typename ... on Redirect { url newActionId } ... on Error { reason } } }`,
     variables: (input) => ({ id: builderId(input.documentId, "documentId"), timezone: DEFAULT_TIMEZONE }),
-    rejection: (data) => {
-      const result = data.duplicateDocument;
-      return result?.__typename === "Redirect" ? null : { reason: result?.reason ?? result?.__typename ?? "unknown" };
-    },
+    rejection: (data) => errorResultRejection(data.duplicateDocument, "Redirect"),
   },
   "kuali-build.apps.delete": {
     tier: "admin",
@@ -1932,6 +1932,23 @@ const BUILDER_TOOLS = Object.freeze({
     variables: (input) => ({ workflowId: builderId(input.workflowId, "workflowId") }),
   },
 });
+
+// A union result is a definite refusal only when Kuali returns an error type with a reason. Anything
+// else that isn't the success type proves nothing, so it is reported as an unknown outcome.
+function errorResultRejection(result, successType) {
+  if (isPlainObject(result) && result.__typename === successType) return null;
+  if (
+    isPlainObject(result) &&
+    typeof result.__typename === "string" &&
+    result.__typename.endsWith("Error") &&
+    typeof result.reason === "string"
+  ) {
+    return { reason: sanitizeMessage(result.reason) || result.__typename, errorType: result.__typename };
+  }
+  return UNKNOWN_OUTCOME;
+}
+
+const UNKNOWN_OUTCOME = Object.freeze({ unknown: true });
 
 function validateBuilderInput(toolName, value) {
   const tool = BUILDER_TOOLS[toolName];
@@ -2067,6 +2084,16 @@ export function createIntegrationProvider(context) {
       !Object.hasOwn(result.data, parsed.analysis.responseKey)
     ) {
       throw externalCommitOutcomeUnknown(rootField, outcomeDetails);
+    }
+    if (CREDENTIAL_MUTATION_PATTERN.test(rootField)) {
+      return {
+        data: { [parsed.analysis.responseKey]: "[redacted by TritonAI]" },
+        rootField,
+        permission: parsed.analysis.tier,
+        committed: true,
+        secretWithheld: true,
+        note: "Kuali returned a credential, which was withheld. View or copy it in Kuali Build directly.",
+      };
     }
     return {
       data: redactResponse(result.data, parsed.analysis.selection),
@@ -2640,6 +2667,9 @@ export function createIntegrationProvider(context) {
           requireCapability(credential, tier === "admin" ? ADMIN_CAPABILITY : WRITE_CAPABILITY);
           const outcome = await executeGenericMutation(credential.apiKey, parsed, invocationContext);
           const rejected = BUILDER_TOOLS[toolName].rejection?.(outcome.data);
+          if (rejected === UNKNOWN_OUTCOME) {
+            throw externalCommitOutcomeUnknown(outcome.rootField, { rootField: outcome.rootField });
+          }
           if (rejected) {
             // Kuali answered and reported that it did not perform the action.
             throw failure("kuali_rejected_action", "Kuali Build did not perform the action.", false, {

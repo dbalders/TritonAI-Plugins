@@ -50,8 +50,11 @@ remain the final authority.
   variables is the control for that.
 - The app-building tools send fixed request documents copied from the Kuali Build web app, with
   validated IDs and JSON inputs. Where the web app treats a returned value as a refusal (for example
-  `validationFailed`, `Invalid Operation`, or an `Error` result), the tool reports
-  `kuali_rejected_action` with `committed: false` instead of success. They are classified by the same rules at call time, so a delete
+  `validationFailed`, `submissionsDisabled`, `Invalid Operation`, or an error-type result with a
+  reason), the tool reports `kuali_rejected_action` with `committed: false` instead of success. A
+  missing or unrecognized result is reported as `external_commit_outcome_unknown`.
+- A mutation whose name suggests it creates or reveals a credential (`apiKey`, `token`, `secret`,
+  `password`, `credential`) has its whole result withheld from the assistant. They are classified by the same rules at call time, so a delete
   tool cannot run under Write.
 - A mutation root field cannot use `@skip` or `@include`.
 - Mutations follow the same commit and no-retry rules as the dedicated tools. Only a response with
@@ -70,8 +73,8 @@ remain the final authority.
   record data is removed; the dedicated tools return document data as before.
 
 Every earlier write grant (`kuali-build.write`, or the older `kuali-build.documents.write` and
-`kuali-build.workflows.write`) is dropped, leaving Read only, because Write now covers far more than
-those grants did. The user turns on `kuali-build.edit` (and `kuali-build.admin` if wanted) without
+`kuali-build.workflows.write`) is dropped because Write now covers far more than those grants did;
+any current grants stored alongside it are kept. The user turns on `kuali-build.edit` (and `kuali-build.admin` if wanted) without
 re-entering the stored API key. Neither is ever granted by migration.
 
 The hostname is fixed rather than caller-controlled, and Web PKI validation remains enabled. This

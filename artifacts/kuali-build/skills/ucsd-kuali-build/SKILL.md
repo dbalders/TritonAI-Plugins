@@ -76,11 +76,14 @@ Work like the Kuali builder: read, change, save, then publish.
 
 ## Act on documents in a workflow
 
-- `kuali-build.documents.act` approves (`status: "approved"`), denies (`status: "rejected"`), or
-  submits or completes a task (`status: "completed"`) for the step identified by `actionId`, with an
-  optional comment.
-- A `kuali_rejected_action` error means Kuali answered but did not do it (for example
-  `validationFailed` with field messages, or `Invalid Operation`). Report the reason; nothing changed.
+- `kuali-build.documents.act` acts on the step identified by `actionId`. Match the status to the
+  step type: `"completed"` to submit (Initiate), `"approved"` or `"rejected"` for an Approval,
+  `"task completed"` for a Task, `"acknowledged"` for an Acknowledge step. Optional comment.
+- A `kuali_rejected_action` error means Kuali answered and did not perform the action (for example
+  `validationFailed` with field messages, `submissionsDisabled`, or `Invalid Operation`). Report the
+  reason. An `external_commit_outcome_unknown` error means it may have happened; check first.
+- If a request creates a credential such as an API key, its value is withheld. Tell the user to view
+  it in Kuali Build.
 - `kuali-build.documents.sendback`, `kuali-build.documents.withdraw`, and
   `kuali-build.documents.duplicate` do what their names say.
 - Deleting needs the Admin permission and its own tools.

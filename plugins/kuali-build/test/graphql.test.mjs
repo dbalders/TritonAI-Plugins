@@ -890,3 +890,56 @@ test("council review: Kuali refusals returned as data are reported as not done",
   );
   assert.deepEqual(mock.requests[1].body.variables, { args: { sourceId: APP_ID, name: "Copy" } });
 });
+
+test("council round 2: step statuses, more refusals, unclear results, and withheld credentials", async () => {
+  const act = (status) => ({
+    documentId: DOCUMENT_ID,
+    actionId: "a1",
+    status,
+    confirmChange: true,
+  });
+  for (const status of ["task completed", "acknowledged"]) {
+    const { provider: kuali, mock } = provider(
+      [READ, WRITE],
+      [
+        json({
+          data: { submitDocumentV2: { id: DOCUMENT_ID, status, label: "x", validations: [] } },
+        }),
+      ],
+    );
+    await kuali.invoke("kuali-build.documents.act", act(status), writeContext());
+    assert.equal(mock.requests[0].body.variables.status, status);
+  }
+  for (const refused of ["submissionsDisabled", "Invalid Operation"]) {
+    const { provider: kuali } = provider(
+      [READ, WRITE],
+      [json({ data: { submitDocumentV2: { id: DOCUMENT_ID, status: refused } } })],
+    );
+    await assert.rejects(
+      () => kuali.invoke("kuali-build.documents.act", act("completed"), writeContext()),
+      (error) => error.code === "kuali_rejected_action" && error.details.reason === refused,
+    );
+  }
+  for (const [tool, data] of [
+    ["kuali-build.documents.duplicate", { duplicateDocument: null }],
+    ["kuali-build.documents.duplicate", { duplicateDocument: {} }],
+    ["kuali-build.documents.withdraw", { withdrawSubmission: { __typename: "Mystery" } }],
+  ]) {
+    const { provider: kuali } = provider([READ, WRITE], [json({ data })]);
+    await assert.rejects(
+      () => kuali.invoke(tool, { documentId: DOCUMENT_ID, confirmChange: true }, writeContext()),
+      (error) => error.code === "external_commit_outcome_unknown",
+    );
+  }
+  const { provider: kuali } = provider(
+    [READ, WRITE],
+    [json({ data: { createApiKey: "kb_live_SECRET" } })],
+  );
+  const created = await kuali.invoke(
+    "kuali-build.graphql.mutate",
+    { document: `mutation { createApiKey(userId: "u1", name: "x") }`, confirmMutation: true },
+    writeContext(),
+  );
+  assert.equal(created.secretWithheld, true);
+  assert.doesNotMatch(JSON.stringify(created), /kb_live_SECRET/u);
+});
