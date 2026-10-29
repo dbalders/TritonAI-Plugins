@@ -13137,7 +13137,11 @@ var N8nEnvironmentProvider = class {
     return (await this.#provider(context2)).prepare(context2);
   }
   async connect(capabilities, context2, submission) {
-    return (await this.#provider(context2)).connect(capabilities, context2, submission);
+    const environment = this.#environment(context2);
+    const provider = await this.#enter(environment, { current: true });
+    const result2 = await provider.connect(capabilities, context2, submission);
+    if (this.#activeEnvironmentId !== environment.id) await provider.cancelPendingSignIn();
+    return result2;
   }
   async poll(flowId, context2) {
     return (await this.#provider(context2)).poll(flowId, context2);

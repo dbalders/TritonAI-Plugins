@@ -368,8 +368,7 @@ describe("N8nEnvironmentProvider", () => {
     await expect(overtaken).rejects.toThrow(/switched environments/u);
     expect(mock.requests.some(({ origin }) => origin === DEV_ORIGIN)).toBe(false);
 
-    // A Dev sign-in already registering when the user switches finishes starting, then the next
-    // Prod operation closes it.
+    // A Dev sign-in already registering when the user switches is closed as soon as it starts.
     const starting = provider.connect(["read", "write"], lifecycle(dev));
     await registrationReached;
     await provider.status(status(prod));
@@ -377,7 +376,6 @@ describe("N8nEnvironmentProvider", () => {
     const flow = await starting;
     if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
     const callback = new URL(new URL(flow.authorizationUrl).searchParams.get("redirect_uri")!);
-    await provider.status(status(prod));
     await expect(fetch(callback)).rejects.toThrow();
     await expect(provider.poll(flow.flowId, lifecycle(dev))).rejects.toThrow(/not found/u);
     await provider.close();

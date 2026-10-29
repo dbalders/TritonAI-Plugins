@@ -150,7 +150,13 @@ export class N8nEnvironmentProvider implements IntegrationProvider {
     context?: IntegrationLifecycleContext,
     submission?: IntegrationConnectionSubmission,
   ): Promise<IntegrationAuthorizationUrlConnectResult | IntegrationConnectedConnectResult> {
-    return (await this.#provider(context)).connect(capabilities, context, submission);
+    const environment = this.#environment(context);
+    const provider = await this.#enter(environment, { current: true });
+    const result = await provider.connect(capabilities, context, submission);
+    // A switch that landed while this sign-in was registering abandoned it. Close it now; the
+    // result's flow then reports "not found" when polled instead of staying open until it expires.
+    if (this.#activeEnvironmentId !== environment.id) await provider.cancelPendingSignIn();
+    return result;
   }
 
   async poll(
