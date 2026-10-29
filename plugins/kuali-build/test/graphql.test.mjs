@@ -997,3 +997,21 @@ test("council round 3: missing action results are unknown; boolean credential re
   assert.equal(revoked.data.revokeApiKey, false);
   assert.equal(revoked.secretWithheld, undefined);
 });
+
+test("council round 4: aliased boolean credential results stay visible; successful sendback commits", async () => {
+  const { provider: admin } = provider([READ, ADMIN], [json({ data: { token: false } })]);
+  const revoked = await admin.invoke(
+    "kuali-build.graphql.delete",
+    { document: `mutation { token: revokeApiKey(id: "k1") }`, confirmMutation: true },
+    writeContext(),
+  );
+  assert.equal(revoked.data.token, false);
+
+  const { provider: kuali } = provider([READ, WRITE], [json({ data: { sendbackDocument: "ok" } })]);
+  const sent = await kuali.invoke(
+    "kuali-build.documents.sendback",
+    { documentId: DOCUMENT_ID, stepId: "s1", confirmChange: true },
+    writeContext(),
+  );
+  assert.equal(sent.committed, true);
+});

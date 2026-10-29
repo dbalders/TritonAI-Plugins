@@ -1420,7 +1420,8 @@ function redactResponse(value, selection, depth = 0) {
     const output = {};
     for (const [key, item] of Object.entries(object)) {
       const entry = fields?.get(key);
-      if (item !== null && (REDACTED_RESPONSE_KEYS.test(key) || entry?.sensitive)) {
+      // true/false carry no secret and may be the only sign that a credential change failed.
+      if (item !== null && typeof item !== "boolean" && (REDACTED_RESPONSE_KEYS.test(key) || entry?.sensitive)) {
         output[key] = "[redacted by TritonAI]";
         continue;
       }
@@ -1894,7 +1895,7 @@ const BUILDER_TOOLS = Object.freeze({
       }
       const status = data.submitDocumentV2.status;
       return ["validationFailed", "formOutOfDate", "submissionsDisabled", "Invalid Operation"].includes(status)
-        ? { reason: status, validations: data.submitDocumentV2?.validations ?? null }
+        ? { reason: status, validations: data.submitDocumentV2.validations ?? null }
         : null;
     },
   },
@@ -2100,7 +2101,7 @@ export function createIntegrationProvider(context) {
       throw externalCommitOutcomeUnknown(rootField, outcomeDetails);
     }
     const rootValue = result.data[parsed.analysis.responseKey];
-    if (CREDENTIAL_MUTATION_PATTERN.test(rootField) && (typeof rootValue === "string" || isPlainObject(rootValue) || Array.isArray(rootValue))) {
+    if (CREDENTIAL_MUTATION_PATTERN.test(rootField) && rootValue !== null && typeof rootValue !== "boolean") {
       return {
         data: { [parsed.analysis.responseKey]: "[redacted by TritonAI]" },
         rootField,
