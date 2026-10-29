@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 
 import { createIntegrationProvider } from "../dist/index.mjs";
 
@@ -202,19 +203,7 @@ test("aliases and fragments cannot disguise an admin mutation as a write", async
   assert.equal(mock.requests.length, 0);
 });
 
-test("delete mutations need the admin permission and host approval", async () => {
-  const { provider: writeOnly, mock: writeMock } = provider([READ, WRITE], []);
-  await assert.rejects(
-    () =>
-      writeOnly.invoke(
-        "kuali-build.graphql.delete",
-        { document: DELETE, variables: { id: DOCUMENT_ID }, confirmMutation: true },
-        writeContext(),
-      ),
-    (error) => error.code === "capability_not_granted",
-  );
-  assert.equal(writeMock.requests.length, 0);
-
+test("delete mutations need host approval", async () => {
   const { provider: admin, mock } = provider(
     [READ, ADMIN],
     [json({ data: { deleteDocument: true } })],
@@ -421,21 +410,31 @@ test("schema browsing lists roots with each mutation's permission and caches the
   assert.equal(mock.requests.length, 4, "the root schema request is cached between calls");
 });
 
-test("existing connections keep their grants and can add admin without re-entering the key", async () => {
-  const { provider: kuali, secrets } = provider(
-    [READ, WRITE],
-    [json({ data: { apps: [] } }), json({ data: { apps: [] } })],
-  );
-  assert.deepEqual((await kuali.status(readContext())).grantedCapabilities, [READ, WRITE]);
-  const result = await kuali.connect([READ, WRITE, ADMIN], readContext());
-  assert.equal(result.kind, "connected");
-  assert.match(result.message, /write and admin/u);
-  assert.deepEqual(JSON.parse(secrets.value()).capabilities, [READ, WRITE, ADMIN]);
+test("a working key grants every tier so switches change without reconnecting", async () => {
+  for (const stored of [[READ], [READ, WRITE], [READ, PREVIOUS_WRITE], [READ, WRITE, ADMIN]]) {
+    const { provider: kuali, secrets } = provider(stored, [
+      json({ data: { apps: [] } }),
+      json({ data: { apps: [] } }),
+    ]);
+    assert.deepEqual((await kuali.status(readContext())).grantedCapabilities, [READ, WRITE, ADMIN]);
+    const before = JSON.parse(secrets.value()).apiKey;
+    const result = await kuali.connect([READ, WRITE, ADMIN], readContext());
+    assert.equal(result.kind, "connected", "the saved key is reused, never asked for again");
+    assert.equal(JSON.parse(secrets.value()).apiKey, before);
+  }
 });
 
-test("earlier write grants never carry over to the broader Write or Admin", async () => {
-  const { provider: kuali } = provider([READ, PREVIOUS_WRITE], [json({ data: { apps: [] } })]);
-  assert.deepEqual((await kuali.status(readContext())).grantedCapabilities, [READ]);
+test("each tool is tied to exactly one switch, and deletes only to Admin", () => {
+  const manifest = JSON.parse(
+    readFileSync(new URL("../.tritonai-plugin/plugin.json", import.meta.url), "utf8"),
+  );
+  for (const tool of manifest.tools) {
+    assert.equal(tool.capabilities.length, 1, tool.name);
+    const [capability] = tool.capabilities;
+    if (tool.name.endsWith(".delete")) assert.equal(capability, ADMIN, tool.name);
+    else if (tool.effect === "read") assert.equal(capability, READ, tool.name);
+    else assert.equal(capability, WRITE, tool.name);
+  }
 });
 
 test("review regressions: errors after execution always mean an unknown outcome", async () => {
@@ -700,15 +699,6 @@ test("Write covers any create or edit mutation and the delete tool covers only d
       ),
     (error) => error.code === "wrong_tool",
   );
-  await assert.rejects(
-    () =>
-      admin.invoke(
-        "kuali-build.graphql.mutate",
-        { document: publish, confirmMutation: true },
-        writeContext(),
-      ),
-    (error) => error.code === "capability_not_granted",
-  );
   assert.equal(adminMock.requests.length, 0);
 });
 
@@ -767,15 +757,6 @@ test("app-building tools send Kuali's builder requests under the right permissio
   );
   assert.deepEqual(setup.data.app.dataset.form.template, template);
 
-  await assert.rejects(
-    () =>
-      kuali.invoke(
-        "kuali-build.apps.delete",
-        { appId: APP_ID, confirmChange: true },
-        writeContext(),
-      ),
-    (error) => error.code === "capability_not_granted",
-  );
   assert.equal(mock.requests.length, 3);
 
   const { provider: admin, mock: adminMock } = provider(

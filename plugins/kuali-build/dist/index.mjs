@@ -788,15 +788,6 @@ function projectDraftAction(value) {
   };
 }
 
-function requireCapability(credential, capability) {
-  if (!credential.capabilities.includes(capability)) {
-    throw failure(
-      "capability_not_granted",
-      `Reconnect the plugin with ${capability} enabled before using this tool.`,
-    );
-  }
-}
-
 function validateWriteInvocation(context) {
   if (context.writeApproved !== true) {
     throw failure(
@@ -828,15 +819,8 @@ function isAmbiguousWriteFailure(error, commitSignal) {
   return error.code === "graphql_error" && error.details?.partialDataDiscarded === true;
 }
 
-function connectionMessage(capabilities) {
-  if (capabilities.includes(ADMIN_CAPABILITY)) {
-    return capabilities.includes(WRITE_CAPABILITY)
-      ? "Connected to UC San Diego Kuali Build with write and admin tools enabled."
-      : "Connected to UC San Diego Kuali Build with admin tools enabled.";
-  }
-  return capabilities.includes(WRITE_CAPABILITY)
-    ? "Connected to UC San Diego Kuali Build with write tools enabled."
-    : "Connected to UC San Diego Kuali Build with read-only tools.";
+function connectionMessage() {
+  return "Connected to UC San Diego Kuali Build. The Read, Create and edit, and Admin switches control which tools are available; changing them never needs a new key.";
 }
 
 function createFlow(flows, capabilities) {
@@ -2213,7 +2197,10 @@ export function createIntegrationProvider(context) {
         return {
           state: "connected",
           accountLabel: "UC San Diego Kuali Build",
-          grantedCapabilities: credential.capabilities,
+          // An API key carries the user's full Kuali permissions, so a working key grants every
+          // tier. The host's switches decide which tools run, and it checks them on every call,
+          // so turning a switch on or off never needs a reconnect.
+          grantedCapabilities: [...CAPABILITIES],
           message: null,
         };
       } catch (error) {
@@ -2246,7 +2233,7 @@ export function createIntegrationProvider(context) {
           return {
             kind: "connected",
             flowId: crypto.randomUUID(),
-            message: connectionMessage(granted),
+            message: connectionMessage(),
           };
         }
         const flowId = createFlow(flows, granted);
@@ -2277,7 +2264,7 @@ export function createIntegrationProvider(context) {
       return {
         kind: "connected",
         flowId: submitted.flowId,
-        message: connectionMessage(flow.capabilities),
+        message: connectionMessage(),
       };
     },
     async disconnect(lifecycleContext) {
@@ -2430,7 +2417,6 @@ export function createIntegrationProvider(context) {
         }
         case "kuali-build.documents.update": {
           validateWriteInvocation(invocationContext);
-          requireCapability(credential, WRITE_CAPABILITY);
           const current = extract(
             await execute(
               credential.apiKey,
@@ -2493,7 +2479,6 @@ export function createIntegrationProvider(context) {
         }
         case "kuali-build.documents.drafts.initialize": {
           validateWriteInvocation(invocationContext);
-          requireCapability(credential, WRITE_CAPABILITY);
           const app = extract(
             await execute(
               credential.apiKey,
@@ -2532,7 +2517,6 @@ export function createIntegrationProvider(context) {
         }
         case "kuali-build.documents.submit": {
           validateWriteInvocation(invocationContext);
-          requireCapability(credential, WRITE_CAPABILITY);
           const actionValue = extract(
             await execute(
               credential.apiKey,
@@ -2631,8 +2615,7 @@ export function createIntegrationProvider(context) {
             mutations: mutationRoot === null ? [] : filterFields(mutationRoot.fields),
             types: matching.slice(0, SCHEMA_MAX_TYPE_NAMES),
             typesTruncated: matching.length > SCHEMA_MAX_TYPE_NAMES,
-            grantedPermissions: credential.capabilities,
-            note: "Each mutation lists the permission it needs. Use kuali-build.graphql.schema with typeName for a type's fields and arguments.",
+            note: "Each mutation lists the permission it needs; the matching switch in TritonAI settings must be on. Use kuali-build.graphql.schema with typeName for a type's fields and arguments.",
           };
         }
         case "kuali-build.graphql.query": {
@@ -2657,12 +2640,10 @@ export function createIntegrationProvider(context) {
         }
         case "kuali-build.graphql.mutate": {
           validateWriteInvocation(invocationContext);
-          requireCapability(credential, WRITE_CAPABILITY);
           return executeGenericMutation(credential.apiKey, parsed, invocationContext);
         }
         case "kuali-build.graphql.delete": {
           validateWriteInvocation(invocationContext);
-          requireCapability(credential, ADMIN_CAPABILITY);
           return executeGenericMutation(credential.apiKey, parsed, invocationContext);
         }
         case "kuali-build.apps.configuration.get":
@@ -2697,7 +2678,6 @@ export function createIntegrationProvider(context) {
             return { data: redactResponse(result.data, parsed.analysis.selection), errors: result.errors };
           }
           validateWriteInvocation(invocationContext);
-          requireCapability(credential, tier === "admin" ? ADMIN_CAPABILITY : WRITE_CAPABILITY);
           const outcome = await executeGenericMutation(credential.apiKey, parsed, invocationContext);
           // Every dedicated tool needs a real answer: null proves nothing, and false means Kuali
           // declined (for example a delete that did not happen).

@@ -218,7 +218,7 @@ test("API-key lifecycle validates remotely and commits only after host admission
   assert.deepEqual(await provider.status(lifecycle()), {
     state: "connected",
     accountLabel: "UC San Diego Kuali Build",
-    grantedCapabilities: ["kuali-build.read"],
+    grantedCapabilities: ["kuali-build.read", "kuali-build.edit", "kuali-build.admin"],
     message: null,
   });
   assert.equal(mock.requests[0].url, endpoint);
@@ -508,7 +508,11 @@ test("connection exposes and stores one unified write capability", async (t) => 
     value: API_KEY,
   });
   assert.deepEqual(JSON.parse(secrets.value()).capabilities, capabilities);
-  assert.deepEqual((await provider.status(lifecycle())).grantedCapabilities, capabilities);
+  assert.deepEqual((await provider.status(lifecycle())).grantedCapabilities, [
+    "kuali-build.read",
+    "kuali-build.edit",
+    "kuali-build.admin",
+  ]);
 });
 
 test("an existing read-only connection can add unified write without exposing its key", async (t) => {
@@ -529,7 +533,7 @@ test("an existing read-only connection can add unified write without exposing it
   assert.equal(mock.requests[0].init.headers.authorization, `Bearer ${API_KEY}`);
 });
 
-test("earlier write grants become read-only until the new Write switch is turned on", async (t) => {
+test("earlier write grants keep working and never need the key again", async (t) => {
   for (const earlier of [
     ["kuali-build.read", "kuali-build.documents.write", "kuali-build.workflows.write"],
     ["kuali-build.read", "kuali-build.write"],
@@ -540,6 +544,8 @@ test("earlier write grants become read-only until the new Write switch is turned
 
     assert.deepEqual((await provider.status(lifecycle())).grantedCapabilities, [
       "kuali-build.read",
+      "kuali-build.edit",
+      "kuali-build.admin",
     ]);
     const capabilities = ["kuali-build.read", "kuali-build.edit"];
     const events = [];
@@ -552,38 +558,7 @@ test("earlier write grants become read-only until the new Write switch is turned
   }
 });
 
-test("a partial legacy write grant stays read-only until unified write is enabled", async (t) => {
-  const legacyCapabilities = ["kuali-build.read", "kuali-build.documents.write"];
-  const capabilities = ["kuali-build.read", "kuali-build.edit"];
-  const secrets = memorySecrets(storedCredential(API_KEY, legacyCapabilities));
-  const mock = sequence([json({ data: { apps: [] } }), json({ data: { apps: [] } })]);
-  const provider = factory(t, secrets.service, mock.implementation);
-
-  assert.deepEqual((await provider.status(lifecycle())).grantedCapabilities, ["kuali-build.read"]);
-  await assert.rejects(
-    () =>
-      provider.invoke(
-        "kuali-build.documents.update",
-        {
-          documentId: DOCUMENT_ID,
-          data: { fieldA: "new value" },
-          expectedUpdatedAt: "2026-09-01T00:00:00.000Z",
-          confirmUpdate: true,
-        },
-        writeInvocation(),
-      ),
-    (error) => error.code === "capability_not_granted",
-  );
-  assert.equal(mock.requests.length, 1);
-  const events = [];
-  await provider.connect(capabilities, lifecycle(events));
-
-  assert.deepEqual(events, ["beginCommit"]);
-  assert.deepEqual(JSON.parse(secrets.value()), { version: 1, apiKey: API_KEY, capabilities });
-  assert.equal(mock.requests.length, 2);
-});
-
-test("write tools require host approval and unified write before preflight", async (t) => {
+test("write tools require host approval before preflight", async (t) => {
   const readOnly = memorySecrets(storedCredential());
   let calls = 0;
   const provider = factory(t, readOnly.service, async () => {
@@ -599,10 +574,6 @@ test("write tools require host approval and unified write before preflight", asy
   await assert.rejects(
     () => provider.invoke("kuali-build.documents.update", input, invocation()),
     (error) => error.code === "write_not_approved",
-  );
-  await assert.rejects(
-    () => provider.invoke("kuali-build.documents.update", input, writeInvocation()),
-    (error) => error.code === "capability_not_granted",
   );
   assert.equal(calls, 0);
 });

@@ -74,10 +74,13 @@ remain the final authority.
   are replaced with `[redacted by TritonAI]`. This is a backstop, not a guarantee that sensitive
   record data is removed; the dedicated tools return document data as before.
 
-Every earlier write grant (`kuali-build.write`, or the older `kuali-build.documents.write` and
-`kuali-build.workflows.write`) is dropped because Write now covers far more than those grants did;
-any current grants stored alongside it are kept. The user turns on `kuali-build.edit` (and `kuali-build.admin` if wanted) without
-re-entering the stored API key. Neither is ever granted by migration.
+A working API key grants every tier: the key already carries the user's full Kuali permissions, so
+the plugin reports Read, Write, and Admin as granted and the Harness switches are the only control.
+The Harness checks the tool's switch on every call, and each tool belongs to exactly one switch
+(every delete tool to Admin). Turning a switch on or off never needs the key again. The earlier
+write switches (`kuali-build.write`, or the older `kuali-build.documents.write` and
+`kuali-build.workflows.write`) no longer exist, so their Harness setting does not carry over: the
+user turns on `kuali-build.edit` (and `kuali-build.admin` if wanted) once.
 
 The hostname is fixed rather than caller-controlled, and Web PKI validation remains enabled. This
 prevents ordinary SSRF and loopback/IP-literal input. As with other `fetch`-based HTTPS clients,

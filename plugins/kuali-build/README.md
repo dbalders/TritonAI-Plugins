@@ -31,10 +31,11 @@ and alternate ports are rejected.
 Kuali still applies the connected user's own permissions to every request. These switches never give
 anyone access they don't already have in Kuali.
 
-The Write permission's id changed from `kuali-build.write` to `kuali-build.edit` when it grew from
-document work to building anything, so an earlier grant never silently gains the broader access.
-Saved API keys keep working; users who had the earlier write permission turn on the new Write switch
-once. Admin is never granted automatically.
+An API key already carries the user's full Kuali permissions, so connecting once is enough. The
+switches alone decide which tools run, and the Harness checks them on every call; turning one on or
+off never asks for the key again. The Write permission's id changed from `kuali-build.write` to
+`kuali-build.edit` when it grew from document work to building anything, so users who had the
+earlier write switch on turn the new one on once. Admin is never turned on automatically.
 
 ## Tools
 
@@ -92,10 +93,10 @@ empty draft, resolve its document ID, then submit it. These phases are not atomi
 initialization can leave an empty draft when a later phase fails, and an unknown initialization or
 submission outcome must be inspected in Kuali before any further action.
 
-Existing connections do not need to reveal or re-enter their API key when changing permissions.
-Any earlier write permission (`kuali-build.write` or the older document/workflow pair) is treated
-as read-only until the user turns on the new Write switch, preventing a silent expansion of access.
-Admin is never granted by migration.
+Changing permissions never needs a reconnect or the API key again. Saved keys from earlier versions
+keep working; the earlier write switch (`kuali-build.write` or the older document/workflow pair) no
+longer exists, so those users turn on the new Write switch once. Admin is never turned on
+automatically.
 
 References:
 
