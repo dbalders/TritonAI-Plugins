@@ -65,12 +65,14 @@ remain the final authority.
   carry `data`), any other error status without a GraphQL error envelope (for example a 429 or 403
   with an HTML or empty body), a success response missing
   the mutation's result, 5xx responses, timeouts, network loss, and cancellation after commit are
-  `external_commit_outcome_unknown`. One exception: when every error is Kuali's exact "User does not
-  have the correct permissions" refusal on the mutation's root field (error path of length one) and
-  there is no result, Kuali refused before running it, so the tool reports `kuali_permission_denied`
-  with `committed: false`. A refusal on a nested field stays unknown, because it can follow a write.
+  `external_commit_outcome_unknown`. One exception: for app creation (`createAppTile`), when every
+  error is Kuali's exact "User does not have the correct permissions" refusal on the root field
+  (error path of length one) and there is no result, the tool reports `kuali_permission_denied` with
+  `committed: false`. A live test showed that refusal creates nothing. Other mutations, and refusals
+  on nested fields, stay unknown because a resolver could refuse after part of its work.
 - General tools and the app-building tools that share their mutation path return Kuali GraphQL error
-  messages so the assistant can correct its request; an unknown outcome includes up to three of them.
+  messages so the assistant can correct its request; an unknown outcome includes up to three of them
+  (600 characters in total).
   Messages are limited to five, 500 characters each, with control characters removed. They are
   server text and may echo request values.
 - In general-tool responses, values under credential-like keys (`apiKey`, `secret`, `token`,

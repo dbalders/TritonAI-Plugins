@@ -1106,7 +1106,7 @@ test("live test: app tiles use Kuali's colors and icons and no type, like the we
     "kuali-build.apps.create",
     {
       name: "Second",
-      backgroundColor: "#1697a6",
+      backgroundColor: "#1697A6",
       iconName: "task-checklist-check",
       confirmChange: true,
     },
@@ -1120,16 +1120,26 @@ test("live test: app tiles use Kuali's colors and icons and no type, like the we
 });
 
 test("live test: unclear outcomes carry Kuali's own error text", async () => {
+  const long = { message: "x".repeat(500) };
   const { provider: kuali } = provider(
     [READ, WRITE],
-    [json({ data: { app: null }, errors: [{ message: "Invalid icon" }] })],
+    [
+      json({ data: { app: null }, errors: [{ message: "Invalid icon" }] }),
+      json({ data: { app: null }, errors: [long, long, long] }),
+    ],
   );
+  const create = () =>
+    kuali.invoke("kuali-build.apps.create", { name: "X", confirmChange: true }, writeContext());
   await assert.rejects(
-    () =>
-      kuali.invoke("kuali-build.apps.create", { name: "X", confirmChange: true }, writeContext()),
+    create,
     (error) =>
       error.code === "external_commit_outcome_unknown" &&
       /Kuali said: Invalid icon/u.test(error.message),
+  );
+  // Harness drops plugin messages over 1,024 characters.
+  await assert.rejects(
+    create,
+    (error) => error.code === "external_commit_outcome_unknown" && error.message.length <= 1_024,
   );
 });
 
@@ -1143,6 +1153,8 @@ test("live test: Kuali's permission refusal is a proven no-change, other errors 
       json({ data: { app: { id: APP_ID } }, errors: [denied] }),
       // Refused on a nested field: the write may already have happened.
       json({ data: { app: null }, errors: [{ ...denied, path: ["app", "dataset"] }] }),
+      // Only app creation was seen to change nothing when refused.
+      json({ data: { app: null }, errors: [denied] }),
     ],
   );
   const create = () =>
@@ -1150,13 +1162,20 @@ test("live test: Kuali's permission refusal is a proven no-change, other errors 
   await assert.rejects(
     create,
     (error) =>
-      error.code === "kuali_permission_denied" &&
-      error.details.committed === false &&
-      error.details.executed === false,
+      error.code === "kuali_permission_denied" && error.details.committed === false,
   );
   await assert.rejects(create, (error) => error.code === "external_commit_outcome_unknown");
   await assert.rejects(create, (error) => error.code === "external_commit_outcome_unknown");
   await assert.rejects(create, (error) => error.code === "external_commit_outcome_unknown");
+  await assert.rejects(
+    () =>
+      kuali.invoke(
+        "kuali-build.apps.copy",
+        { sourceAppId: APP_ID, name: "X", confirmChange: true },
+        writeContext(),
+      ),
+    (error) => error.code === "external_commit_outcome_unknown",
+  );
 });
 
 test("live test: requests Kuali rejects before running are marked not committed", async () => {

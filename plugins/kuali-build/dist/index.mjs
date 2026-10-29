@@ -65,6 +65,10 @@ function failure(code, message, retryable = false, details) {
 }
 
 const KUALI_PERMISSION_DENIED = "User does not have the correct permissions";
+// Mutations whose permission refusal was seen live to change nothing. Others stay unknown, since a
+// resolver could refuse after part of its work.
+const PERMISSION_REFUSAL_PROVES_NO_CHANGE = new Set(["createAppTile"]);
+const KUALI_SAID_MAX_CHARS = 600;
 
 function kualiSaid(messages) {
   if (!Array.isArray(messages)) return "";
@@ -72,7 +76,9 @@ function kualiSaid(messages) {
     .map((entry) => (typeof entry === "string" ? entry : entry?.message))
     .filter((entry) => typeof entry === "string" && entry.length > 0)
     .slice(0, 3);
-  return text.length === 0 ? "" : ` Kuali said: ${text.join(" | ")}`;
+  if (text.length === 0) return "";
+  const joined = text.join(" | ");
+  return ` Kuali said: ${joined.length > KUALI_SAID_MAX_CHARS ? `${joined.slice(0, KUALI_SAID_MAX_CHARS)}…` : joined}`;
 }
 
 function externalCommitOutcomeUnknown(operation, details = {}) {
@@ -1882,11 +1888,10 @@ const APP_TILE_ICON_SET = new Set(APP_TILE_ICONS);
 const DEFAULT_APP_TILE_ICON = "app-window.svg";
 
 function tileColor(value) {
-  const color = typeof value === "string" ? value.trim().toUpperCase() : value;
-  if (!APP_TILE_COLORS.includes(color)) {
+  if (!APP_TILE_COLORS.includes(value)) {
     throw failure("invalid_input", `backgroundColor must be one of Kuali's app colors: ${APP_TILE_COLORS.join(", ")}.`);
   }
-  return color;
+  return value;
 }
 
 function tileIcon(value) {
@@ -2264,12 +2269,12 @@ export function createIntegrationProvider(context) {
           { ...outcomeDetails, messages: result.errors, executed: false, committed: false },
         );
       }
-      // Kuali checks permissions before running a mutation and answers with this exact message
-      // (its web app shows a no-access page for it). Refused on the root field itself with no
-      // result, nothing ran.
+      // Kuali answers this exact message when the account lacks permission (its web app shows a
+      // no-access page for it). Refused on the root field itself with no result, nothing ran.
       const responseKey = parsed.analysis.responseKey;
       const rootResult = result.data?.[responseKey];
       if (
+        PERMISSION_REFUSAL_PROVES_NO_CHANGE.has(rootField) &&
         (rootResult === null || rootResult === undefined) &&
         result.permissionDeniedKeys?.every((key) => key === responseKey)
       ) {
@@ -2277,7 +2282,7 @@ export function createIntegrationProvider(context) {
           "kuali_permission_denied",
           "Kuali Build says this account does not have permission for that action. Nothing was changed. In Kuali, check that the account can do this (for example, create apps in the chosen space).",
           false,
-          { ...outcomeDetails, messages: result.errors, executed: false, committed: false },
+          { ...outcomeDetails, messages: result.errors, committed: false },
         );
       }
       throw externalCommitOutcomeUnknown(rootField, { ...outcomeDetails, messages: result.errors });
