@@ -4,7 +4,7 @@ import type {
   JsonObject,
 } from "@tritonai/plugin-sdk";
 
-import { N8nProvider } from "./N8nProvider.js";
+import { N8nEnvironmentProvider } from "./N8nEnvironmentProvider.js";
 
 const SERVER_URL = "https://n8n.tritonai.ucsd.edu/mcp-server/http";
 
@@ -22,4 +22,4 @@ function configuration(value: JsonObject): { readonly serverUrl: string } {
 export const createIntegrationProvider: CreateIntegrationProvider = ({
   secrets,
   configuration: input,
-}) => new N8nProvider(secrets, configuration(input)) as unknown as IntegrationProvider;
+}) => new N8nEnvironmentProvider(secrets, configuration(input)) as unknown as IntegrationProvider;

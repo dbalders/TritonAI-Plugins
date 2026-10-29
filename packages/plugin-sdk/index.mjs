@@ -2,7 +2,11 @@ export const PLUGIN_API_VERSION = "tritonai.plugin/v1";
 export const PLUGIN_KIND = "IntegrationPlugin";
 export const PLUGIN_MANIFEST_VERSION = 1;
 export const SDK_API_MAJOR = 1;
-export const HOST_CONTRACT_LEVEL = 2;
+// Level 2 adds bounded API-key setup instructions and an HTTPS setup deep link.
+// Level 3 adds plugin-declared service environments with a host-persisted, user-chosen selection.
+export const HOST_CONTRACT_LEVEL = 3;
+/** The first host contract level that understands manifest `serviceEnvironments`. */
+export const SERVICE_ENVIRONMENTS_HOST_CONTRACT_LEVEL = 3;
 
 const ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u;
 const TOOL_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/u;
@@ -23,6 +27,7 @@ const MANIFEST_KEYS = new Set([
   "capabilities",
   "tools",
   "skills",
+  "serviceEnvironments",
 ]);
 const SDK_KEYS = new Set(["apiMajor", "requiredHostContractLevel"]);
 const CAPABILITY_KEYS = new Set(["id", "displayName", "description", "access"]);
@@ -38,6 +43,10 @@ const TOOL_KEYS = new Set([
   "inputSchema",
 ]);
 const SKILL_KEYS = new Set(["name", "description", "capabilities"]);
+const SERVICE_ENVIRONMENT_KEYS = new Set(["id", "displayName", "description"]);
+const SERVICE_ENVIRONMENT_ID = /^[a-z][a-z0-9-]{0,31}$/u;
+const MIN_SERVICE_ENVIRONMENTS = 2;
+const MAX_SERVICE_ENVIRONMENTS = 4;
 const SKILL = /^[a-z][a-z0-9-]{0,63}$/u;
 const MAX_JSON_NODES = 20_000;
 const MAX_SCHEMA_BYTES = 128 * 1_024;
@@ -390,8 +399,47 @@ export function validateManifestV1(value) {
     assert(!skills.has(skill.name), `Duplicate skill ${skill.name}.`);
     skills.add(skill.name);
   }
+  if (value.serviceEnvironments !== undefined) {
+    assertServiceEnvironments(value.serviceEnvironments);
+    assert(
+      value.sdk.requiredHostContractLevel >= SERVICE_ENVIRONMENTS_HOST_CONTRACT_LEVEL,
+      `Plugin serviceEnvironments require host contract level ${SERVICE_ENVIRONMENTS_HOST_CONTRACT_LEVEL}.`,
+    );
+  }
   assertJson(value);
   return value;
+}
+
+function assertServiceEnvironments(value) {
+  assert(
+    Array.isArray(value) &&
+      value.length >= MIN_SERVICE_ENVIRONMENTS &&
+      value.length <= MAX_SERVICE_ENVIRONMENTS,
+    `Plugin serviceEnvironments must list ${MIN_SERVICE_ENVIRONMENTS} to ${MAX_SERVICE_ENVIRONMENTS} environments.`,
+  );
+  const ids = new Set();
+  for (const environment of value) {
+    assert(
+      plainObject(environment) &&
+        Object.keys(environment).length === SERVICE_ENVIRONMENT_KEYS.size &&
+        exactKeys(environment, SERVICE_ENVIRONMENT_KEYS),
+      "Service environment must contain exactly id, displayName, and description.",
+    );
+    assert(
+      typeof environment.id === "string" && SERVICE_ENVIRONMENT_ID.test(environment.id),
+      "Service environment id is invalid.",
+    );
+    assert(
+      nonEmpty(environment.displayName, 32),
+      `Service environment ${environment.id} displayName is required.`,
+    );
+    assert(
+      nonEmpty(environment.description, 120),
+      `Service environment ${environment.id} description is required.`,
+    );
+    assert(!ids.has(environment.id), `Duplicate service environment ${environment.id}.`);
+    ids.add(environment.id);
+  }
 }
 
 export function pluginFailure(code, message, options = {}) {

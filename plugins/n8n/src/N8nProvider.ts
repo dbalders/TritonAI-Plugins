@@ -23,11 +23,42 @@ import { EmptyInput, decoderFromJsonSchema, mergeAllOfMembers } from "./upstream
 import { UPSTREAM_TOOLS } from "./upstream-tools.js";
 
 export const N8N_PROVIDER_ID = "n8n";
+/** Production's credential name. Kept unprefixed so existing sign-ins survive the Dev addition. */
 export const N8N_SECRET_SUFFIX = "oauth";
 /** A disconnected grant n8n has not yet confirmed revoking, retried on the next connect or disconnect. */
 export const N8N_REVOCATION_SECRET_SUFFIX = "oauth-revocation";
 
-const REVIEWED_SERVER_URL = "https://n8n.tritonai.ucsd.edu/mcp-server/http";
+/**
+ * The reviewed n8n deployments. Each one is a separate OAuth issuer with its own sign-in, so its
+ * endpoint and secret names are fixed together: a Dev URL can only ever read or write Dev secrets.
+ * The first entry is the default, matching the manifest's `serviceEnvironments` order.
+ */
+export const N8N_SERVICE_ENVIRONMENTS = [
+  {
+    id: "production",
+    displayName: "Prod",
+    description: "n8n.tritonai.ucsd.edu",
+    serverUrl: "https://n8n.tritonai.ucsd.edu/mcp-server/http",
+    secretPrefix: "",
+  },
+  {
+    id: "development",
+    displayName: "Dev",
+    description: "n8n-dev.tritonai.ucsd.edu",
+    serverUrl: "https://n8n-dev.tritonai.ucsd.edu/mcp-server/http",
+    secretPrefix: "development.",
+  },
+] as const;
+export type N8nServiceEnvironment = (typeof N8N_SERVICE_ENVIRONMENTS)[number];
+
+export function n8nCredentialSecretName(environment: N8nServiceEnvironment): string {
+  return `${environment.secretPrefix}${N8N_SECRET_SUFFIX}`;
+}
+
+export function n8nRevocationSecretName(environment: N8nServiceEnvironment): string {
+  return `${environment.secretPrefix}${N8N_REVOCATION_SECRET_SUFFIX}`;
+}
+
 const CALLBACK_PATH = "/oauth2/callback";
 const MCP_PROTOCOL_VERSION = "2026-07-28";
 const MCP_PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion";
@@ -1190,28 +1221,34 @@ function advertisedScopes(value: unknown, label: string): ReadonlySet<string> {
   return new Set(value as string[]);
 }
 
-function validateServerUrl(value: string): URL {
+function validateServerUrl(value: string): {
+  readonly url: URL;
+  readonly environment: N8nServiceEnvironment;
+} {
   const normalized = value.trim();
   let url: URL;
   try {
     url = new URL(normalized);
   } catch {
-    throw new Error("n8n requires the reviewed HTTPS MCP server URL.");
+    throw new Error("n8n requires a reviewed HTTPS MCP server URL.");
   }
+  const environment = N8N_SERVICE_ENVIRONMENTS.find(
+    (candidate) => url.toString() === candidate.serverUrl,
+  );
   if (
-    url.toString() !== REVIEWED_SERVER_URL ||
+    !environment ||
     url.protocol !== "https:" ||
     url.username !== "" ||
     url.password !== "" ||
     url.search !== "" ||
     url.hash !== "" ||
     url.port !== "" ||
-    url.hostname !== "n8n.tritonai.ucsd.edu" ||
+    url.hostname !== new URL(environment.serverUrl).hostname ||
     url.pathname !== "/mcp-server/http"
   ) {
-    throw new Error("n8n requires the reviewed HTTPS MCP server URL.");
+    throw new Error("n8n requires a reviewed HTTPS MCP server URL.");
   }
-  return url;
+  return { url, environment };
 }
 
 function sameOriginEndpoint(value: unknown, path: string, origin: string, label: string): string {
@@ -1776,6 +1813,8 @@ export class N8nProvider implements IntegrationProvider {
   readonly tools = N8N_TOOLS;
   readonly #secrets: IntegrationSecretStore;
   readonly #server: URL;
+  readonly #credentialSecretName: string;
+  readonly #revocationSecretName: string;
   readonly #fetch: Fetch;
   readonly #requestTimeoutMs: number;
   readonly #pending = new Map<string, PendingFlow>();
@@ -1803,7 +1842,10 @@ export class N8nProvider implements IntegrationProvider {
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
   ) {
     this.#secrets = secrets;
-    this.#server = validateServerUrl(configuration.serverUrl);
+    const { url, environment } = validateServerUrl(configuration.serverUrl);
+    this.#server = url;
+    this.#credentialSecretName = n8nCredentialSecretName(environment);
+    this.#revocationSecretName = n8nRevocationSecretName(environment);
     if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 30_000) {
       throw new Error("n8n requires a bounded request timeout.");
     }
@@ -2040,7 +2082,7 @@ export class N8nProvider implements IntegrationProvider {
 
   async #readCredential(signal?: AbortSignal): Promise<Credential | null> {
     if (signal?.aborted) throw new IntegrationProviderPublicError("n8n request was cancelled.");
-    const value = await this.#secrets.get(N8N_SECRET_SUFFIX);
+    const value = await this.#secrets.get(this.#credentialSecretName);
     if (signal?.aborted) throw new IntegrationProviderPublicError("n8n request was cancelled.");
     return value === null ? null : parseCredential(value, this.#server.toString());
   }
@@ -2051,7 +2093,7 @@ export class N8nProvider implements IntegrationProvider {
     onPersisted?: () => void,
   ): Promise<void> {
     signal.throwIfAborted();
-    await this.#secrets.set(N8N_SECRET_SUFFIX, JSON.stringify(credential));
+    await this.#secrets.set(this.#credentialSecretName, JSON.stringify(credential));
     onPersisted?.();
     signal.throwIfAborted();
   }
@@ -2496,7 +2538,7 @@ export class N8nProvider implements IntegrationProvider {
     };
   }
 
-  async status(context?: IntegrationInvocationContext): Promise<IntegrationProviderStatus> {
+  async status(context?: { readonly signal: AbortSignal }): Promise<IntegrationProviderStatus> {
     if (this.#uncertainCredentialState) {
       return {
         state: "error",
@@ -2526,7 +2568,7 @@ export class N8nProvider implements IntegrationProvider {
         throw new Error("n8n connection changed during status.");
       }
       if (!credential) {
-        const revocationPending = (await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX)) !== null;
+        const revocationPending = (await this.#secrets.get(this.#revocationSecretName)) !== null;
         return {
           state: this.#pending.size > 0 ? "connecting" : "not_connected",
           accountLabel: null,
@@ -2901,7 +2943,7 @@ export class N8nProvider implements IntegrationProvider {
           // revoke, so drop the dead credential here and let the user reconnect in one
           // step instead of stranding them behind a manual disconnect.
           if (response.status === 400 && json.error === "invalid_grant") {
-            await this.#secrets.remove(N8N_SECRET_SUFFIX);
+            await this.#secrets.remove(this.#credentialSecretName);
             this.#accessToken = null;
             this.#credentialRevision += 1;
             this.#sessionId = null;
@@ -2962,17 +3004,17 @@ export class N8nProvider implements IntegrationProvider {
   }
 
   async #readPendingRevocations(): Promise<PendingRevocation[]> {
-    const encoded = await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX);
+    const encoded = await this.#secrets.get(this.#revocationSecretName);
     return encoded === null ? [] : parsePendingRevocations(encoded);
   }
 
   async #writePendingRevocations(grants: ReadonlyArray<PendingRevocation>): Promise<void> {
     if (grants.length === 0) {
-      await this.#secrets.remove(N8N_REVOCATION_SECRET_SUFFIX);
+      await this.#secrets.remove(this.#revocationSecretName);
       return;
     }
     await this.#secrets.set(
-      N8N_REVOCATION_SECRET_SUFFIX,
+      this.#revocationSecretName,
       JSON.stringify({
         version: 2,
         serverUrl: this.#server.toString(),
@@ -2982,7 +3024,7 @@ export class N8nProvider implements IntegrationProvider {
   }
 
   async #retryPendingRevocations(discovery: OAuthDiscovery, signal: AbortSignal): Promise<void> {
-    if ((await this.#secrets.get(N8N_REVOCATION_SECRET_SUFFIX)) === null) return;
+    if ((await this.#secrets.get(this.#revocationSecretName)) === null) return;
     // One shared budget leaves room for registration or local cleanup inside the host's
     // lifecycle deadline, regardless of how many old grants are queued.
     const budget = AbortSignal.timeout(
@@ -3020,7 +3062,7 @@ export class N8nProvider implements IntegrationProvider {
         // Storage failures propagate. Only a stored value that cannot be parsed counts as
         // unreadable: it cannot be revoked, but it must still be removable because status tells
         // the user to disconnect to reset exactly this state.
-        const encoded = await this.#secrets.get(N8N_SECRET_SUFFIX);
+        const encoded = await this.#secrets.get(this.#credentialSecretName);
         context?.signal?.throwIfAborted();
         let credential: Credential | null = null;
         if (encoded !== null) {
@@ -3047,7 +3089,7 @@ export class N8nProvider implements IntegrationProvider {
             ]);
           }
         }
-        await this.#secrets.remove(N8N_SECRET_SUFFIX);
+        await this.#secrets.remove(this.#credentialSecretName);
         this.#accessToken = null;
         this.#credentialRevision += 1;
         this.#uncertainCredentialState = false;

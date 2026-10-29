@@ -4,6 +4,10 @@ import { spawnSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 
+import {
+  HOST_CONTRACT_LEVEL as SDK_HOST_CONTRACT_LEVEL,
+  SERVICE_ENVIRONMENTS_HOST_CONTRACT_LEVEL,
+} from "../packages/plugin-sdk/index.mjs";
 import { discoverPluginDirectories } from "./plugin-directories.mjs";
 import {
   assertHarnessEffectPeerContract,
@@ -40,6 +44,14 @@ const productionBuiltins = await Fs.readFile(
 const pluginSdkArtifactModule = await import(
   pathToFileURL(Path.join(harness, "packages/shared/src/pluginSdkArtifact.ts")).href
 );
+const pluginSdkContractModule = await import(
+  pathToFileURL(Path.join(harness, "packages/shared/src/pluginSdkContract.ts")).href
+);
+const hostContractLevel = pluginSdkContractModule.PLUGIN_SDK_HOST_CONTRACT_LEVEL;
+assert(
+  Number.isSafeInteger(hostContractLevel) && hostContractLevel > 0,
+  "Exact Harness host contract level is missing or invalid.",
+);
 const { version: harnessEffectVersion } = await verifyHarnessEffectRuntime(harness);
 
 for (const fragment of [
@@ -66,6 +78,14 @@ for (const fragment of [
   assert(tool.includes(fragment), `Harness tool contract drifted: missing ${fragment}`);
 }
 assert(secret.includes("integration-${integrationId}--"), "Harness secret namespace drifted.");
+// Level 3 hosts route each provider operation to the user-selected service environment. Older
+// pinned hosts predate the field, so only require it where the host claims the level.
+if (hostContractLevel >= SERVICE_ENVIRONMENTS_HOST_CONTRACT_LEVEL) {
+  assert(
+    registry.includes("serviceEnvironment"),
+    "Harness provider contract drifted: missing serviceEnvironment operation context.",
+  );
+}
 for (const fragment of [
   "readonly createIntegrationProvider?:",
   "loaded.createIntegrationProvider({",
@@ -113,6 +133,7 @@ const validated = manifestModule.validateIntegrationManifest(frameworkProbe);
 assert(validated.id === frameworkProbe.id, "Exact Harness rejected the framework probe manifest.");
 
 const pluginsRoot = Path.resolve(import.meta.dirname, "..", "plugins");
+const refusedOnOlderHost = [];
 for (const directory of await discoverPluginDirectories(pluginsRoot)) {
   const packageRoot = Path.join(pluginsRoot, directory);
   const manifestPath = Path.join(packageRoot, ".tritonai-plugin", "plugin.json");
@@ -137,6 +158,34 @@ for (const directory of await discoverPluginDirectories(pluginsRoot)) {
       }
     }
     await collect(artifactRoot);
+    const descriptorFile = files.find(({ path }) => path === "artifact.json");
+    assert(descriptorFile, `${directory}: SDK artifact descriptor is missing.`);
+    const requiredHostContractLevel = JSON.parse(descriptorFile.contents.toString("utf8"))?.sdk
+      ?.requiredHostContractLevel;
+    assert(
+      Number.isSafeInteger(requiredHostContractLevel) &&
+        requiredHostContractLevel > 0 &&
+        requiredHostContractLevel <= SDK_HOST_CONTRACT_LEVEL,
+      `${directory}: SDK artifact host contract level is invalid.`,
+    );
+    if (requiredHostContractLevel > hostContractLevel) {
+      // A plugin that needs a newer host is published only to channels whose Harness supports it.
+      // On an older pinned host, prove the deliberate refusal instead of a partial admission.
+      let refusal;
+      try {
+        pluginSdkArtifactModule.verifyPluginSdkArtifact(files);
+      } catch (error) {
+        refusal = error;
+      }
+      assert(
+        refusal instanceof Error && /unsupported host contract/u.test(refusal.message),
+        `${directory}: Harness at host contract level ${hostContractLevel} must refuse an artifact that requires level ${requiredHostContractLevel}.`,
+      );
+      refusedOnOlderHost.push(
+        `${directory} ${packageJson.version} requires host contract level ${requiredHostContractLevel}; this Harness is level ${hostContractLevel} and refuses it as expected.`,
+      );
+      continue;
+    }
     const verified = pluginSdkArtifactModule.verifyPluginSdkArtifact(files);
     assert(
       verified.sdkManifest.id === directory && verified.sdkManifest.version === packageJson.version,
@@ -191,4 +240,17 @@ for (const directory of await discoverPluginDirectories(pluginsRoot)) {
   }
 }
 
-console.log(`exact Harness plugin contract checks passed at ${actualHead}`);
+for (const line of refusedOnOlderHost) console.log(line);
+if (refusedOnOlderHost.length > 0 && process.env.GITHUB_STEP_SUMMARY) {
+  await Fs.appendFile(
+    process.env.GITHUB_STEP_SUMMARY,
+    [
+      `Harness host contract level: ${hostContractLevel}`,
+      ...refusedOnOlderHost.map((line) => `- ${line}`),
+      "",
+    ].join("\n"),
+  );
+}
+console.log(
+  `exact Harness plugin contract checks passed at ${actualHead} (host contract level ${hostContractLevel})`,
+);
