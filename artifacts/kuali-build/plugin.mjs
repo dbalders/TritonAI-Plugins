@@ -1197,17 +1197,67 @@ function parseGraphqlDocument(source) {
   return { operations, fragments };
 }
 
+// Longest chain of fragment spreads reachable from these selections, anywhere in the tree.
+// Memoized per fragment; a cycle is a syntax error.
+function spreadDepth(items, fragments, memo, visiting) {
+  let deepest = 0;
+  for (const item of items) {
+    if (item.kind === "field") {
+      if (item.selectionSet) deepest = Math.max(deepest, spreadDepth(item.selectionSet, fragments, memo, visiting));
+    } else if (item.kind === "inline") {
+      deepest = Math.max(deepest, spreadDepth(item.selectionSet, fragments, memo, visiting));
+    } else {
+      let depth = memo.get(item.name);
+      if (depth === undefined) {
+        if (visiting.has(item.name)) throw graphqlSyntaxError(`fragment ${item.name} spreads itself.`);
+        const fragment = fragments.get(item.name);
+        if (fragment === undefined) throw graphqlSyntaxError(`unknown fragment ${item.name}.`);
+        visiting.add(item.name);
+        depth = 1 + spreadDepth(fragment.selectionSet, fragments, memo, visiting);
+        visiting.delete(item.name);
+        memo.set(item.name, depth);
+      }
+      deepest = Math.max(deepest, depth);
+    }
+  }
+  return deepest;
+}
+
+// Maps each response key of one selection set (fragments expanded once) to whether it selects a
+// credential-like field and the merged child selections, for path-aware redaction.
+function responseFieldMap(items, fragments) {
+  const output = new Map();
+  const seen = new Set();
+  const visit = (selection) => {
+    for (const item of selection) {
+      if (item.kind === "field") {
+        const key = item.alias ?? item.name;
+        const entry = output.get(key) ?? { sensitive: false, children: [] };
+        entry.sensitive ||= REDACTED_RESPONSE_KEYS.test(item.name);
+        if (item.selectionSet) entry.children.push(...item.selectionSet);
+        output.set(key, entry);
+      } else if (item.kind === "inline") {
+        visit(item.selectionSet);
+      } else if (!seen.has(item.name)) {
+        seen.add(item.name);
+        const fragment = fragments.get(item.name);
+        if (fragment) visit(fragment.selectionSet);
+      }
+    }
+  };
+  visit(items);
+  return output;
+}
+
 function isConditional(directives) {
   return directives.some((directive) => directive.name === "skip" || directive.name === "include");
 }
 
-// Walks every selection once (fragments are visited once each) to collect directive names and the
-// response keys of credential-like fields, so aliases cannot hide them from redaction.
+// Walks every selection once (fragments are visited once each) to collect directive names.
 function scanDocument(items, fragments, output, seen) {
   for (const item of items) {
     for (const directive of item.directives) output.directives.add(directive.name);
     if (item.kind === "field") {
-      if (REDACTED_RESPONSE_KEYS.test(item.name)) output.sensitiveKeys.add(item.alias ?? item.name);
       if (item.selectionSet) scanDocument(item.selectionSet, fragments, output, seen);
     } else if (item.kind === "inline") {
       scanDocument(item.selectionSet, fragments, output, seen);
@@ -1287,16 +1337,19 @@ function analyzeGraphqlRequest(document, operationName) {
   if (operation.operation === "subscription") {
     throw failure("graphql_unsupported", "Subscriptions are not supported.");
   }
-  const scan = { directives: new Set(operation.directives.map((directive) => directive.name)), sensitiveKeys: new Set() };
+  if (spreadDepth(operation.selectionSet, fragments, new Map(), new Set()) > GRAPHQL_MAX_DEPTH) {
+    throw failure("graphql_too_complex", "Fragments are nested too deeply.");
+  }
+  const scan = { directives: new Set(operation.directives.map((directive) => directive.name)) };
   scanDocument(operation.selectionSet, fragments, scan, new Set());
   if (scan.directives.has("defer") || scan.directives.has("stream")) {
     throw failure("graphql_unsupported", "@defer and @stream are not supported.");
   }
   const roots = collectRootSelections(operation.selectionSet, fragments, new Map(), []);
   const fieldNames = [...new Set([...roots.values()].map((entry) => entry.name))];
-  const sensitiveKeys = [...scan.sensitiveKeys];
+  const selection = { items: operation.selectionSet, fragments };
   if (operation.operation === "query") {
-    return { operation: "query", operationName: operation.name, rootFields: fieldNames, tier: "read", sensitiveKeys };
+    return { operation: "query", operationName: operation.name, rootFields: fieldNames, tier: "read", selection };
   }
   const meaningful = [...roots.entries()].filter(([, entry]) => entry.name !== "__typename");
   if (meaningful.length !== 1) {
@@ -1318,7 +1371,7 @@ function analyzeGraphqlRequest(document, operationName) {
     rootFields: [field.name],
     responseKey,
     tier: classifyMutationField(field.name),
-    sensitiveKeys,
+    selection,
   };
 }
 
@@ -1361,17 +1414,30 @@ function graphqlErrorDetails(errors) {
   return messages;
 }
 
-function redactResponse(value, sensitiveKeys = new Set(), depth = 0) {
+// Walks the response alongside the query's selections so an alias is redacted only where it
+// actually selects a credential-like field.
+function redactResponse(value, selection, depth = 0) {
   if (depth > MAX_JSON_DEPTH || value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map((item) => redactResponse(item, sensitiveKeys, depth + 1));
-  const output = {};
-  for (const [key, item] of Object.entries(value)) {
-    output[key] =
-      item !== null && (REDACTED_RESPONSE_KEYS.test(key) || sensitiveKeys.has(key))
-        ? "[redacted by TritonAI]"
-        : redactResponse(item, sensitiveKeys, depth + 1);
-  }
-  return output;
+  const fields = selection ? responseFieldMap(selection.items, selection.fragments) : null;
+  const redactObject = (object) => {
+    if (object === null || typeof object !== "object") return object;
+    if (Array.isArray(object)) return object.map(redactObject);
+    const output = {};
+    for (const [key, item] of Object.entries(object)) {
+      const entry = fields?.get(key);
+      if (item !== null && (REDACTED_RESPONSE_KEYS.test(key) || entry?.sensitive)) {
+        output[key] = "[redacted by TritonAI]";
+        continue;
+      }
+      const child =
+        entry && entry.children.length > 0
+          ? { items: entry.children, fragments: selection.fragments }
+          : null;
+      output[key] = redactResponse(item, child, depth + 1);
+    }
+    return output;
+  };
+  return redactObject(value);
 }
 
 // Sends one generic GraphQL request. Unlike the fixed tools, GraphQL error messages are returned
@@ -1409,41 +1475,55 @@ async function rawGraphql(fetchImplementation, apiKey, document, variables, oper
     if (response.url && response.url !== GRAPHQL_URL) {
       throw failure("redirect_rejected", "Kuali response origin or endpoint changed unexpectedly.");
     }
-    if (response.status === 401 || response.status === 403) {
-      throw failure("authentication_failed", "The UCSD Kuali Build API key was rejected.");
-    }
-    if (response.status === 429) {
-      const seconds = retryAfter(response);
-      throw failure(
-        "rate_limited",
-        "UCSD Kuali Build rate limited the request; no automatic retry was attempted.",
-        true,
-        seconds === undefined ? {} : { retryAfterSeconds: seconds },
-      );
-    }
     const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
     const isJson = contentType === "application/json" || contentType === "application/graphql-response+json";
-    if (!response.ok && !(response.status === 400 && isJson)) {
-      throw failure(
-        "http_error",
-        `UCSD Kuali Build returned HTTP ${response.status}.`,
-        response.status >= 500,
-        { status: response.status },
-      );
-    }
-    if (!isJson) throw failure("invalid_response", "Kuali returned an unexpected response content type.");
+    // Read a JSON body before interpreting the HTTP status: a "data" member is evidence that
+    // execution started, which must win over a 4xx/5xx status for mutations.
     let parsed;
-    try {
-      parsed = JSON.parse(decoder.decode(await boundedBody(response)));
-    } catch (error) {
-      if (error?._tag === "PluginFailure") throw error;
-      if (signal.aborted) throw signal.reason;
-      if (composed.signal.aborted) throw failure("request_timeout", "Kuali Build request timed out.", true);
-      throw failure("invalid_response", "Kuali returned malformed UTF-8 JSON.");
+    let bodyError;
+    if (isJson) {
+      try {
+        parsed = JSON.parse(decoder.decode(await boundedBody(response)));
+      } catch (error) {
+        if (signal.aborted) throw signal.reason;
+        if (composed.signal.aborted) throw failure("request_timeout", "Kuali Build request timed out.", true);
+        bodyError =
+          error?._tag === "PluginFailure"
+            ? error
+            : failure("invalid_response", "Kuali returned malformed UTF-8 JSON.");
+      }
+    }
+    const executionEvidence =
+      bodyError === undefined && isPlainObject(parsed) && Object.hasOwn(parsed, "data");
+    if (!executionEvidence) {
+      if (response.status === 401 || response.status === 403) {
+        throw failure("authentication_failed", "The UCSD Kuali Build API key was rejected.");
+      }
+      if (response.status === 429) {
+        const seconds = retryAfter(response);
+        throw failure(
+          "rate_limited",
+          "UCSD Kuali Build rate limited the request; no automatic retry was attempted.",
+          true,
+          seconds === undefined ? {} : { retryAfterSeconds: seconds },
+        );
+      }
+      if (!response.ok && !(response.status === 400 && isJson)) {
+        throw failure(
+          "http_error",
+          `UCSD Kuali Build returned HTTP ${response.status}.`,
+          response.status >= 500,
+          { status: response.status },
+        );
+      }
+      if (!isJson) throw failure("invalid_response", "Kuali returned an unexpected response content type.");
+      if (bodyError !== undefined) throw bodyError;
     }
     validateJsonTree(parsed);
     if (!isPlainObject(parsed)) throw failure("invalid_response", "Kuali returned an invalid GraphQL envelope.");
-    const hasErrors = Array.isArray(parsed.errors) && parsed.errors.length > 0;
+    const statusError = !response.ok;
+    const hasGraphqlErrors = Array.isArray(parsed.errors) && parsed.errors.length > 0;
+    const hasErrors = statusError || hasGraphqlErrors;
     // GraphQL omits "data" only when a request fails before execution. "data": null still means
     // execution started, so a mutation may have partly run.
     const executionStarted = Object.hasOwn(parsed, "data");
@@ -1461,7 +1541,12 @@ async function rawGraphql(fetchImplementation, apiKey, document, variables, oper
     return {
       data: hasData ? parsed.data : null,
       hasErrors,
-      errors: hasErrors ? graphqlErrorDetails(parsed.errors) : [],
+      errors: hasErrors
+        ? [
+            ...(statusError && !hasGraphqlErrors ? [`Kuali returned HTTP ${response.status}.`] : []),
+            ...graphqlErrorDetails(parsed.errors),
+          ]
+        : [],
       executed: executionStarted,
     };
   } finally {
@@ -1700,7 +1785,7 @@ export function createIntegrationProvider(context) {
       throw externalCommitOutcomeUnknown(rootField, outcomeDetails);
     }
     return {
-      data: redactResponse(result.data, new Set(parsed.analysis.sensitiveKeys)),
+      data: redactResponse(result.data, parsed.analysis.selection),
       rootField,
       permission: parsed.analysis.tier,
       committed: true,
@@ -2221,7 +2306,7 @@ export function createIntegrationProvider(context) {
             });
           }
           return {
-            data: redactResponse(result.data, new Set(parsed.analysis.sensitiveKeys)),
+            data: redactResponse(result.data, parsed.analysis.selection),
             errors: result.errors,
             rootFields: parsed.analysis.rootFields,
           };

@@ -533,3 +533,68 @@ test("review regressions: conditional mutation roots are refused before dispatch
   }
   assert.equal(mock.requests.length, 0);
 });
+
+test("review round 2: error statuses with execution evidence stay unknown outcomes", async () => {
+  const input = { document: DELETE, variables: { id: DOCUMENT_ID }, confirmMutation: true };
+  const denied = {
+    data: null,
+    errors: [{ message: "Downstream denied", extensions: { code: "FORBIDDEN" } }],
+  };
+  for (const response of [
+    json(denied, 403),
+    json(denied, 401),
+    json(denied, 429),
+    json({ data: { deleteDocument: true } }, 502),
+  ]) {
+    const { provider: kuali } = provider([READ, ADMIN], [response]);
+    await assert.rejects(
+      () => kuali.invoke("kuali-build.graphql.admin", input, writeContext()),
+      (error) => error.code === "external_commit_outcome_unknown",
+    );
+  }
+  const { provider: rejected } = provider(
+    [READ, ADMIN],
+    [json({ errors: [{ message: "bad key" }] }, 401)],
+  );
+  await assert.rejects(
+    () => rejected.invoke("kuali-build.graphql.admin", input, writeContext()),
+    (error) => error.code === "authentication_failed",
+  );
+});
+
+test("review round 2: alias redaction is path-aware", async () => {
+  const { provider: kuali } = provider(
+    [READ],
+    [json({ data: { app: { id: "credential" }, apps: [{ id: "app-id", name: "Travel" }] } })],
+  );
+  const result = await kuali.invoke(
+    "kuali-build.graphql.query",
+    { document: `query { app { id: apiKey } apps { id name } }` },
+    readContext(),
+  );
+  assert.deepEqual(result.data, {
+    app: { id: "[redacted by TritonAI]" },
+    apps: [{ id: "app-id", name: "Travel" }],
+  });
+});
+
+test("review round 2: fragment depth is enforced across the whole document", async () => {
+  const { provider: kuali, mock } = provider([READ], []);
+  const chain = (type) => {
+    const fragments = [`fragment D0 on ${type} { __typename }`];
+    for (let level = 1; level <= 40; level += 1)
+      fragments.push(`fragment D${level} on ${type} { ...D${level - 1} }`);
+    return fragments.join(" ");
+  };
+  const spreads = Array.from({ length: 41 }, (_, level) => `...D${level}`).join(" ");
+  for (const document of [
+    `query { ${spreads} } ${chain("Query")}`,
+    `query { app { ...D40 } } ${chain("App")}`,
+  ]) {
+    await assert.rejects(
+      () => kuali.invoke("kuali-build.graphql.query", { document }, readContext()),
+      (error) => error.code === "graphql_too_complex",
+    );
+  }
+  assert.equal(mock.requests.length, 0);
+});
