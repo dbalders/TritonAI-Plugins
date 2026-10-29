@@ -1555,11 +1555,20 @@ async function rawGraphql(fetchImplementation, apiKey, document, variables, oper
         : [],
       // Only a GraphQL error envelope without a data member proves the request never ran.
       executed: executionStarted || !hasGraphqlErrors,
-      permissionDenied:
+      // Response keys of top-level fields Kuali refused for permissions, or null when any error is
+      // something else. A refusal deeper in the result (a longer path) can follow a completed write.
+      permissionDeniedKeys:
         !statusError &&
-        Array.isArray(parsed.errors) &&
-        parsed.errors.length > 0 &&
-        parsed.errors.every((error) => error?.message === KUALI_PERMISSION_DENIED),
+        hasGraphqlErrors &&
+        parsed.errors.every(
+          (error) =>
+            error?.message === KUALI_PERMISSION_DENIED &&
+            Array.isArray(error.path) &&
+            error.path.length === 1 &&
+            typeof error.path[0] === "string",
+        )
+          ? parsed.errors.map((error) => error.path[0])
+          : null,
     };
   } finally {
     composed.cleanup();
@@ -2256,11 +2265,13 @@ export function createIntegrationProvider(context) {
         );
       }
       // Kuali checks permissions before running a mutation and answers with this exact message
-      // (its web app shows a no-access page for it). With no result for the root field, nothing ran.
-      const rootResult = result.data?.[parsed.analysis.responseKey];
+      // (its web app shows a no-access page for it). Refused on the root field itself with no
+      // result, nothing ran.
+      const responseKey = parsed.analysis.responseKey;
+      const rootResult = result.data?.[responseKey];
       if (
         (rootResult === null || rootResult === undefined) &&
-        result.permissionDenied
+        result.permissionDeniedKeys?.every((key) => key === responseKey)
       ) {
         throw failure(
           "kuali_permission_denied",

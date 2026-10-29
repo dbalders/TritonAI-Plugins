@@ -1134,13 +1134,15 @@ test("live test: unclear outcomes carry Kuali's own error text", async () => {
 });
 
 test("live test: Kuali's permission refusal is a proven no-change, other errors stay unclear", async () => {
-  const denied = { message: "User does not have the correct permissions" };
+  const denied = { message: "User does not have the correct permissions", path: ["app"] };
   const { provider: kuali } = provider(
     [READ, WRITE],
     [
       json({ data: { app: null }, errors: [denied] }),
       json({ data: { app: null }, errors: [denied, { message: "Something else" }] }),
       json({ data: { app: { id: APP_ID } }, errors: [denied] }),
+      // Refused on a nested field: the write may already have happened.
+      json({ data: { app: null }, errors: [{ ...denied, path: ["app", "dataset"] }] }),
     ],
   );
   const create = () =>
@@ -1152,6 +1154,7 @@ test("live test: Kuali's permission refusal is a proven no-change, other errors 
       error.details.committed === false &&
       error.details.executed === false,
   );
+  await assert.rejects(create, (error) => error.code === "external_commit_outcome_unknown");
   await assert.rejects(create, (error) => error.code === "external_commit_outcome_unknown");
   await assert.rejects(create, (error) => error.code === "external_commit_outcome_unknown");
 });
