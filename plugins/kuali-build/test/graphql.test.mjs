@@ -292,6 +292,7 @@ test("mutations Kuali rejects before running are reported as not executed", asyn
       assert.equal(error.code, "graphql_error");
       assert.equal(error.details.executed, false);
       assert.deepEqual(error.details.messages, [
+        "Kuali returned HTTP 400.",
         'Cannot query field "deleteDocument" on type "Mutation".',
       ]);
       return true;
@@ -597,4 +598,37 @@ test("review round 2: fragment depth is enforced across the whole document", asy
     );
   }
   assert.equal(mock.requests.length, 0);
+});
+
+test("review round 3: unreadable or non-GraphQL error bodies never prove a mutation did not run", async () => {
+  const input = { document: DELETE, variables: { id: DOCUMENT_ID }, confirmMutation: true };
+  const oversized = new Response(
+    `{"data":{"deleteDocument":true},"padding":"${"x".repeat(2 * 1024 * 1024)}"}`,
+    {
+      status: 429,
+      headers: { "content-type": "application/json" },
+    },
+  );
+  for (const response of [
+    oversized,
+    json({}, 400),
+    json({ errors: [] }, 400),
+    json({ error: "upstream closed" }, 400),
+  ]) {
+    const { provider: kuali } = provider([READ, ADMIN], [response]);
+    await assert.rejects(
+      () => kuali.invoke("kuali-build.graphql.admin", input, writeContext()),
+      (error) => error.code === "external_commit_outcome_unknown",
+    );
+  }
+  const { provider: reader } = provider(
+    [READ],
+    [json({ data: { apps: [{ id: "app-id" }] }, errors: [{ message: "\n\t" }] }, 502)],
+  );
+  const result = await reader.invoke(
+    "kuali-build.graphql.query",
+    { document: "query { apps { id } }" },
+    readContext(),
+  );
+  assert.deepEqual(result.errors, ["Kuali returned HTTP 502."]);
 });

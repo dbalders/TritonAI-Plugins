@@ -1493,8 +1493,10 @@ async function rawGraphql(fetchImplementation, apiKey, document, variables, oper
             : failure("invalid_response", "Kuali returned malformed UTF-8 JSON.");
       }
     }
-    const executionEvidence =
-      bodyError === undefined && isPlainObject(parsed) && Object.hasOwn(parsed, "data");
+    // An unreadable JSON body proves nothing about execution; surface it before any status mapping
+    // so a dispatched mutation is treated as an unknown outcome.
+    if (bodyError !== undefined) throw bodyError;
+    const executionEvidence = isPlainObject(parsed) && Object.hasOwn(parsed, "data");
     if (!executionEvidence) {
       if (response.status === 401 || response.status === 403) {
         throw failure("authentication_failed", "The UCSD Kuali Build API key was rejected.");
@@ -1517,7 +1519,6 @@ async function rawGraphql(fetchImplementation, apiKey, document, variables, oper
         );
       }
       if (!isJson) throw failure("invalid_response", "Kuali returned an unexpected response content type.");
-      if (bodyError !== undefined) throw bodyError;
     }
     validateJsonTree(parsed);
     if (!isPlainObject(parsed)) throw failure("invalid_response", "Kuali returned an invalid GraphQL envelope.");
@@ -1543,11 +1544,12 @@ async function rawGraphql(fetchImplementation, apiKey, document, variables, oper
       hasErrors,
       errors: hasErrors
         ? [
-            ...(statusError && !hasGraphqlErrors ? [`Kuali returned HTTP ${response.status}.`] : []),
+            ...(statusError ? [`Kuali returned HTTP ${response.status}.`] : []),
             ...graphqlErrorDetails(parsed.errors),
           ]
         : [],
-      executed: executionStarted,
+      // Only a GraphQL error envelope without a data member proves the request never ran.
+      executed: executionStarted || !hasGraphqlErrors,
     };
   } finally {
     composed.cleanup();
