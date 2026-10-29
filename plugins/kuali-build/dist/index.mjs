@@ -64,6 +64,8 @@ function failure(code, message, retryable = false, details) {
   return Object.freeze(value);
 }
 
+const KUALI_PERMISSION_DENIED = "User does not have the correct permissions";
+
 function kualiSaid(messages) {
   if (!Array.isArray(messages)) return "";
   const text = messages
@@ -1553,6 +1555,11 @@ async function rawGraphql(fetchImplementation, apiKey, document, variables, oper
         : [],
       // Only a GraphQL error envelope without a data member proves the request never ran.
       executed: executionStarted || !hasGraphqlErrors,
+      permissionDenied:
+        !statusError &&
+        Array.isArray(parsed.errors) &&
+        parsed.errors.length > 0 &&
+        parsed.errors.every((error) => error?.message === KUALI_PERMISSION_DENIED),
     };
   } finally {
     composed.cleanup();
@@ -2181,7 +2188,21 @@ export function createIntegrationProvider(context) {
           "graphql_error",
           "Kuali Build rejected the mutation before running it. Nothing was changed.",
           false,
-          { ...outcomeDetails, messages: result.errors, executed: false },
+          { ...outcomeDetails, messages: result.errors, executed: false, committed: false },
+        );
+      }
+      // Kuali checks permissions before running a mutation and answers with this exact message
+      // (its web app shows a no-access page for it). With no result for the root field, nothing ran.
+      const rootResult = result.data?.[parsed.analysis.responseKey];
+      if (
+        (rootResult === null || rootResult === undefined) &&
+        result.permissionDenied
+      ) {
+        throw failure(
+          "kuali_permission_denied",
+          "Kuali Build says this account does not have permission for that action. Nothing was changed. In Kuali, check that the account can do this (for example, create apps in the chosen space).",
+          false,
+          { ...outcomeDetails, messages: result.errors, executed: false, committed: false },
         );
       }
       throw externalCommitOutcomeUnknown(rootField, { ...outcomeDetails, messages: result.errors });

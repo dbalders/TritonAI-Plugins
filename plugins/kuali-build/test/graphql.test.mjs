@@ -1132,3 +1132,38 @@ test("live test: unclear outcomes carry Kuali's own error text", async () => {
       /Kuali said: Invalid icon/u.test(error.message),
   );
 });
+
+test("live test: Kuali's permission refusal is a proven no-change, other errors stay unclear", async () => {
+  const denied = { message: "User does not have the correct permissions" };
+  const { provider: kuali } = provider(
+    [READ, WRITE],
+    [
+      json({ data: { app: null }, errors: [denied] }),
+      json({ data: { app: null }, errors: [denied, { message: "Something else" }] }),
+      json({ data: { app: { id: APP_ID } }, errors: [denied] }),
+    ],
+  );
+  const create = () =>
+    kuali.invoke("kuali-build.apps.create", { name: "X", confirmChange: true }, writeContext());
+  await assert.rejects(
+    create,
+    (error) =>
+      error.code === "kuali_permission_denied" &&
+      error.details.committed === false &&
+      error.details.executed === false,
+  );
+  await assert.rejects(create, (error) => error.code === "external_commit_outcome_unknown");
+  await assert.rejects(create, (error) => error.code === "external_commit_outcome_unknown");
+});
+
+test("live test: requests Kuali rejects before running are marked not committed", async () => {
+  const { provider: kuali } = provider(
+    [READ, WRITE],
+    [json({ errors: [{ message: "Variable $args got invalid value" }] })],
+  );
+  await assert.rejects(
+    () =>
+      kuali.invoke("kuali-build.apps.create", { name: "X", confirmChange: true }, writeContext()),
+    (error) => error.code === "graphql_error" && error.details.committed === false,
+  );
+});
