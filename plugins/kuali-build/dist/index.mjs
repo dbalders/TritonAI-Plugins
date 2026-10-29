@@ -1766,6 +1766,51 @@ function formTemplate(value) {
   return template;
 }
 
+// Some agent tool layers send a free-form JSON object or array argument as an empty object.
+// Each such input also accepts the same JSON as text in "<name>Json"; it is parsed here and then
+// checked exactly like the object form.
+const JSON_TEXT_INPUTS = Object.freeze({
+  "kuali-build.documents.update": ["data"],
+  "kuali-build.documents.submit": ["data"],
+  "kuali-build.graphql.query": ["variables"],
+  "kuali-build.graphql.mutate": ["variables"],
+  "kuali-build.graphql.delete": ["variables"],
+  "kuali-build.forms.update": ["template"],
+  "kuali-build.workflows.update": ["steps"],
+  "kuali-build.documents.act": ["data"],
+  "kuali-build.documents.sendback": ["body", "data"],
+});
+const JSON_TEXT_MAX_CHARS = 1_000_000;
+
+function acceptJsonText(toolName, input) {
+  const keys = JSON_TEXT_INPUTS[toolName];
+  if (!keys || !isPlainObject(input)) return input;
+  let output = input;
+  for (const key of keys) {
+    const textKey = `${key}Json`;
+    if (!Object.hasOwn(input, textKey)) continue;
+    const text = input[textKey];
+    if (typeof text !== "string" || text.length === 0 || text.length > JSON_TEXT_MAX_CHARS) {
+      throw failure("invalid_input", `${textKey} must be JSON text.`);
+    }
+    const supplied = input[key];
+    const suppliedObject = isPlainObject(supplied) && Object.keys(supplied).length > 0;
+    const suppliedArray = Array.isArray(supplied) && supplied.length > 0;
+    if (suppliedObject || suppliedArray) {
+      throw failure("invalid_input", `Send ${key} or ${textKey}, not both.`);
+    }
+    let value;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      throw failure("invalid_input", `${textKey} is not valid JSON.`);
+    }
+    output = { ...output, [key]: value };
+    delete output[textKey];
+  }
+  return output;
+}
+
 function optional(input, key, validate) {
   return Object.hasOwn(input, key) ? validate(input[key]) : undefined;
 }
@@ -2422,7 +2467,7 @@ export function createIntegrationProvider(context) {
     async invoke(toolName, input, invocationContext) {
       ensureOpen();
       validateOperationContext(invocationContext, { invocation: true });
-      const parsed = validateInput(toolName, input);
+      const parsed = validateInput(toolName, acceptJsonText(toolName, input));
       const credential = await readCredential(factory.secrets);
       if (credential === null) throw failure("not_connected", "Connect the UCSD Kuali Build plugin first.");
       switch (toolName) {

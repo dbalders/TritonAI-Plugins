@@ -69,6 +69,8 @@ Work like the Kuali builder: read, change, save, then publish.
 2. Read its current setup with `kuali-build.apps.configuration.get`. The form `template` and
    `workflow` are Kuali's own JSON formats. Keep their structure and IDs; change only what the user
    asked for. For a new app, look at an existing app's template to see the format.
+   If a nested object or array arrives empty, send the same JSON as text in the matching
+   `...Json` input instead (`templateJson`, `stepsJson`, `variablesJson`, `dataJson`, `bodyJson`).
 3. Save with `kuali-build.forms.update` (the whole template) or `kuali-build.workflows.update` (the
    whole `steps` array). Saving changes the draft only.
 4. Read the setup back to confirm, then publish once the user agrees: `kuali-build.apps.publish` for

@@ -1190,3 +1190,36 @@ test("live test: empty or untyped form templates are refused before anything is 
   }
   assert.equal(mock.requests.length, 0);
 });
+
+test("live test: free-form JSON inputs also arrive as text when an agent layer empties objects", async () => {
+  const template = { type: "Column", children: [{ type: "Text", formKey: "q1", label: "Q1" }] };
+  const { provider: kuali, mock } = provider(
+    [READ, WRITE],
+    [json({ data: { updateForm: { id: "form1" } } }), json({ data: { apps: [] } })],
+  );
+  await kuali.invoke(
+    "kuali-build.forms.update",
+    { appId: APP_ID, template: {}, templateJson: JSON.stringify(template), confirmChange: true },
+    writeContext(),
+  );
+  assert.deepEqual(mock.requests[0].body.variables.template, template);
+
+  await kuali.invoke(
+    "kuali-build.graphql.query",
+    { document: "query Q($n: Int) { apps(limit: $n) { id } }", variablesJson: '{"n":1}' },
+    readContext(),
+  );
+  assert.deepEqual(mock.requests[1].body.variables, { n: 1 });
+
+  for (const input of [
+    { appId: APP_ID, template, templateJson: JSON.stringify(template), confirmChange: true },
+    { appId: APP_ID, templateJson: "{not json", confirmChange: true },
+    { appId: APP_ID, templateJson: "{}", confirmChange: true },
+  ]) {
+    await assert.rejects(
+      () => kuali.invoke("kuali-build.forms.update", input, writeContext()),
+      (error) => error.code === "invalid_input",
+    );
+  }
+  assert.equal(mock.requests.length, 2);
+});
