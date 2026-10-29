@@ -1725,6 +1725,14 @@ function builderText(value, label, maximum = 256) {
   return value;
 }
 
+// Comments may span lines, like the document tools' text values.
+function builderComment(value) {
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > 4_000 || hasForbiddenWriteControl(value)) {
+    throw failure("invalid_input", "comment must be 1-4000 characters without control characters other than line breaks and tabs.");
+  }
+  return value;
+}
+
 function builderJson(value, label, { array = false } = {}) {
   const valid = array ? Array.isArray(value) : isPlainObject(value);
   if (!valid) throw failure("invalid_input", `${label} must be a JSON ${array ? "array" : "object"}.`);
@@ -1875,7 +1883,7 @@ const BUILDER_TOOLS = Object.freeze({
         actionId: builderId(input.actionId, "actionId"),
         status: input.status,
         data: optional(input, "data", (value) => builderJson(value, "data")),
-        comment: optional(input, "comment", (value) => builderText(value, "comment", 4_000)),
+        comment: optional(input, "comment", (value) => builderComment(value)),
         timeZone: DEFAULT_TIMEZONE,
       });
     },

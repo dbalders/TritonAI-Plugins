@@ -52,10 +52,10 @@ remain the final authority.
   validated IDs and JSON inputs. Where the web app treats a returned value as a refusal (for example
   `validationFailed`, `submissionsDisabled`, `Invalid Operation`, or an error-type result with a
   reason), the tool reports `kuali_rejected_action` with `committed: false` instead of success. A
-  missing or unrecognized result is reported as `external_commit_outcome_unknown`.
+  missing or unrecognized result is reported as `external_commit_outcome_unknown`. The tools are
+  classified by the same rules at call time, so a delete tool cannot run under Write.
 - A mutation whose name suggests it creates or reveals a credential (`apiKey`, `token`, `secret`,
-  `password`, `credential`) has its whole result withheld from the assistant. They are classified by the same rules at call time, so a delete
-  tool cannot run under Write.
+  `password`, `credential`) has its whole result withheld from the assistant.
 - A mutation root field cannot use `@skip` or `@include`.
 - Mutations follow the same commit and no-retry rules as the dedicated tools. Only a response with
   GraphQL errors and no `data` member at all is reported as not executed. Errors alongside any

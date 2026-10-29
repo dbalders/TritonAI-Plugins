@@ -943,3 +943,23 @@ test("council round 2: step statuses, more refusals, unclear results, and withhe
   assert.equal(created.secretWithheld, true);
   assert.doesNotMatch(JSON.stringify(created), /kb_live_SECRET/u);
 });
+
+test("council round 2: approval comments may span lines", async () => {
+  const { provider: kuali, mock } = provider(
+    [READ, WRITE],
+    [
+      json({
+        data: {
+          submitDocumentV2: { id: DOCUMENT_ID, status: "approved", label: "x", validations: [] },
+        },
+      }),
+    ],
+  );
+  const comment = "Approved.\nAttach the receipt next time.";
+  await kuali.invoke(
+    "kuali-build.documents.act",
+    { documentId: DOCUMENT_ID, actionId: "a1", status: "approved", comment, confirmChange: true },
+    writeContext(),
+  );
+  assert.equal(mock.requests[0].body.variables.comment, comment);
+});
