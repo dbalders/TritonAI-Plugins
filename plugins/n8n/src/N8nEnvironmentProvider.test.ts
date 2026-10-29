@@ -306,6 +306,37 @@ describe("N8nEnvironmentProvider", () => {
     await provider.close();
   });
 
+  it("cancels a sign-in left pending in the environment the user switched away from", async () => {
+    const secrets = memorySecrets();
+    const mock = twoInstanceFetch();
+    const provider = new N8nEnvironmentProvider(
+      secrets.service,
+      { serverUrl: PROD },
+      mock.fetchImplementation,
+    );
+    const flow = await provider.connect(["read", "write"], lifecycle(dev));
+    if (flow.kind !== "authorization_url") throw new Error("expected browser flow");
+    const callback = new URL(new URL(flow.authorizationUrl).searchParams.get("redirect_uri")!);
+    await expect(provider.status(status(dev))).resolves.toMatchObject({ state: "connecting" });
+
+    // The user switches to Prod: the abandoned Dev sign-in stops listening and is forgotten.
+    await expect(provider.status(status(prod))).resolves.toMatchObject({
+      state: "not_connected",
+    });
+    await expect(fetch(callback)).rejects.toThrow();
+    await expect(provider.status(status(dev))).resolves.toMatchObject({
+      state: "not_connected",
+    });
+    await expect(provider.poll(flow.flowId, lifecycle(dev))).rejects.toThrow(/not found/u);
+    expect(secrets.values.size).toBe(0);
+
+    // A completed sign-in is never affected by switching.
+    await signIn(provider, dev, DEV_ORIGIN);
+    await provider.status(status(prod));
+    await expect(provider.status(status(dev))).resolves.toMatchObject({ state: "connected" });
+    await provider.close();
+  });
+
   it("keeps an existing Prod sign-in working without re-authorizing", async () => {
     const secrets = memorySecrets();
     secrets.values.set(N8N_SECRET_SUFFIX, storedCredential(PROD, PROD_ORIGIN, "existing-client"));

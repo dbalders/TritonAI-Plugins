@@ -3272,6 +3272,16 @@ export class N8nProvider implements IntegrationProvider {
     throw failure;
   }
 
+  /**
+   * Abandon sign-ins still waiting in the browser: close their loopback listeners and forget their
+   * flows. A stored credential is untouched. Used when the user switches to another environment.
+   */
+  async cancelPendingSignIn(): Promise<void> {
+    if (this.#pending.size === 0) return;
+    this.#connectAttempt += 1;
+    await this.#clearPendingFlows();
+  }
+
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;

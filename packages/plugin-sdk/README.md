@@ -16,4 +16,6 @@ level and refuses newer requirements.
 - Level 3: optional manifest `serviceEnvironments` (2–4 entries of `id`, `displayName`, and
   `description`; the first is the default). The host persists the user's choice and passes its id
   as `context.serviceEnvironment` to every provider operation. Providers keep each environment's
-  credentials separate. Declaring environments requires level 3.
+  credentials separate and, when an operation arrives for a different environment than the last
+  one, cancel sign-ins still pending in the others without touching stored credentials. Declaring
+  environments requires level 3.

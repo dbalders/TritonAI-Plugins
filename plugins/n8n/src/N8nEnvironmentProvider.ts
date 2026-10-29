@@ -37,6 +37,7 @@ export class N8nEnvironmentProvider implements IntegrationProvider {
   readonly tools = N8N_TOOLS;
   readonly #secrets: IntegrationSecretStore;
   readonly #providers: ReadonlyMap<string, N8nProvider>;
+  #activeEnvironmentId: string | undefined;
 
   constructor(
     secrets: IntegrationSecretStore,
@@ -69,8 +70,25 @@ export class N8nEnvironmentProvider implements IntegrationProvider {
     return environment;
   }
 
-  #provider(context?: IntegrationOperationContext): N8nProvider {
-    return this.#providers.get(this.#environment(context).id)!;
+  /**
+   * The host sends every operation for the selected environment only, so an operation for a
+   * different environment than the last one means the user switched. Sign-ins still pending in
+   * the environments they left are cancelled then; stored credentials stay.
+   */
+  async #enter(environment: N8nServiceEnvironment): Promise<N8nProvider> {
+    if (this.#activeEnvironmentId !== environment.id) {
+      this.#activeEnvironmentId = environment.id;
+      await Promise.allSettled(
+        [...this.#providers]
+          .filter(([id]) => id !== environment.id)
+          .map(([, provider]) => provider.cancelPendingSignIn()),
+      );
+    }
+    return this.#providers.get(environment.id)!;
+  }
+
+  #provider(context?: IntegrationOperationContext): Promise<N8nProvider> {
+    return this.#enter(this.#environment(context));
   }
 
   /** A stored credential is a cheap hint that the user can switch back without signing in. */
@@ -105,7 +123,7 @@ export class N8nEnvironmentProvider implements IntegrationProvider {
         message: UNKNOWN_ENVIRONMENT_MESSAGE,
       };
     }
-    const status = await this.#providers.get(environment.id)!.status(context);
+    const status = await (await this.#enter(environment)).status(context);
     if (status.state === "error") return status;
     const others = await this.#signedInElsewhere(environment, context?.signal);
     if (others.length === 0) return status;
@@ -116,7 +134,7 @@ export class N8nEnvironmentProvider implements IntegrationProvider {
   }
 
   async prepare(context?: IntegrationLifecycleContext): Promise<void> {
-    return this.#provider(context).prepare(context);
+    return (await this.#provider(context)).prepare(context);
   }
 
   async connect(
@@ -124,18 +142,18 @@ export class N8nEnvironmentProvider implements IntegrationProvider {
     context?: IntegrationLifecycleContext,
     submission?: IntegrationConnectionSubmission,
   ): Promise<IntegrationAuthorizationUrlConnectResult | IntegrationConnectedConnectResult> {
-    return this.#provider(context).connect(capabilities, context, submission);
+    return (await this.#provider(context)).connect(capabilities, context, submission);
   }
 
   async poll(
     flowId: string,
     context?: IntegrationLifecycleContext,
   ): Promise<IntegrationProviderPollResult> {
-    return this.#provider(context).poll(flowId, context);
+    return (await this.#provider(context)).poll(flowId, context);
   }
 
   async disconnect(context?: IntegrationLifecycleContext): Promise<void> {
-    return this.#provider(context).disconnect(context);
+    return (await this.#provider(context)).disconnect(context);
   }
 
   async invoke(
@@ -143,7 +161,7 @@ export class N8nEnvironmentProvider implements IntegrationProvider {
     input: JsonObject,
     context?: IntegrationInvocationContext,
   ): Promise<JsonValue> {
-    return this.#provider(context).invoke(toolName, input, context);
+    return (await this.#provider(context)).invoke(toolName, input, context);
   }
 
   async close(): Promise<void> {

@@ -13021,6 +13021,15 @@ var N8nProvider = class {
     }
     throw failure;
   }
+  /**
+   * Abandon sign-ins still waiting in the browser: close their loopback listeners and forget their
+   * flows. A stored credential is untouched. Used when the user switches to another environment.
+   */
+  async cancelPendingSignIn() {
+    if (this.#pending.size === 0) return;
+    this.#connectAttempt += 1;
+    await this.#clearPendingFlows();
+  }
   async close() {
     if (this.#closed) return;
     this.#closed = true;
@@ -13043,6 +13052,7 @@ var N8nEnvironmentProvider = class {
   tools = N8N_TOOLS;
   #secrets;
   #providers;
+  #activeEnvironmentId;
   constructor(secrets, configuration2, fetchImplementation, requestTimeoutMs) {
     if (configuration2.serverUrl !== N8N_SERVICE_ENVIRONMENTS[0].serverUrl) {
       throw new Error("n8n configuration must contain only the reviewed server URL.");
@@ -13067,8 +13077,22 @@ var N8nEnvironmentProvider = class {
     if (!environment) throw new IntegrationProviderPublicError(UNKNOWN_ENVIRONMENT_MESSAGE);
     return environment;
   }
+  /**
+   * The host sends every operation for the selected environment only, so an operation for a
+   * different environment than the last one means the user switched. Sign-ins still pending in
+   * the environments they left are cancelled then; stored credentials stay.
+   */
+  async #enter(environment) {
+    if (this.#activeEnvironmentId !== environment.id) {
+      this.#activeEnvironmentId = environment.id;
+      await Promise.allSettled(
+        [...this.#providers].filter(([id]) => id !== environment.id).map(([, provider]) => provider.cancelPendingSignIn())
+      );
+    }
+    return this.#providers.get(environment.id);
+  }
   #provider(context2) {
-    return this.#providers.get(this.#environment(context2).id);
+    return this.#enter(this.#environment(context2));
   }
   /** A stored credential is a cheap hint that the user can switch back without signing in. */
   async #signedInElsewhere(selected, signal) {
@@ -13097,7 +13121,7 @@ var N8nEnvironmentProvider = class {
         message: UNKNOWN_ENVIRONMENT_MESSAGE
       };
     }
-    const status = await this.#providers.get(environment.id).status(context2);
+    const status = await (await this.#enter(environment)).status(context2);
     if (status.state === "error") return status;
     const others = await this.#signedInElsewhere(environment, context2?.signal);
     if (others.length === 0) return status;
@@ -13106,19 +13130,19 @@ var N8nEnvironmentProvider = class {
     return { ...status, message: status.message ? `${status.message} ${note}` : note };
   }
   async prepare(context2) {
-    return this.#provider(context2).prepare(context2);
+    return (await this.#provider(context2)).prepare(context2);
   }
   async connect(capabilities, context2, submission) {
-    return this.#provider(context2).connect(capabilities, context2, submission);
+    return (await this.#provider(context2)).connect(capabilities, context2, submission);
   }
   async poll(flowId, context2) {
-    return this.#provider(context2).poll(flowId, context2);
+    return (await this.#provider(context2)).poll(flowId, context2);
   }
   async disconnect(context2) {
-    return this.#provider(context2).disconnect(context2);
+    return (await this.#provider(context2)).disconnect(context2);
   }
   async invoke(toolName, input, context2) {
-    return this.#provider(context2).invoke(toolName, input, context2);
+    return (await this.#provider(context2)).invoke(toolName, input, context2);
   }
   async close() {
     const results = await Promise.allSettled(
