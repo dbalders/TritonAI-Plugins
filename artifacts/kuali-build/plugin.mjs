@@ -1443,14 +1443,19 @@ function redactResponse(value, selection, depth = 0) {
 // Sends one generic GraphQL request. Unlike the fixed tools, GraphQL error messages are returned
 // (sanitized and bounded) so the assistant can correct its query. They are server text, not
 // instructions.
-async function rawGraphql(fetchImplementation, apiKey, document, variables, operationName, signal) {
-  signal.throwIfAborted();
+function rawGraphqlBody(document, variables, operationName) {
   const payload = { query: document, variables };
   if (operationName) payload.operationName = operationName;
   const body = JSON.stringify(payload);
   if (encoder.encode(body).byteLength > MAX_REQUEST_BYTES) {
     throw failure("request_too_large", "Kuali request exceeded the byte limit.");
   }
+  return body;
+}
+
+async function rawGraphql(fetchImplementation, apiKey, document, variables, operationName, signal) {
+  signal.throwIfAborted();
+  const body = rawGraphqlBody(document, variables, operationName);
   const composed = timeoutSignal(signal);
   try {
     let response;
@@ -1752,6 +1757,7 @@ export function createIntegrationProvider(context) {
 
   async function executeGenericMutation(apiKey, parsed, invocationContext) {
     validateWriteInvocation(invocationContext);
+    rawGraphqlBody(parsed.document, parsed.variables, parsed.operationName);
     invocationContext.signal.throwIfAborted();
     const rootField = parsed.analysis.rootFields[0];
     const outcomeDetails = { rootField, operationName: parsed.operationName ?? null };

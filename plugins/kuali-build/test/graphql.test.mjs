@@ -655,3 +655,23 @@ test("PR review: error statuses after dispatch are unknown unless Kuali returned
     (error) => error.code === "rate_limited" && error.details.rejectedBeforeExecution === true,
   );
 });
+
+test("PR review: oversized mutations are refused before commit admission", async () => {
+  const events = [];
+  const { provider: kuali, mock } = provider([READ, WRITE], []);
+  await assert.rejects(
+    () =>
+      kuali.invoke(
+        "kuali-build.graphql.mutate",
+        {
+          document: UPDATE,
+          variables: { id: DOCUMENT_ID, data: { big: "x".repeat(70_000) } },
+          confirmMutation: true,
+        },
+        writeContext(events),
+      ),
+    (error) => error.code === "request_too_large",
+  );
+  assert.deepEqual(events, []);
+  assert.equal(mock.requests.length, 0);
+});

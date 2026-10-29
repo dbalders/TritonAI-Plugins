@@ -12,7 +12,8 @@ Prototype-related keys are rejected. HTTP and GraphQL failures are normalized wi
 response bodies, server messages, request headers, or API keys. Reads are never automatically
 retried; retryable and rate-limit failures are surfaced to the Harness.
 
-Writes require the single opt-in `kuali-build.write` capability, host `writeApproved`, explicit tool-level
+Writes require an opt-in capability (`kuali-build.write` for the dedicated tools and Write-list
+mutations, `kuali-build.admin` for every other mutation), host `writeApproved`, explicit tool-level
 confirmation fields, and exactly one `beginCommit` admission immediately before each mutation.
 Document edits use a pre-write `meta.updatedAt` stale check, normalize only bounded Kuali form keys,
 and require extra confirmation for null values. The stale check is not atomic because the
