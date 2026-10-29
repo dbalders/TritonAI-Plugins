@@ -1050,3 +1050,20 @@ test("PR review: dedicated tools need a confirmed result", async () => {
     (error) => error.code === "kuali_rejected_action" && error.details.committed === false,
   );
 });
+
+test("PR review: a GraphQL sign-in rejection without data proves the mutation did not run", async () => {
+  const { provider: kuali } = provider(
+    [READ, ADMIN],
+    [json({ errors: [{ message: "No", extensions: { code: "UNAUTHENTICATED" } }] })],
+  );
+  await assert.rejects(
+    () =>
+      kuali.invoke(
+        "kuali-build.graphql.delete",
+        { document: DELETE, variables: { id: DOCUMENT_ID }, confirmMutation: true },
+        writeContext(),
+      ),
+    (error) =>
+      error.code === "authentication_failed" && error.details.rejectedBeforeExecution === true,
+  );
+});

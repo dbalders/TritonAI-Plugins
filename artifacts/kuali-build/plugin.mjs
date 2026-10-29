@@ -1542,7 +1542,9 @@ async function rawGraphql(fetchImplementation, apiKey, document, variables, oper
     }
     if (hasErrors && !executionStarted) {
       const authFailure = graphqlFailure(parsed.errors, false);
-      if (authFailure.code === "authentication_failed") throw authFailure;
+      if (authFailure.code === "authentication_failed") {
+        throw failure(authFailure.code, authFailure.message, false, { rejectedBeforeExecution: hasGraphqlErrors });
+      }
     }
     if (!hasErrors && !hasData) {
       throw failure("invalid_response", "Kuali returned a GraphQL response without data.");
