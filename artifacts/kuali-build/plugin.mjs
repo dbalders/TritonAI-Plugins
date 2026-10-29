@@ -64,11 +64,20 @@ function failure(code, message, retryable = false, details) {
   return Object.freeze(value);
 }
 
+function kualiSaid(messages) {
+  if (!Array.isArray(messages)) return "";
+  const text = messages
+    .map((entry) => (typeof entry === "string" ? entry : entry?.message))
+    .filter((entry) => typeof entry === "string" && entry.length > 0)
+    .slice(0, 3);
+  return text.length === 0 ? "" : ` Kuali said: ${text.join(" | ")}`;
+}
+
 function externalCommitOutcomeUnknown(operation, details = {}) {
   return Object.freeze({
     _tag: "ExternalCommitOutcomeUnknown",
     code: "external_commit_outcome_unknown",
-    message: `The ${operation} request may have committed in UCSD Kuali Build. Inspect the document or workflow before deciding whether to try another action.`,
+    message: `The ${operation} request may have committed in UCSD Kuali Build. Inspect the document or workflow before deciding whether to try another action.${kualiSaid(details.messages)}`,
     retryable: false,
     details: { operation, ...details },
   });
@@ -1739,6 +1748,85 @@ function withoutUndefined(object) {
   return Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined));
 }
 
+// App tile colors and icons exactly as Kuali's app picker offers them (web app bundle). Kuali
+// fails the whole request on other values, after it has started running.
+const APP_TILE_COLORS = Object.freeze(["#E43935", "#EF6C05", "#F7BD1B", "#A4D835", "#6CC459", "#50B189", "#1697A6", "#757575", "#333333", "#468DCB", "#465BCB", "#7146CB", "#A173FF", "#E373FF", "#CB3E96"]);
+const APP_TILE_ICONS = Object.freeze([
+  "ab-testing-chemistry-monitor.svg", "accessories-umbrella.svg", "accounting-calculator.svg", "alarm-bell-ring.svg", "alert-triangle.svg", "ambulance-car.svg",
+  "american-football-ball-1.svg", "amusement-park-castle.svg", "analytics-pie-2.svg", "animal-print.svg", "app-window-check.svg", "app-window.svg",
+  "archive-books.svg", "archive-drawer-table.svg", "archive.svg", "armchair-1.svg", "army-badge-skull.svg", "arrow-thick-circle-right-1.svg",
+  "astronomy-planet-ring-star.svg", "atomic-bomb.svg", "attachment.svg", "award-medal-1.svg", "bandage.svg", "basketball-ball.svg",
+  "beach-palm-water.svg", "beach-parasol-water.svg", "bicycle.svg", "bin.svg", "binocular.svg", "board-game-deuce.svg",
+  "bomb-detonator.svg", "book-book-pages.svg", "book-close-bookmark-1.svg", "book-library-shelf.svg", "bookmarks-document.svg", "brain-head-1.svg",
+  "briefcase.svg", "browser-page-mail.svg", "building-cloudy.svg", "building-house.svg", "bus-station.svg", "business-big-small-fish.svg",
+  "business-climb-top.svg", "business-crossroad.svg", "business-deal-cash-1.svg", "business-lucky-cat.svg", "business-shark.svg", "business-team-goal.svg",
+  "calendar-2.svg", "calendar-3.svg", "calendar-school.svg", "camera-1.svg", "candy.svg", "car-1.svg",
+  "cash-briefcase.svg", "cash-payment-bag.svg", "casino-player-dice.svg", "certified-diploma-1.svg", "certified-diploma.svg", "chess-rook.svg",
+  "christmas-snowman.svg", "clean-car-gas.svg", "cloud-upload.svg", "cog.svg", "color-rolling-brush.svg", "composition-window-man-1.svg",
+  "computer-bug-1.svg", "content-paper-edit.svg", "credit-card-1.svg", "cupcake.svg", "cursor-hand-2.svg", "data-file-bars.svg",
+  "data-transfer-circle.svg", "database-2.svg", "database-flash.svg", "delivery-truck-3.svg", "design-drawing-board.svg", "design-shape-monitor.svg",
+  "design-tool-magic-wand.svg", "design-tool-magnet.svg", "design-tool-stamp.svg", "desktop-monitor-approve.svg", "desktop-monitor-smiley-1.svg", "dial-finger-1.svg",
+  "dislike.svg", "dog-allowed.svg", "dog-sit.svg", "download-thick-box.svg", "drawer-open.svg", "dresser-drawers-1.svg",
+  "e-learning-laptop-1.svg", "e-learning-monitor.svg", "earth-model-2.svg", "ecology-leaf.svg", "explosive.svg", "face-id-1.svg",
+  "family-child-play-ball-warning.svg", "farming-barn-2.svg", "fast-food-burger.svg", "flag-1.svg", "flag-skull.svg", "flash-1.svg",
+  "folder-edit.svg", "folder.svg", "fruit-apple.svg", "garbage-bin-throw.svg", "gardening-lawn-mower.svg", "gauge-dashboard.svg",
+  "gift-box.svg", "glasses-ski-2.svg", "gold-bars.svg", "golf-hole.svg", "graph-stats-circle.svg", "halloween-cauldron.svg",
+  "hammer-wench.svg", "harddrive-download.svg", "hardware-nut.svg", "headphones-human.svg", "heavy-equipment-mortar-truck.svg", "help-wheel.svg",
+  "hierarchy-5.svg", "historical-building-castle-1.svg", "hospital-first-aid.svg", "hotel-double-bed-1.svg", "house-3.svg", "human-resources-search-employees.svg",
+  "ice-cream-bite.svg", "image-file-light.svg", "information-circle.svg", "instrument-guitar.svg", "job-seach-profile.svg", "kindle-hold.svg",
+  "lab-tube-bottle.svg", "lab-tube-experiment.svg", "landmark-colosseum.svg", "launch-go-flag.svg", "legal-hammer.svg", "light-mode-cloudy.svg",
+  "like.svg", "lock-1.svg", "login-keys.svg", "love-it-bubble.svg", "love-it.svg", "love-shield.svg",
+  "love-whale.svg", "mailbox-in.svg", "maps-search.svg", "matches-fire.svg", "messages-bubble-double.svg", "messages-bubble-square-text.svg",
+  "messages-bubble-square.svg", "messages-bubble.svg", "microphone-podcast-2.svg", "mobile-phone.svg", "module-three-2.svg", "monetization-sponsor.svg",
+  "monetization-touch-coin.svg", "money-wallet-1.svg", "monitor-user.svg", "mood-happy.svg", "multiple-actions-check-1.svg", "multiple-actions-flash.svg",
+  "music-note-2.svg", "natural-disaster-fire.svg", "natural-disaster-volcano-smoke.svg", "network-browser.svg", "notes-diary.svg", "notes-text-flip.svg",
+  "office-desk.svg", "office-outdoors.svg", "official-building-2.svg", "official-building-3.svg", "official-building.svg", "organic-plant-grow.svg",
+  "outdoors-flashlight-1.svg", "outdoors-kite-flying.svg", "outdoors-swiss-knife.svg", "outdoors-tree-valley.svg", "party-balloon.svg", "password-desktop-lock-approved.svg",
+  "pencil-write.svg", "people-man-graduate.svg", "performance-increase.svg", "phone-book.svg", "pie-line-graph-desktop.svg", "pin.svg",
+  "plane-take-off.svg", "police-man-1.svg", "police-rotating-light-1.svg", "pollution-drop-skull.svg", "power-tools-drill.svg", "print-text.svg",
+  "programming-language-code.svg", "protection-shield-bolt.svg", "rating-star.svg", "read-home-2.svg", "read-human.svg", "real-estate-action-house-wrench.svg",
+  "receipt-register.svg", "receipt-slip-1.svg", "recycling-sign.svg", "religion-peace-1.svg", "religion-taoism.svg", "restaurant-fork-knife.svg",
+  "road-sign-u-turn-left.svg", "road-straight.svg", "road-traffic-lights.svg", "room-service-bring-plate.svg", "safety-electricity-danger.svg", "safety-helmet-mine-1.svg",
+  "safety-warning-electricity.svg", "saving-piggy-bank.svg", "school-bell.svg", "school-book-apple.svg", "school-building.svg", "search-1.svg",
+  "send-email-envelope.svg", "send-email.svg", "settings-slider-desktop-horizontal.svg", "shield-home.svg", "shield-monitor.svg", "shipment-check.svg",
+  "shipment-in-transit.svg", "shop-barista.svg", "show-theater-masks.svg", "single-neutral-actions-alarm.svg", "single-neutral-actions-check-2.svg", "single-neutral-actions-edit-1.svg",
+  "single-neutral-actions-flight.svg", "single-neutral-book.svg", "single-neutral-circle.svg", "single-neutral-mail.svg", "single-neutral-monitor.svg", "skull.svg",
+  "smart-watch-square-graph-line.svg", "soccer-field.svg", "space-rocket-flying.svg", "stairs-ascend.svg", "study-owl.svg", "surveillance-camera.svg",
+  "table-lamp-hanging.svg", "target-center-1.svg", "task-checklist-check.svg", "task-checklist-write.svg", "team-idea.svg", "ticket-1.svg",
+  "ticket-movie.svg", "time-clock-circle.svg", "toilet-seat.svg", "tools-box-1.svg", "tools-box.svg", "tools-pickaxe.svg",
+  "toys-lego.svg", "trends-torch.svg", "trip-road.svg", "user-3d-box.svg", "video-game-pacman.svg", "vintage-tv-4.svg",
+  "vip-royal.svg", "volume-control-medium.svg", "watch-time.svg", "water-protection-faucet.svg", "water-straw.svg", "weather-cloud.svg",
+  "yoga-arm-stretch.svg", "zoom-in.svg",
+]);
+const APP_TILE_ICON_SET = new Set(APP_TILE_ICONS);
+const DEFAULT_APP_TILE_ICON = "app-window.svg";
+
+function tileColor(value) {
+  const color = typeof value === "string" ? value.trim().toUpperCase() : value;
+  if (!APP_TILE_COLORS.includes(color)) {
+    throw failure("invalid_input", `backgroundColor must be one of Kuali's app colors: ${APP_TILE_COLORS.join(", ")}.`);
+  }
+  return color;
+}
+
+function tileIcon(value) {
+  const name = typeof value === "string" && !value.endsWith(".svg") ? `${value}.svg` : value;
+  if (!APP_TILE_ICON_SET.has(name)) {
+    throw failure(
+      "invalid_input",
+      "iconName must be one of Kuali's app icon names (for example app-window.svg, archive.svg, or accounting-calculator.svg). Leave it out to use the default icon.",
+    );
+  }
+  return name;
+}
+
+// Kuali's web app picks a color for every new app; pick one from the name so retries match.
+function defaultTileColor(name) {
+  let hash = 0;
+  for (const character of name) hash = (hash * 31 + character.codePointAt(0)) >>> 0;
+  return APP_TILE_COLORS[hash % APP_TILE_COLORS.length];
+}
+
 const BUILDER_TOOLS = Object.freeze({
   "kuali-build.apps.configuration.get": {
     tier: "read",
@@ -1753,15 +1841,18 @@ const BUILDER_TOOLS = Object.freeze({
     tier: "write",
     keys: ["name", "backgroundColor", "iconName", "spaceId"],
     document: `mutation KualiBuildCreateApp($args: CreateAppTileInput!) { app: createAppTile(args: $args) { id name spaceId tileOptions { backgroundColor iconName } } }`,
-    variables: (input) => ({
-      args: withoutUndefined({
-        name: builderText(input.name, "name"),
-        type: "app",
-        backgroundColor: optional(input, "backgroundColor", (value) => builderText(value, "backgroundColor", 64)),
-        iconName: optional(input, "iconName", (value) => builderText(value, "iconName", 128)),
-        spaceId: optional(input, "spaceId", (value) => builderId(value, "spaceId")),
-      }),
-    }),
+    // Like the web app: no type for a regular app, and always a color and icon.
+    variables: (input) => {
+      const name = builderText(input.name, "name");
+      return {
+        args: withoutUndefined({
+          name,
+          backgroundColor: optional(input, "backgroundColor", tileColor) ?? defaultTileColor(name),
+          iconName: optional(input, "iconName", tileIcon) ?? DEFAULT_APP_TILE_ICON,
+          spaceId: optional(input, "spaceId", (value) => builderId(value, "spaceId")),
+        }),
+      };
+    },
   },
   "kuali-build.apps.copy": {
     tier: "write",
@@ -1771,8 +1862,8 @@ const BUILDER_TOOLS = Object.freeze({
       args: withoutUndefined({
         sourceId: builderId(input.sourceAppId, "sourceAppId"),
         name: builderText(input.name, "name"),
-        backgroundColor: optional(input, "backgroundColor", (value) => builderText(value, "backgroundColor", 64)),
-        iconName: optional(input, "iconName", (value) => builderText(value, "iconName", 128)),
+        backgroundColor: optional(input, "backgroundColor", tileColor),
+        iconName: optional(input, "iconName", tileIcon),
         spaceId: optional(input, "spaceId", (value) => builderId(value, "spaceId")),
       }),
     }),
@@ -1785,8 +1876,8 @@ const BUILDER_TOOLS = Object.freeze({
       args: withoutUndefined({
         id: builderId(input.appId, "appId"),
         name: builderText(input.name, "name"),
-        backgroundColor: optional(input, "backgroundColor", (value) => builderText(value, "backgroundColor", 64)),
-        iconName: optional(input, "iconName", (value) => builderText(value, "iconName", 128)),
+        backgroundColor: optional(input, "backgroundColor", tileColor),
+        iconName: optional(input, "iconName", tileIcon),
       }),
     }),
   },

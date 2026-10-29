@@ -1064,3 +1064,71 @@ test("council round 6: a withdraw that reports success false is a refusal", asyn
     (error) => error.code === "kuali_rejected_action",
   );
 });
+
+test("live test: app tiles use Kuali's colors and icons and no type, like the web app", async () => {
+  const { provider: kuali, mock } = provider(
+    [READ, WRITE],
+    [
+      json({ data: { app: { id: APP_ID, name: "Quick Survey Test", spaceId: null } } }),
+      json({ data: { app: { id: APP_ID, name: "Second", spaceId: null } } }),
+    ],
+  );
+  for (const bad of [
+    { backgroundColor: "teal" },
+    { iconName: "clipboard-list" },
+    { iconName: "../evil.svg" },
+  ]) {
+    const events = [];
+    await assert.rejects(
+      () =>
+        kuali.invoke(
+          "kuali-build.apps.create",
+          { name: "Quick Survey Test", confirmChange: true, ...bad },
+          writeContext(events),
+        ),
+      (error) => error.code === "invalid_input",
+    );
+    assert.deepEqual(events, [], "refused before commit admission");
+  }
+  assert.equal(mock.requests.length, 0);
+
+  await kuali.invoke(
+    "kuali-build.apps.create",
+    { name: "Quick Survey Test", confirmChange: true },
+    writeContext(),
+  );
+  const { args } = mock.requests[0].body.variables;
+  assert.equal(Object.hasOwn(args, "type"), false);
+  assert.match(args.backgroundColor, /^#[0-9A-F]{6}$/u);
+  assert.equal(args.iconName, "app-window.svg");
+
+  await kuali.invoke(
+    "kuali-build.apps.create",
+    {
+      name: "Second",
+      backgroundColor: "#1697a6",
+      iconName: "task-checklist-check",
+      confirmChange: true,
+    },
+    writeContext(),
+  );
+  assert.deepEqual(mock.requests[1].body.variables.args, {
+    name: "Second",
+    backgroundColor: "#1697A6",
+    iconName: "task-checklist-check.svg",
+  });
+});
+
+test("live test: unclear outcomes carry Kuali's own error text", async () => {
+  const { provider: kuali } = provider(
+    [READ, WRITE],
+    [json({ data: { app: null }, errors: [{ message: "Invalid icon" }] })],
+  );
+  await assert.rejects(
+    () =>
+      kuali.invoke("kuali-build.apps.create", { name: "X", confirmChange: true }, writeContext()),
+    (error) =>
+      error.code === "external_commit_outcome_unknown" &&
+      /Kuali said: Invalid icon/u.test(error.message),
+  );
+});

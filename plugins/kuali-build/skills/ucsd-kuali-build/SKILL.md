@@ -64,6 +64,8 @@ Work like the Kuali builder: read, change, save, then publish.
 
 1. Create a new app with `kuali-build.apps.create` or `kuali-build.apps.copy`, or find an existing
    one with `kuali-build.apps.list`.
+   Leave out the color and icon unless the user picked them; Kuali only accepts its own palette
+   (`#E43935`, `#1697A6`, ...) and icon file names (`app-window.svg`, `task-checklist-check.svg`, ...).
 2. Read its current setup with `kuali-build.apps.configuration.get`. The form `template` and
    `workflow` are Kuali's own JSON formats. Keep their structure and IDs; change only what the user
    asked for. For a new app, look at an existing app's template to see the format.
