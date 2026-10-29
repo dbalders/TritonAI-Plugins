@@ -1747,6 +1747,25 @@ function builderJson(value, label, { array = false } = {}) {
   return value;
 }
 
+// Kuali answers an unusable template with "Template not valid" only after the save has started,
+// which leaves an unclear outcome. Refuse the obvious cases first: a form is a layout (usually a
+// Column) with at least one child, and every item in it has a type.
+function formTemplate(value) {
+  const template = builderJson(value, "template");
+  const typed = (node) =>
+    isPlainObject(node) &&
+    typeof node.type === "string" &&
+    node.type.length > 0 &&
+    (node.children === undefined || (Array.isArray(node.children) && node.children.every(typed)));
+  if (!Array.isArray(template.children) || template.children.length === 0 || !typed(template)) {
+    throw failure(
+      "invalid_input",
+      "template must be Kuali's form JSON: a typed layout (usually a Column) with at least one child, every item with a type. Copy the shape from kuali-build.apps.configuration.get on an existing app. Nothing was sent.",
+    );
+  }
+  return template;
+}
+
 function optional(input, key, validate) {
   return Object.hasOwn(input, key) ? validate(input[key]) : undefined;
 }
@@ -1895,7 +1914,7 @@ const BUILDER_TOOLS = Object.freeze({
     variables: (input) => withoutUndefined({
       appId: builderId(input.appId, "appId"),
       pageId: optional(input, "pageId", (value) => builderId(value, "pageId")),
-      template: builderJson(input.template, "template"),
+      template: formTemplate(input.template),
     }),
   },
   "kuali-build.apps.publish": {

@@ -998,7 +998,7 @@ test("council round 4: aliased boolean credential results stay visible; successf
 });
 
 test("PR review: dedicated tools need a confirmed result", async () => {
-  const template = { type: "Section" };
+  const template = { type: "Column", children: [{ type: "Text", formKey: "q1", label: "Q1" }] };
   for (const [tool, input, data, code] of [
     [
       "kuali-build.forms.update",
@@ -1166,4 +1166,27 @@ test("live test: requests Kuali rejects before running are marked not committed"
       kuali.invoke("kuali-build.apps.create", { name: "X", confirmChange: true }, writeContext()),
     (error) => error.code === "graphql_error" && error.details.committed === false,
   );
+});
+
+test("live test: empty or untyped form templates are refused before anything is sent", async () => {
+  const { provider: kuali, mock } = provider([READ, WRITE], []);
+  for (const template of [
+    {},
+    { type: "Column", children: [] },
+    { type: "Column", children: [{ label: "No type" }] },
+    { children: [{ type: "Text" }] },
+  ]) {
+    const events = [];
+    await assert.rejects(
+      () =>
+        kuali.invoke(
+          "kuali-build.forms.update",
+          { appId: APP_ID, template, confirmChange: true },
+          writeContext(events),
+        ),
+      (error) => error.code === "invalid_input",
+    );
+    assert.deepEqual(events, []);
+  }
+  assert.equal(mock.requests.length, 0);
 });
