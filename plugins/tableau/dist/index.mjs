@@ -1,9 +1,35 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 
-const ORIGIN = "https://tableau.ucsd.edu";
+// The reviewed UCSD Tableau servers. Each has its own sign-in and stored credential, so a Dev
+// token can only ever be sent to Dev. The first entry is the default and matches the manifest's
+// `serviceEnvironments` order. Prod keeps the original secret name so existing sign-ins survive.
+const ENVIRONMENTS = Object.freeze([
+  Object.freeze({
+    id: "production",
+    displayName: "Prod",
+    origin: "https://tableau.ucsd.edu",
+    secret: "connection",
+    label: "UCSD Tableau",
+  }),
+  Object.freeze({
+    id: "development",
+    displayName: "Dev",
+    origin: "https://tableau-standby.ucsd.edu",
+    secret: "development.connection",
+    label: "UCSD Tableau Dev",
+  }),
+]);
+const ORIGIN = ENVIRONMENTS[0].origin;
+// Every tool result and preview names the server it came from, so Dev answers are never
+// mistaken for Prod ones.
+const environmentLabel = (environment) =>
+  Object.freeze({
+    id: environment.id,
+    name: environment.displayName,
+    server: new URL(environment.origin).host,
+  });
 const API = "/api/3.27";
-const SECRET = "connection";
 const CAPABILITY = "read";
 const WRITE_CAPABILITY = "write";
 const FLOW_MS = 10 * 60_000;
@@ -95,13 +121,137 @@ export function createIntegrationProvider({ secrets, configuration }) {
   ) {
     throw failure("invalid_configuration", "Tableau must use the reviewed UCSD server and site.");
   }
-  return new TableauProvider(secrets, configuration.siteContentUrl ?? "");
+  return new TableauEnvironmentProvider(secrets, configuration.siteContentUrl ?? "");
+}
+
+const UNKNOWN_ENVIRONMENT = "This Tableau environment is not available in this plugin version.";
+const SWITCHED_ENVIRONMENT =
+  "Tableau switched between Prod and Dev while this request was starting, so it was not run. Try again.";
+
+// Routes each host operation to the Tableau server the user selected in Harness. Each server keeps
+// its own provider, sign-in flow, previews, and credential, so switching never signs the user out
+// of the other one. Hosts that predate service environments omit the selection; those calls use
+// Prod, exactly as earlier releases did.
+class TableauEnvironmentProvider {
+  id = "tableau";
+  #secrets;
+  #providers;
+  #active;
+
+  constructor(secrets, site) {
+    this.#secrets = secrets;
+    this.#providers = new Map(
+      ENVIRONMENTS.map((environment) => [
+        environment.id,
+        new TableauProvider(secrets, site, environment),
+      ]),
+    );
+  }
+  #environment(context) {
+    const selected = context?.serviceEnvironment;
+    if (selected === undefined) return ENVIRONMENTS[0];
+    const environment = ENVIRONMENTS.find(({ id }) => id === selected);
+    if (!environment) throw failure("unknown_environment", UNKNOWN_ENVIRONMENT);
+    return environment;
+  }
+  // The host sends operations for the selected environment only, so the latest operation's
+  // environment is the one in use. Every operation closes sign-ins still pending in the others
+  // (switching abandoned them; stored credentials stay). Work for an environment the user left
+  // while this call was starting is refused before it reaches Tableau, unless it only reads status.
+  async #enter(environment, current) {
+    this.#active = environment.id;
+    await Promise.allSettled(
+      [...this.#providers]
+        .filter(([id]) => id !== environment.id)
+        .map(([, provider]) => provider.cancelPendingSignIn()),
+    );
+    if (current && this.#active !== environment.id)
+      throw failure("environment_switched", SWITCHED_ENVIRONMENT, true);
+    return this.#providers.get(environment.id);
+  }
+  async #signedInElsewhere(selected) {
+    const names = [];
+    for (const environment of ENVIRONMENTS) {
+      if (environment.id === selected.id) continue;
+      try {
+        if ((await this.#secrets.get(environment.secret)) !== null)
+          names.push(environment.displayName);
+      } catch {
+        // The note is informational; the selected environment's own status stays authoritative.
+      }
+    }
+    return names;
+  }
+  async status(context) {
+    let environment;
+    try {
+      environment = this.#environment(context);
+    } catch {
+      return {
+        state: "error",
+        accountLabel: null,
+        grantedCapabilities: [],
+        message: UNKNOWN_ENVIRONMENT,
+      };
+    }
+    const status = await (await this.#enter(environment, false)).status(context);
+    if (status.state === "error") return status;
+    const others = await this.#signedInElsewhere(environment);
+    if (!others.length) return status;
+    const names = others.join(" and ");
+    const note =
+      status.state === "connected" ? `Also signed in to ${names}.` : `Still signed in to ${names}.`;
+    return { ...status, message: status.message ? `${status.message} ${note}` : note };
+  }
+  async prepare(context) {
+    return (await this.#enter(this.#environment(context), true)).prepare(context);
+  }
+  async connect(capabilities, context, submission) {
+    const environment = this.#environment(context);
+    const provider = await this.#enter(environment, true);
+    const result = await provider.connect(capabilities, context, submission);
+    // A switch that landed while this sign-in was starting abandoned it. Close it now; polling the
+    // flow then reports it expired instead of leaving a loopback listener open for ten minutes.
+    if (this.#active !== environment.id) await provider.cancelPendingSignIn();
+    return result;
+  }
+  async poll(flowId, context) {
+    return (await this.#enter(this.#environment(context), true)).poll(flowId, context);
+  }
+  async disconnect(context) {
+    return (await this.#enter(this.#environment(context), true)).disconnect(context);
+  }
+  async invoke(toolName, input, context) {
+    const environment = this.#environment(context);
+    let result;
+    try {
+      const provider = await this.#enter(environment, true);
+      result = await provider.invoke(toolName, input, context);
+    } catch (error) {
+      // A switch race is a retryable tool result, not a plugin fault. Other failures keep their
+      // existing behavior.
+      if (error?._tag !== "PluginFailure" || error.code !== "environment_switched") throw error;
+      result = resultError(error);
+    }
+    return result && typeof result === "object" && !Array.isArray(result)
+      ? { environment: environmentLabel(environment), ...result }
+      : result;
+  }
+  async close() {
+    const results = await Promise.allSettled(
+      [...this.#providers.values()].map((provider) => provider.close()),
+    );
+    const rejected = results.find((result) => result.status === "rejected");
+    if (rejected) throw rejected.reason;
+  }
 }
 
 class TableauProvider {
   id = "tableau";
   #secrets;
   #site;
+  #environment;
+  #origin;
   #pending = null;
   #queue = Promise.resolve();
   #closed = false;
@@ -110,15 +260,18 @@ class TableauProvider {
   #message = null;
   #changes;
 
-  constructor(secrets, site) {
+  constructor(secrets, site, environment) {
     this.#secrets = secrets;
     this.#site = site;
+    this.#environment = environment;
+    this.#origin = environment.origin;
     this.#changes = new TableauChanges({
       request: (path, options) => this.#request(path, options),
       json: (path, options) => this.#json(path, options),
       credential: () => this.#credential(),
       usable: (c) => this.#usable(c),
       item: (kind, value) => this.#item(kind, value),
+      environment: environmentLabel(environment),
     });
   }
   #serialize(work) {
@@ -130,7 +283,7 @@ class TableauProvider {
     return next;
   }
   async #credential() {
-    const raw = await this.#secrets.get(SECRET);
+    const raw = await this.#secrets.get(this.#environment.secret);
     if (raw === null) return null;
     let c;
     try {
@@ -141,7 +294,7 @@ class TableauProvider {
     if (
       !c ||
       c.version !== 1 ||
-      c.origin !== ORIGIN ||
+      c.origin !== this.#origin ||
       c.siteContentUrl !== this.#site ||
       !ID.test(c.siteId) ||
       !ID.test(c.userId) ||
@@ -185,7 +338,7 @@ class TableauProvider {
     combined.throwIfAborted();
     let response;
     try {
-      response = await fetch(`${ORIGIN}${path}`, {
+      response = await fetch(`${this.#origin}${path}`, {
         method: method ?? (form ? "POST" : "GET"),
         redirect: "error",
         signal: combined,
@@ -287,7 +440,7 @@ class TableauProvider {
     if (
       !value ||
       !text(value.access_token, 8192) ||
-      value.origin_host !== "tableau.ucsd.edu" ||
+      value.origin_host !== new URL(this.#origin).host ||
       !Number.isInteger(value.expires_in) ||
       value.expires_in <= 0 ||
       value.expires_in > 2_592_000 ||
@@ -317,14 +470,15 @@ class TableauProvider {
       throw failure("wrong_site", "Sign in to the configured UCSD Tableau site and reconnect.");
     }
     const userName = session.user.name;
+    const label = this.#environment.label;
     return {
       version: 1,
-      origin: ORIGIN,
+      origin: this.#origin,
       siteContentUrl: this.#site,
       siteId: session.site.id,
       userId: session.user.id,
       clientId,
-      accountLabel: text(userName, 150) ? `${userName} · UCSD Tableau` : "UCSD Tableau",
+      accountLabel: text(userName, 150) ? `${userName} · ${label}` : label,
       ...tokens,
     };
   }
@@ -334,6 +488,12 @@ class TableauProvider {
     if (!flow) return;
     clearTimeout(flow.timer);
     await this.#closeListener(flow);
+  }
+  // Called by the environment router when the user switches away. This deliberately bypasses the
+  // operation queue so a long request elsewhere cannot keep an abandoned callback listener open.
+  // A stored credential and an in-flight code exchange are left alone.
+  cancelPendingSignIn() {
+    return this.#endFlow();
   }
   async #closeListener(flow) {
     if (flow.closePromise) return flow.closePromise;
@@ -480,7 +640,7 @@ class TableauProvider {
           }
         }, FLOW_MS);
         flow.timer.unref();
-        const url = new URL("/oauth2/v1/auth", ORIGIN);
+        const url = new URL("/oauth2/v1/auth", this.#origin);
         url.search = new URLSearchParams({
           client_id: flow.clientId,
           code_challenge: createHash("sha256").update(flow.verifier).digest("base64url"),
@@ -552,13 +712,13 @@ class TableauProvider {
         const c = await this.#session(this.#tokens(json), flow.clientId, signal);
         signal.throwIfAborted();
         this.#lifetime.signal.throwIfAborted();
-        await this.#secrets.set(SECRET, JSON.stringify(c));
+        await this.#secrets.set(this.#environment.secret, JSON.stringify(c));
         this.#rejectedToken = null;
         this.#message = null;
         return {
           state: "connected",
           retryAfterSeconds: null,
-          message: "Connected to UCSD Tableau.",
+          message: `Connected to ${this.#environment.label}.`,
         };
       } catch (error) {
         this.#message = resultError(error).message;
@@ -586,14 +746,14 @@ class TableauProvider {
         const next = { ...c, ...this.#tokens(json, c.refreshToken) };
         signal.throwIfAborted();
         this.#lifetime.signal.throwIfAborted();
-        await this.#secrets.set(SECRET, JSON.stringify(next));
+        await this.#secrets.set(this.#environment.secret, JSON.stringify(next));
         this.#message = null;
       } catch {
         // A rotated token may have been consumed even if the response was lost. Require
         // a new browser sign-in instead of repeatedly attempting an uncertain refresh.
         this.#rejectedToken = c.accessToken;
         this.#message = RECONNECT;
-        await this.#secrets.remove(SECRET);
+        await this.#secrets.remove(this.#environment.secret);
       }
     });
   }
@@ -603,13 +763,13 @@ class TableauProvider {
       const c = await this.#credential().catch(() => null);
       const signal = await context.beginCommit();
       await this.#endFlow();
-      await this.#secrets.remove(SECRET);
+      await this.#secrets.remove(this.#environment.secret);
       this.#changes.clear();
       this.#rejectedToken = c?.accessToken ?? null;
       this.#message = null;
       if (c) {
         try {
-          const response = await fetch(`${ORIGIN}${API}/auth/signout`, {
+          const response = await fetch(`${this.#origin}${API}/auth/signout`, {
             method: "POST",
             redirect: "error",
             headers: { "X-Tableau-Auth": c.accessToken },
@@ -625,7 +785,9 @@ class TableauProvider {
     });
   }
   #source(kind, value) {
-    const base = this.#site ? `${ORIGIN}/#/site/${encodeURIComponent(this.#site)}` : `${ORIGIN}/#`;
+    const base = this.#site
+      ? `${this.#origin}/#/site/${encodeURIComponent(this.#site)}`
+      : `${this.#origin}/#`;
     if (kind === "views" && text(value.contentUrl, 1024)) {
       const path = value.contentUrl
         .replace("/sheets/", "/")
@@ -1193,6 +1355,8 @@ class TableauChanges {
         "Apply a pending preview or wait for it to expire before preparing another.",
       );
     const preview = {
+      // Hashed with the rest of the preview, so the approved change names its target server.
+      environment: this.#api.environment,
       operation,
       resource,
       target: plan.before ?? { name: plan.name, projectId: plan.projectId },

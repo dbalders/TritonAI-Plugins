@@ -1,7 +1,8 @@
 # Tableau security
 
 This trusted backend package exposes thirteen read/preview tools and one opt-in write tool. Requests are confined to
-`https://tableau.ucsd.edu`, REST API 3.27, and fixed OAuth endpoints; redirects are rejected.
+the selected reviewed server, `https://tableau.ucsd.edu` (Prod) or `https://tableau-standby.ucsd.edu`
+(Dev), REST API 3.27, and fixed OAuth endpoints; redirects are rejected.
 UUID path segments, exact-name filters, pagination, and view filters are validated independently
 of the manifest. Agent input cannot supply an origin, arbitrary path, raw Tableau filter expression,
 SQL, access token, or credentials.
@@ -11,6 +12,14 @@ loopback listener. The callback validates method, Host, path, state, length, dup
 and expiry. It records the code in memory; only host-admitted lifecycle polling exchanges it.
 User and site are verified before persistence. Cancellation and close prevent new operations;
 lifecycle changes are serialized so disconnect cannot race a credential write.
+
+Prod and Dev are separate providers. Each one binds its sign-in, token exchange, `origin_host`
+check, API calls, sign-out, and stored credential to its own origin and secret name, so a token
+issued by one server is never sent to the other. Agent input cannot choose the environment; only
+the host's saved selection can, and an unknown selection is refused before any network activity.
+Previews are held per environment, so a preview prepared in one environment cannot be applied in
+the other; its hash also covers the target server. Every tool result names the environment and
+server that produced it.
 
 Credentials are stored only through the injected package secret facade. Token bodies and upstream
 error bodies are never logged or echoed. Empty refresh tokens are accepted, preserving the campus

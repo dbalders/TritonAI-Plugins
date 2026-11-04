@@ -10,6 +10,12 @@ The connection uses their own Tableau identity. Ask them to connect Tableau in P
 it is not connected. Sign-in opens on the computer running Harness; a remote/mobile browser
 cannot complete that computer's loopback callback. Never ask for a password or token in chat.
 
+Harness can point Tableau at Prod (`tableau.ucsd.edu`, the default) or Dev
+(`tableau-standby.ucsd.edu`); the user switches between them in Plugins, not through you.
+Every result's `environment` names the server that answered (`Prod` or `Dev`); previews include it
+too. When it is Dev (`tableau-standby.ucsd.edu`), say the answer or change is on the Dev/standby
+server, whose content may differ from Prod. Never treat Dev results or changes as Prod ones.
+
 ## Find the report
 
 Use `tableau.workbooks.list` and `tableau.views.list` to find accessible content. `name` means
