@@ -1299,3 +1299,13 @@ test("a Dev write is sent only to standby with the Dev token and its receipt nam
   assert.equal(writes.length, 1);
   assert.ok(f.calls.every((c) => c.origin === DEV_ORIGIN && c.token === accessFor(DEV_ORIGIN)));
 });
+
+test("the other environment's expired sign-in is not reported as signed in", async (t) => {
+  const f = environmentFixture(t);
+  await signIn(f, DEV);
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now + 14400_000);
+  const prod = await statusAt(PROD, f.provider);
+  assert.equal(prod.state, "not_connected");
+  assert.equal(prod.message, null);
+});

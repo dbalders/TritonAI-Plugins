@@ -134,12 +134,10 @@ const SWITCHED_ENVIRONMENT =
 // Prod, exactly as earlier releases did.
 class TableauEnvironmentProvider {
   id = "tableau";
-  #secrets;
   #providers;
   #active;
 
   constructor(secrets, site) {
-    this.#secrets = secrets;
     this.#providers = new Map(
       ENVIRONMENTS.map((environment) => [
         environment.id,
@@ -173,12 +171,7 @@ class TableauEnvironmentProvider {
     const names = [];
     for (const environment of ENVIRONMENTS) {
       if (environment.id === selected.id) continue;
-      try {
-        if ((await this.#secrets.get(environment.secret)) !== null)
-          names.push(environment.displayName);
-      } catch {
-        // The note is informational; the selected environment's own status stays authoritative.
-      }
+      if (await this.#providers.get(environment.id).signedIn()) names.push(environment.displayName);
     }
     return names;
   }
@@ -494,6 +487,15 @@ class TableauProvider {
   // A stored credential and an in-flight code exchange are left alone.
   cancelPendingSignIn() {
     return this.#endFlow();
+  }
+  // Whether this environment's status would report connected. UCSD sessions expire after about
+  // four hours without a refresh token, so a stored credential alone is not a usable sign-in.
+  async signedIn() {
+    try {
+      return Boolean(this.#usable(await this.#credential()));
+    } catch {
+      return false;
+    }
   }
   async #closeListener(flow) {
     if (flow.closePromise) return flow.closePromise;
