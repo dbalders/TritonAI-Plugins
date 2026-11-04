@@ -71,8 +71,9 @@ const token = (overrides = {}) =>
     origin_host: "tableau.ucsd.edu",
     ...overrides,
   });
-const invoke = (p, name, input) =>
+const invoke = (p, name, input, serviceEnvironment) =>
   p.invoke(name, input, {
+    ...(serviceEnvironment === undefined ? {} : { serviceEnvironment }),
     signal: new AbortController().signal,
     writeApproved: false,
     beginCommit: async () => {
@@ -99,6 +100,8 @@ test("rejects alternate origins, extra configuration, and unsafe sites", () => {
   for (const configuration of [
     { serverUrl: "https://evil.example" },
     { serverUrl: ORIGIN + "/" },
+    // Dev is chosen with the host's environment switch, never through managed configuration.
+    { serverUrl: "https://tableau-standby.ucsd.edu" },
     { token: "secret" },
     { siteContentUrl: "../x" },
   ]) {
@@ -954,4 +957,355 @@ test("malformed callback URLs return 400 without terminating the host or consumi
   );
   assert.equal(child.status, 0, child.stderr);
   assert.deepEqual(JSON.parse(child.stdout), { malformed: 400, legitimate: 200 });
+});
+
+// Prod / Dev service environments. Each environment has its own server, sign-in and credential.
+const DEV_ORIGIN = "https://tableau-standby.ucsd.edu";
+const PROD = "production";
+const DEV = "development";
+const at = (environment, context) =>
+  environment === undefined ? context : { ...context, serviceEnvironment: environment };
+const accessFor = (origin) => `${new URL(origin).host}-access`;
+function environmentFixture(t, respond = () => undefined, secretGate = () => undefined) {
+  const values = new Map();
+  const calls = [];
+  const secrets = {
+    get: async (key) => {
+      await secretGate(key);
+      return values.get(key) ?? null;
+    },
+    set: async (key, value) => {
+      values.set(key, value);
+    },
+    remove: async (key) => {
+      values.delete(key);
+    },
+  };
+  const provider = createIntegrationProvider({ secrets, configuration: {} });
+  t.after(() => provider.close());
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    const target = new URL(String(url));
+    assert.ok([ORIGIN, DEV_ORIGIN].includes(target.origin), `unexpected origin ${target.origin}`);
+    assert.equal(options.redirect, "error");
+    calls.push({
+      url: String(url),
+      origin: target.origin,
+      method: options.method ?? "GET",
+      token: options.headers?.["X-Tableau-Auth"] ?? null,
+    });
+    const custom = await respond(target, options);
+    if (custom) return custom;
+    if (target.pathname === "/oauth2/v1/token")
+      return token({ access_token: accessFor(target.origin), origin_host: target.host });
+    if (target.pathname.endsWith("/sessions/current")) return Response.json(session);
+    if (target.pathname.endsWith("/auth/signout")) return new Response(null, { status: 204 });
+    if (target.pathname.endsWith("/workbooks"))
+      return Response.json({
+        pagination: { pageNumber: "1", pageSize: "25", totalAvailable: "1" },
+        workbooks: { workbook: [{ id: WORKBOOK, name: `Report on ${target.host}` }] },
+      });
+    if (target.pathname.endsWith(`/workbooks/${WORKBOOK}`))
+      return Response.json({ workbook: metadata() });
+    return Response.json({});
+  });
+  return { provider, values, calls, secrets };
+}
+async function startSignIn(f, environment) {
+  const flow = await f.provider.connect(["read"], at(environment, lifecycle()));
+  const url = new URL(flow.authorizationUrl);
+  const callback = new URL(url.searchParams.get("redirect_uri"));
+  callback.searchParams.set("state", url.searchParams.get("state"));
+  callback.searchParams.set("code", "one-use-code");
+  return { flow, url, callback };
+}
+async function signIn(f, environment) {
+  const { flow, url, callback } = await startSignIn(f, environment);
+  assert.equal((await realFetch(callback)).status, 200);
+  return { url, result: await f.provider.poll(flow.flowId, at(environment, lifecycle())) };
+}
+const invokeAt = (environment, p, name, input) => invoke(p, name, input, environment);
+const statusAt = (environment, p) => p.status(at(environment, lifecycle()));
+
+test("manifest offers Prod by default and Dev on tableau-standby, and requires host level 3", async () => {
+  const manifest = validateManifestV1(
+    JSON.parse(await readFile(new URL("../.tritonai-plugin/plugin.json", import.meta.url))),
+  );
+  assert.deepEqual(manifest.serviceEnvironments, [
+    { id: PROD, displayName: "Prod", description: "tableau.ucsd.edu" },
+    { id: DEV, displayName: "Dev", description: "tableau-standby.ucsd.edu" },
+  ]);
+  assert.equal(manifest.sdk.requiredHostContractLevel, 3);
+});
+
+test("Dev signs in on tableau-standby with its own credential and leaves Prod untouched", async (t) => {
+  const f = environmentFixture(t);
+  const dev = await signIn(f, DEV);
+  assert.equal(dev.url.origin, DEV_ORIGIN);
+  assert.equal(dev.result.state, "connected");
+  assert.equal(dev.result.message, "Connected to UCSD Tableau Dev.");
+  assert.ok(f.calls.every((c) => c.origin === DEV_ORIGIN));
+  assert.deepEqual([...f.values.keys()], ["development.connection"]);
+  const stored = JSON.parse(f.values.get("development.connection"));
+  assert.equal(stored.origin, DEV_ORIGIN);
+  assert.equal(stored.accountLabel, "test.user · UCSD Tableau Dev");
+
+  const prodBefore = await statusAt(PROD, f.provider);
+  assert.equal(prodBefore.state, "not_connected");
+  assert.equal(prodBefore.message, "Still signed in to Dev.");
+  assert.equal((await statusAt(DEV, f.provider)).state, "connected");
+
+  const prod = await signIn(f, PROD);
+  assert.equal(prod.url.origin, ORIGIN);
+  assert.equal(JSON.parse(f.values.get("connection")).origin, ORIGIN);
+  const devAfter = await statusAt(DEV, f.provider);
+  assert.equal(devAfter.state, "connected");
+  assert.match(devAfter.message, /Also signed in to Prod\.$/u);
+  // Hosts that predate environments get Prod, as before.
+  assert.equal((await statusAt(undefined, f.provider)).accountLabel, "test.user · UCSD Tableau");
+});
+
+test("each environment's token reaches only its own server, and links follow the selection", async (t) => {
+  const f = environmentFixture(t);
+  await signIn(f, DEV);
+  await signIn(f, PROD);
+  for (const [environment, origin] of [
+    [DEV, DEV_ORIGIN],
+    [PROD, ORIGIN],
+    [undefined, ORIGIN],
+  ]) {
+    f.calls.length = 0;
+    const result = await invokeAt(environment, f.provider, "tableau.workbooks.list", {});
+    assert.equal(result.status, "ok");
+    assert.equal(result.workbooks[0].name, `Report on ${new URL(origin).host}`);
+    assert.ok(result.workbooks[0].sourceUrl.startsWith(`${origin}/#`));
+    assert.ok(f.calls.length > 0);
+    assert.ok(f.calls.every((c) => c.origin === origin && c.token === accessFor(origin)));
+    assert.deepEqual(result.environment, {
+      id: environment ?? PROD,
+      name: origin === DEV_ORIGIN ? "Dev" : "Prod",
+      server: new URL(origin).host,
+    });
+  }
+});
+
+test("a sign-in is refused when Tableau reports the other server's host", async (t) => {
+  for (const [environment, wrongHost] of [
+    [DEV, "tableau.ucsd.edu"],
+    [PROD, "tableau-standby.ucsd.edu"],
+  ]) {
+    const f = environmentFixture(t, (target) =>
+      target.pathname === "/oauth2/v1/token" ? token({ origin_host: wrongHost }) : undefined,
+    );
+    assert.equal((await signIn(f, environment)).result.state, "failed");
+    assert.equal(f.values.size, 0);
+  }
+});
+
+test("a credential stored for Prod is never used for Dev", async (t) => {
+  const f = environmentFixture(t);
+  await signIn(f, PROD);
+  f.values.set("development.connection", f.values.get("connection"));
+  f.calls.length = 0;
+  assert.equal((await statusAt(DEV, f.provider)).state, "error");
+  assert.equal(
+    (await invokeAt(DEV, f.provider, "tableau.workbooks.list", {})).code,
+    "invalid_credential",
+  );
+  assert.equal(f.calls.length, 0);
+});
+
+test("disconnecting Dev signs out of standby only and keeps the Prod sign-in", async (t) => {
+  const f = environmentFixture(t);
+  await signIn(f, PROD);
+  await signIn(f, DEV);
+  f.calls.length = 0;
+  await f.provider.disconnect(at(DEV, lifecycle()));
+  assert.deepEqual([...f.values.keys()], ["connection"]);
+  assert.deepEqual(
+    f.calls.map((c) => [c.origin, new URL(c.url).pathname, c.token]),
+    [[DEV_ORIGIN, "/api/3.27/auth/signout", accessFor(DEV_ORIGIN)]],
+  );
+  assert.equal((await statusAt(PROD, f.provider)).state, "connected");
+  assert.equal((await statusAt(DEV, f.provider)).state, "not_connected");
+});
+
+test("switching closes a sign-in still pending in the other environment", async (t) => {
+  const f = environmentFixture(t);
+  const { flow, callback } = await startSignIn(f, DEV);
+  assert.equal((await statusAt(PROD, f.provider)).state, "not_connected");
+  await assert.rejects(realFetch(callback));
+  const poll = await f.provider.poll(flow.flowId, at(DEV, lifecycle()));
+  assert.equal(poll.state, "expired");
+  assert.equal(f.values.size, 0);
+  assert.equal(f.calls.length, 0);
+});
+
+test("a switch during sign-in start refuses or closes that sign-in", async (t) => {
+  // Switched before the sign-in started: refused as retryable, nothing listens.
+  const early = environmentFixture(t);
+  const refused = early.provider.connect(["read"], at(DEV, lifecycle()));
+  await statusAt(PROD, early.provider);
+  await assert.rejects(refused, (e) => e.code === "environment_switched" && e.retryable === true);
+
+  // Switched after the sign-in started but before it returned: the listener is closed.
+  let release;
+  let reached;
+  const gateReached = new Promise((resolve) => (reached = resolve));
+  const gate = new Promise((resolve) => (release = resolve));
+  let gated = false;
+  const f = environmentFixture(t, undefined, async (key) => {
+    if (key === "development.connection" && !gated) {
+      gated = true;
+      reached();
+      await gate;
+    }
+  });
+  const pending = f.provider.connect(["read"], at(DEV, lifecycle()));
+  await gateReached;
+  await statusAt(PROD, f.provider);
+  release();
+  const flow = await pending;
+  assert.equal(flow.kind, "authorization_url");
+  await assert.rejects(realFetch(new URL(flow.authorizationUrl).searchParams.get("redirect_uri")));
+});
+
+test("a preview prepared in Prod cannot be applied in Dev", async (t) => {
+  const f = environmentFixture(t);
+  await signIn(f, PROD);
+  await signIn(f, DEV);
+  const plan = await invokeAt(PROD, f.provider, "tableau.changes.prepare", {
+    operation: "update",
+    resource: "workbooks",
+    id: WORKBOOK,
+    changes: { name: "New report" },
+  });
+  assert.equal(plan.status, "preview");
+  f.calls.length = 0;
+  await assert.rejects(
+    f.provider.invoke(
+      "tableau.changes.apply",
+      { planId: plan.planId, previewHash: plan.previewHash },
+      { ...lifecycle(), writeApproved: true, serviceEnvironment: DEV },
+    ),
+    (e) => e.code === "preview_required",
+  );
+  assert.equal(f.calls.filter((c) => c.method !== "GET").length, 0);
+});
+
+test("an unknown environment is refused without network activity", async (t) => {
+  const f = environmentFixture(t);
+  const status = await statusAt("staging", f.provider);
+  assert.equal(status.state, "error");
+  await assert.rejects(
+    f.provider.connect(["read"], at("staging", lifecycle())),
+    (e) => e.code === "unknown_environment",
+  );
+  await assert.rejects(
+    invokeAt("staging", f.provider, "tableau.workbooks.list", {}),
+    (e) => e.code === "unknown_environment",
+  );
+  assert.equal(f.calls.length, 0);
+});
+
+const DEV_LABEL = { id: DEV, name: "Dev", server: "tableau-standby.ucsd.edu" };
+const PROD_LABEL = { id: PROD, name: "Prod", server: "tableau.ucsd.edu" };
+
+test("previews, jobs, connections, and errors name their environment; preview hashes cover it", async (t) => {
+  const f = environmentFixture(t, (target) => {
+    if (target.pathname.endsWith(`/jobs/${JOB}`))
+      return Response.json({ job: { id: JOB, type: "RefreshExtract", progress: "100" } });
+    if (target.pathname.endsWith("/connections"))
+      return Response.json({ connections: { connection: [{ id: CONNECTION, type: "hyper" }] } });
+    return undefined;
+  });
+  await signIn(f, PROD);
+  await signIn(f, DEV);
+  const change = {
+    operation: "update",
+    resource: "workbooks",
+    id: WORKBOOK,
+    changes: { name: "N" },
+  };
+  const prod = await invokeAt(PROD, f.provider, "tableau.changes.prepare", change);
+  const dev = await invokeAt(DEV, f.provider, "tableau.changes.prepare", change);
+  assert.deepEqual(dev.environment, DEV_LABEL);
+  assert.deepEqual(dev.preview.environment, DEV_LABEL);
+  assert.deepEqual(prod.preview.environment, PROD_LABEL);
+  assert.notEqual(dev.previewHash, prod.previewHash);
+  assert.deepEqual(
+    (await invokeAt(DEV, f.provider, "tableau.jobs.get", { id: JOB })).environment,
+    DEV_LABEL,
+  );
+  assert.deepEqual(
+    (await invokeAt(DEV, f.provider, "tableau.datasources.connections", { id: WORKBOOK }))
+      .environment,
+    DEV_LABEL,
+  );
+  await f.provider.disconnect(at(DEV, lifecycle()));
+  const reconnect = await invokeAt(DEV, f.provider, "tableau.workbooks.list", {});
+  assert.equal(reconnect.status, "connection_required");
+  assert.deepEqual(reconnect.environment, DEV_LABEL);
+});
+
+test("Dev refreshes on standby with its own refresh token and leaves Prod byte-identical", async (t) => {
+  const f = environmentFixture(t, (target, options) => {
+    if (target.pathname !== "/oauth2/v1/token") return undefined;
+    const refreshing = options.body.get("grant_type") === "refresh_token";
+    return token({
+      access_token: refreshing ? `${target.host}-refreshed` : accessFor(target.origin),
+      refresh_token: refreshing ? `${target.host}-refresh-2` : `${target.host}-refresh`,
+      origin_host: target.host,
+    });
+  });
+  await signIn(f, PROD);
+  await signIn(f, DEV);
+  const prodBefore = f.values.get("connection");
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now + 14400_000);
+  f.calls.length = 0;
+  await f.provider.prepare(at(DEV, lifecycle()));
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].origin, DEV_ORIGIN);
+  const stored = JSON.parse(f.values.get("development.connection"));
+  assert.equal(stored.accessToken, "tableau-standby.ucsd.edu-refreshed");
+  assert.equal(stored.refreshToken, "tableau-standby.ucsd.edu-refresh-2");
+  assert.equal(f.values.get("connection"), prodBefore);
+  assert.equal((await statusAt(DEV, f.provider)).state, "connected");
+});
+
+test("a Dev write is sent only to standby with the Dev token and its receipt names Dev", async (t) => {
+  const f = environmentFixture(t, (target, options) =>
+    (options.method ?? "GET") !== "GET" && target.pathname.endsWith(`/workbooks/${WORKBOOK}`)
+      ? Response.json({ workbook: { ...metadata(), ...JSON.parse(options.body).workbook } })
+      : undefined,
+  );
+  await signIn(f, PROD);
+  await signIn(f, DEV);
+  const plan = await invokeAt(DEV, f.provider, "tableau.changes.prepare", {
+    operation: "update",
+    resource: "workbooks",
+    id: WORKBOOK,
+    changes: { name: "Dev only" },
+  });
+  f.calls.length = 0;
+  const receipt = await f.provider.invoke(
+    "tableau.changes.apply",
+    { planId: plan.planId, previewHash: plan.previewHash },
+    { ...lifecycle(), writeApproved: true, serviceEnvironment: DEV },
+  );
+  assert.equal(receipt.status, "applied");
+  assert.deepEqual(receipt.environment, DEV_LABEL);
+  const writes = f.calls.filter((c) => c.method !== "GET");
+  assert.equal(writes.length, 1);
+  assert.ok(f.calls.every((c) => c.origin === DEV_ORIGIN && c.token === accessFor(DEV_ORIGIN)));
+});
+
+test("the other environment's expired sign-in is not reported as signed in", async (t) => {
+  const f = environmentFixture(t);
+  await signIn(f, DEV);
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now + 14400_000);
+  const prod = await statusAt(PROD, f.provider);
+  assert.equal(prod.state, "not_connected");
+  assert.equal(prod.message, null);
 });

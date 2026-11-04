@@ -24,17 +24,43 @@ The provider refreshes expired access during host lifecycle preparation only whe
 exists. Otherwise it reports that reconnect is needed. It never opens browsers in the background,
 asks for passwords in chat, or promises uninterrupted unattended operation.
 
-## Configuration
+## Configuration and environments
 
-The configuration is optional fields only:
+The plugin can reach two reviewed UCSD Tableau servers, and the user picks one in Harness:
+
+| Environment    | Server                             | Stored sign-in           |
+| -------------- | ---------------------------------- | ------------------------ |
+| Prod (default) | `https://tableau.ucsd.edu`         | `connection`             |
+| Dev            | `https://tableau-standby.ucsd.edu` | `development.connection` |
+
+The managed configuration is optional fields only:
 
 ```json
 { "serverUrl": "https://tableau.ucsd.edu", "siteContentUrl": "" }
 ```
 
-The origin is fixed. An empty site content URL means Default. Other site content URLs must be
-explicitly configured and must match the authenticated session. Tokens live only in the host's
-package-scoped secret store. The API version is pinned to 3.27, as verified against UCSD 2025.3.8.
+It rejects extra fields and any other server URL, including Dev. Dev is a reviewed constant in the
+plugin, selected only through the host's service-environment choice. Each environment keeps sign-in,
+token exchange, API calls, sign-out, and source links on its own origin, and its stored credential
+is bound to that origin and to the token response's `origin_host`.
+
+The manifest declares both as `serviceEnvironments` (Prod first), which requires Harness host
+contract level 3; older hosts refuse this version instead of loading it without the switch. Harness
+saves the user's choice and passes it to every operation as `context.serviceEnvironment`. Each
+environment has its own sign-in, previews, and stored credential, so switching never signs the user
+out of the other one, and a preview prepared in one environment cannot be applied in the other.
+Every tool result carries `environment` (`id`, `name` Prod or Dev, and `server`), and a preview
+includes it in the content its hash covers, so an approved change names the server it will change.
+Disconnecting affects only the selected environment. Switching closes a sign-in still pending in
+the other environment. A host that sends no selection gets Prod, and existing Prod sign-ins keep
+working without reconnecting. When the other environment also has a stored sign-in, the status
+message says so (for example, "Also signed in to Prod.").
+
+An empty site content URL means Default, and the same site is used in both environments. Other site
+content URLs must be explicitly configured and must match the authenticated session. Tokens live
+only in the host's package-scoped secret store. The API version is pinned to 3.27, as verified
+against UCSD Prod 2025.3.8; Dev (standby) reported 2025.3.11 with the same API version on 2026-11-04.
+Dev uses the same built-in Tableau OAuth flow as Prod and needs no separate client registration.
 
 ## Tools and bounds
 
