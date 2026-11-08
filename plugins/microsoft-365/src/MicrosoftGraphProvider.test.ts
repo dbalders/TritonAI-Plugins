@@ -1357,6 +1357,10 @@ describe("MicrosoftGraphProvider tools", () => {
               from: { emailAddress: { name: "Person", address: "person@example.edu" } },
               receivedDateTime: "2026-07-15T10:00:00Z",
               isRead: false,
+              flag: {
+                flagStatus: "flagged",
+                dueDateTime: { dateTime: "2026-07-16T00:00:00", timeZone: "UTC" },
+              },
               bodyPreview: "Quarterly budget review",
               hasAttachments: true,
               fixtureProperty: { preserved: true },
@@ -1367,6 +1371,7 @@ describe("MicrosoftGraphProvider tools", () => {
               from: { emailAddress: null },
               receivedDateTime: "2026-07-15T11:00:00Z",
               isRead: true,
+              flag: { flagStatus: "complete" },
               bodyPreview: null,
               hasAttachments: false,
             },
@@ -1380,6 +1385,7 @@ describe("MicrosoftGraphProvider tools", () => {
         from: { emailAddress: { name: "Person", address: "person@example.edu" } },
         receivedDateTime: "2026-07-15T10:00:00Z",
         isRead: false,
+        flag: { flagStatus: "notFlagged" },
         body: { contentType: "html", content: "<p>Complete email body</p>" },
         toRecipients: [{ emailAddress: { address: "recipient@example.edu" } }],
         fixtureProperty: { preserved: true },
@@ -1400,6 +1406,7 @@ describe("MicrosoftGraphProvider tools", () => {
           from: { name: "Person", address: "person@example.edu" },
           receivedDateTime: "2026-07-15T10:00:00Z",
           isRead: false,
+          flagStatus: "flagged",
           preview: "Quarterly budget review",
           previewIsPartial: true,
           hasAttachments: true,
@@ -1410,6 +1417,7 @@ describe("MicrosoftGraphProvider tools", () => {
           from: null,
           receivedDateTime: "2026-07-15T11:00:00Z",
           isRead: true,
+          flagStatus: "complete",
           preview: null,
           previewIsPartial: false,
           hasAttachments: false,
@@ -1426,6 +1434,7 @@ describe("MicrosoftGraphProvider tools", () => {
       from: { name: "Person", address: "person@example.edu" },
       receivedDateTime: "2026-07-15T10:00:00Z",
       isRead: false,
+      flagStatus: "notFlagged",
       body: {
         contentType: "html",
         content: "<p>Complete email body</p>",
@@ -1437,11 +1446,11 @@ describe("MicrosoftGraphProvider tools", () => {
     expect(graphUrl.startsWith("https://graph.microsoft.com/v1.0/me/messages?")).toBe(true);
     expect(graphUrl).toContain("%24top=5");
     expect(decodeURIComponent(graphUrl)).toContain(
-      "$select=id,subject,from,receivedDateTime,isRead,bodyPreview,hasAttachments",
+      "$select=id,subject,from,receivedDateTime,isRead,flag,bodyPreview,hasAttachments",
     );
     expect(graphUrl).not.toContain("Q4%22");
     expect(calls.at(-1)?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture?%24select=id%2Csubject%2Cfrom%2CreceivedDateTime%2CisRead%2Cbody",
+      "https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture?%24select=id%2Csubject%2Cfrom%2CreceivedDateTime%2CisRead%2Cflag%2Cbody",
     );
     expect(new Headers(calls.at(-1)?.init?.headers).get("Prefer")).toBe(
       'outlook.body-content-type="text"',
@@ -3297,6 +3306,7 @@ describe("MicrosoftGraphProvider tools", () => {
       from: { name: "Person", address: "person@example.edu" },
       receivedDateTime: "2026-07-15T10:00:00Z",
       isRead: false,
+      flagStatus: null,
       body: {
         contentType: "html",
         content: bodyContent.slice(0, 50_000),
