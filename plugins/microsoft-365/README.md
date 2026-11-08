@@ -79,13 +79,18 @@ bounded. Pagination links are neither followed nor returned; collection results 
 `hasMore` boolean. Draft bodies and chat messages use plain text; draft file contents use base64 as
 required by Microsoft Graph.
 
-Mail search and calendar-view requests only identification fields, previews, and attachment
-presence. Exact message reads request a narrow field set and prefer a plain-text body. Every tool
-result uses an explicit, byte-bounded projection. A projected body's `truncated` field reports
-provider truncation, while `previewIsPartial` is true for every non-null Graph preview because the
-upstream preview is semantically partial. Unknown Graph fields and server-provided continuation
-URLs are not included. Chat messages with no returned content use `body: null`; oversized chat
-collections retain the leading projected messages that fit and set `hasMore`.
+Mail search requests only identification fields, read state, the follow-up flag, previews, and
+attachment presence; calendar view requests only identification fields, previews, and attachment
+presence. Exact message reads request a narrow field set and prefer a plain-text body. Both mail
+tools return the Outlook follow-up flag as `flagStatus` (`notFlagged`, `flagged`, `complete`, or
+`null` when Graph returns no recognized status). Graph currently leaves the flag out of `$search`
+results, so keyword searches report `null`; listing the Inbox (no or blank `query`) and exact reads
+report the flag. Every tool result uses an explicit, byte-bounded projection. A projected body's
+`truncated` field reports provider truncation, while `previewIsPartial` is true for every non-null
+Graph preview because the upstream preview is semantically partial. Unknown Graph fields and
+server-provided continuation URLs are not included. Chat messages with no returned content use
+`body: null`; oversized chat collections retain the leading projected messages that fit and set
+`hasMore`.
 
 Attachment list tools request metadata only so file bytes cannot make the list unusable; each file
 also gets a `category` from its name and declared type. The single-attachment tools read metadata

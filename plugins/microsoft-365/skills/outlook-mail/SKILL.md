@@ -9,6 +9,10 @@ Use the narrow mail tool that matches the request:
 
 - Use `microsoft365.mail.search` to identify messages from bounded metadata and previews. Omit
   `query` to list the newest Inbox messages, for example when the user asks for their latest email.
+  Each message includes `isRead` and its Outlook follow-up flag as `flagStatus` (`notFlagged`,
+  `flagged`, or `complete`). Microsoft leaves the flag out of `query` results, so `flagStatus` is
+  `null` there: never treat `null` as not flagged. List the Inbox or read the exact message with
+  `microsoft365.mail.get` before acting on a flag.
 - Use `microsoft365.mail.get` with an exact message ID when the projected message body or other
   projected message fields are needed.
 - Use `microsoft365.mail.folders.list` to resolve an exact existing destination folder.
