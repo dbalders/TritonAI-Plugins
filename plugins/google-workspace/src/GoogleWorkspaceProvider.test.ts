@@ -134,6 +134,8 @@ interface OAuthFixtureOptions {
   /** Replaces the refresh response for the given 1-based refresh attempt. */
   readonly refreshFailure?: (attempt: number) => Promise<Response> | undefined;
   readonly revokeStatus?: number;
+  /** Google's error code for a refused revocation, answered as HTTP 400. */
+  readonly revokeError?: string;
   readonly api?: (url: string, init?: RequestInit) => Promise<Response> | Response;
   readonly requestTimeoutMs?: number;
   readonly beforeAuthorizationCodeTokenResponse?: () => Promise<void>;
@@ -189,7 +191,9 @@ function oauthFixture(options: OAuthFixtureOptions = {}) {
       );
     }
     if (url === "https://oauth2.googleapis.com/revoke") {
-      return new Response("", { status: options.revokeStatus ?? 200 });
+      return options.revokeError === undefined
+        ? new Response("", { status: options.revokeStatus ?? 200 })
+        : jsonResponse({ error: options.revokeError }, 400);
     }
     if (options.api) return options.api(url, init);
     return jsonResponse({ error: { message: "unexpected fixture request" } }, 500);
@@ -965,6 +969,23 @@ describe("GoogleWorkspaceProvider authorization", () => {
       await expect(fixture.provider.connect(["mail.read"], lifecycle())).rejects.toThrow(
         /uncertain/u,
       );
+    } finally {
+      await fixture.provider.close();
+    }
+  });
+
+  it("clears a credential Google already revoked so the user can reconnect", async () => {
+    const fixture = oauthFixture({ revokeError: "invalid_token" });
+    try {
+      await fixture.complete(["identity.read", "mail.read"]);
+
+      await fixture.provider.disconnect(lifecycle());
+
+      expect(fixture.secrets.values.has(GOOGLE_WORKSPACE_SECRET_SUFFIX)).toBe(false);
+      await expect(fixture.provider.status()).resolves.toMatchObject({ state: "not_connected" });
+      await expect(
+        fixture.provider.connect(["identity.read", "mail.read"], lifecycle()),
+      ).resolves.toMatchObject({ kind: "authorization_url" });
     } finally {
       await fixture.provider.close();
     }
