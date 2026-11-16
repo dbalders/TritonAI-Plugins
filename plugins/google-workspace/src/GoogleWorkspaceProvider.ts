@@ -2472,7 +2472,7 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
   }
 
   async #revokeToken(token: string, signal: AbortSignal): Promise<void> {
-    const { response } = await this.#request(
+    const { response, bytes } = await this.#request(
       REVOCATION_ENDPOINT,
       {
         method: "POST",
@@ -2482,11 +2482,19 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
       },
       64 * 1024,
     );
-    if (!response.ok) {
-      throw new IntegrationProviderPublicError(
-        "Google Workspace could not revoke the credential. Try disconnecting again.",
-      );
+    if (response.ok) return;
+    if (response.status === 400) {
+      // Google answers invalid_token for a token it no longer honors, such as after the user
+      // removed this app's access in their Google Account. Nothing is left to revoke.
+      try {
+        if (parseJsonResponse(response, bytes).error === "invalid_token") return;
+      } catch {
+        // Any other refusal leaves the credential's state unknown.
+      }
     }
+    throw new IntegrationProviderPublicError(
+      "Google Workspace could not revoke the credential. Try disconnecting again.",
+    );
   }
 
   async poll(
