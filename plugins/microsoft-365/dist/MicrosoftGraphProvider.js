@@ -2036,6 +2036,12 @@ export class MicrosoftGraphProvider {
             this.#assertInvocationCurrent(generation);
             deletionFolderIds.add(boundedString(folder.id, 512));
         }
+        // Graph never reports a null parent for the mailbox root (msgfolderroot): it points at a hidden,
+        // self-parented store root. The walk stops at the mailbox root once every folder on the way
+        // has been checked; a folder outside it, such as one under Recoverable Items, still fails closed.
+        const mailboxRoot = await this.#graph(`/me/mailFolders/msgfolderroot?${selectId.toString()}`, accessToken, { signal });
+        this.#assertInvocationCurrent(generation);
+        const mailboxRootId = boundedString(mailboxRoot.id, 512);
         const visitedFolderIds = new Set();
         const selectAncestry = new URLSearchParams({ $select: "id,parentFolderId" });
         let currentFolderId = initialFolderId;
@@ -2051,6 +2057,8 @@ export class MicrosoftGraphProvider {
             const resolvedFolderId = boundedString(folder.id, 512);
             if (deletionFolderIds.has(resolvedFolderId))
                 throw deletionFolderError();
+            if (resolvedFolderId === mailboxRootId)
+                return;
             if (resolvedFolderId !== currentFolderId) {
                 if (visitedFolderIds.has(resolvedFolderId)) {
                     throw new IntegrationProviderPublicError("Microsoft 365 could not safely verify the mail folder hierarchy.", { unchanged: true });
