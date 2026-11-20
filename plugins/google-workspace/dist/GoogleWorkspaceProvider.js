@@ -3207,7 +3207,7 @@ export class GoogleWorkspaceProvider {
             url.searchParams.set("orderBy", "startTime");
             url.searchParams.set("showDeleted", "false");
             url.searchParams.set("maxResults", String(limit));
-            url.searchParams.set("fields", "nextPageToken,items(id,status,summary,description,location,start,end,organizer,creator,recurringEventId,hangoutLink,conferenceData(conferenceId,conferenceSolution(key,type,name),entryPoints(entryPointType,uri,label)),attachments(fileId,title,mimeType))");
+            url.searchParams.set("fields", "nextPageToken,items(id,status,summary,description,location,start,end,organizer,creator,recurringEventId,hangoutLink,conferenceData(conferenceId,conferenceSolution(key(type),name),entryPoints(entryPointType,uri,label)),attachments(fileId,title,mimeType))");
             if (pageToken)
                 url.searchParams.set("pageToken", pageToken);
             const json = await this.#apiJson(url, access.value, {
@@ -3229,7 +3229,7 @@ export class GoogleWorkspaceProvider {
             const access = this.#requireAccess("calendar.read");
             const calendarId = values.calendarId ?? "primary";
             const url = new URL(`${CALENDAR_API}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(values.eventId)}`);
-            url.searchParams.set("fields", "id,status,summary,description,location,start,end,organizer,creator,recurringEventId,hangoutLink,conferenceData(conferenceId,conferenceSolution(key,type,name),entryPoints(entryPointType,uri,label)),attachments(fileId,title,mimeType)");
+            url.searchParams.set("fields", "id,status,summary,description,location,start,end,organizer,creator,recurringEventId,hangoutLink,conferenceData(conferenceId,conferenceSolution(key(type),name),entryPoints(entryPointType,uri,label)),attachments(fileId,title,mimeType)");
             const result = projectCalendarEvent(await this.#apiJson(url, access.value, {
                 signal: context?.signal,
                 maximumBytes: JSON_RESPONSE_BYTES,

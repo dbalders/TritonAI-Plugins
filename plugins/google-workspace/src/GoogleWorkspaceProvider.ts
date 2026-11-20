@@ -3889,7 +3889,7 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
       url.searchParams.set("maxResults", String(limit));
       url.searchParams.set(
         "fields",
-        "nextPageToken,items(id,status,summary,description,location,start,end,organizer,creator,recurringEventId,hangoutLink,conferenceData(conferenceId,conferenceSolution(key,type,name),entryPoints(entryPointType,uri,label)),attachments(fileId,title,mimeType))",
+        "nextPageToken,items(id,status,summary,description,location,start,end,organizer,creator,recurringEventId,hangoutLink,conferenceData(conferenceId,conferenceSolution(key(type),name),entryPoints(entryPointType,uri,label)),attachments(fileId,title,mimeType))",
       );
       if (pageToken) url.searchParams.set("pageToken", pageToken);
       const json = await this.#apiJson(url, access.value, {
@@ -3922,7 +3922,7 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
       );
       url.searchParams.set(
         "fields",
-        "id,status,summary,description,location,start,end,organizer,creator,recurringEventId,hangoutLink,conferenceData(conferenceId,conferenceSolution(key,type,name),entryPoints(entryPointType,uri,label)),attachments(fileId,title,mimeType)",
+        "id,status,summary,description,location,start,end,organizer,creator,recurringEventId,hangoutLink,conferenceData(conferenceId,conferenceSolution(key(type),name),entryPoints(entryPointType,uri,label)),attachments(fileId,title,mimeType)",
       );
       const result = projectCalendarEvent(
         await this.#apiJson(url, access.value, {
