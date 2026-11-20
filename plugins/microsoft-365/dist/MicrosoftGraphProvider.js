@@ -20,6 +20,7 @@ const TEAMS_WEB_HOSTS = new Set(["teams.cloud.microsoft", "teams.microsoft.com"]
 // OneDrive for Business web and pre-authenticated download URLs live on the tenant's own
 // SharePoint host, such as contoso-my.sharepoint.com, so only the fixed suffix is allowlisted.
 const SHAREPOINT_HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.sharepoint\.com$/u;
+const PROVIDER_ERROR_CODE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u;
 const OFFLINE_SCOPE = "offline_access";
 const OIDC_RESPONSE_SCOPES = new Set(["openid", "profile", "email"]);
 const DELETION_MOVE_DESTINATIONS = new Set(["deleteditems", "recoverableitemsdeletions"]);
@@ -1517,11 +1518,25 @@ function eventBody(values) {
     };
 }
 /**
+ * Graph's machine-readable `error.code`, only when it is a plain token. Graph's error message can
+ * quote mailbox, calendar, or file content, so it is never kept.
+ */
+function graphErrorCode(json) {
+    const error = json?.error;
+    const code = error && typeof error === "object" && !Array.isArray(error)
+        ? error.code
+        : undefined;
+    return typeof code === "string" && PROVIDER_ERROR_CODE.test(code) ? code : null;
+}
+/**
  * Each write sends one mutating request, after only reads, so a client-error response anywhere in
  * a write means Microsoft refused it and nothing changed. 408 is a timeout whose outcome is unknown.
  */
-function graphRefusal(status) {
-    const refused = (message) => new IntegrationProviderPublicError(message, { unchanged: true });
+function graphRefusal(status, json) {
+    const code = graphErrorCode(json);
+    const refused = (message) => new IntegrationProviderPublicError(code === null ? message : `${message} (Graph: ${code})`, {
+        unchanged: true,
+    });
     if (status === 401) {
         return refused("The Microsoft 365 session expired. Refresh access and try again.");
     }
@@ -2084,7 +2099,7 @@ export class MicrosoftGraphProvider {
         }
         const { response, json } = request;
         if (!response.ok) {
-            throw (graphRefusal(response.status) ??
+            throw (graphRefusal(response.status, json) ??
                 new Error(`Microsoft Graph request failed with HTTP ${response.status}.`));
         }
         return json;
@@ -2229,11 +2244,13 @@ export class MicrosoftGraphProvider {
             signal: signal ?? null,
         }, async (response) => {
             if (!response.ok) {
+                // Only a small JSON error body is read, for its code; anything else is discarded.
+                const error = await readJson(response, 64 * 1024).catch(() => undefined);
                 await response.body?.cancel().catch(() => undefined);
                 if (response.status === 401 && this.#accessToken?.value === accessToken) {
                     this.#accessToken = null;
                 }
-                throw (graphRefusal(response.status) ??
+                throw (graphRefusal(response.status, error) ??
                     new Error(`Microsoft Graph request failed with HTTP ${response.status}.`));
             }
             if (response.body === null)

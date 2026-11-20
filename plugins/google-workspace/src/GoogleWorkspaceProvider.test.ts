@@ -2077,6 +2077,35 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
     }
   });
 
+  it("keeps only Google's token-shaped error reason in a public refusal", async () => {
+    const fixture = oauthFixture({
+      api: () =>
+        jsonResponse(
+          {
+            error: {
+              status: "INVALID_ARGUMENT",
+              message: "Invalid field selection subject for ana@ucsd.edu",
+              errors: [
+                { reason: "label Budget for ana@ucsd.edu", location: "fields" },
+                { reason: "invalidParameter", location: "fields" },
+              ],
+            },
+          },
+          400,
+        ),
+    });
+    try {
+      await fixture.complete(["identity.read", "mail.read"]);
+      await expect(
+        fixture.provider.invoke("googleworkspace.mail.labels.list", {}, invocation()),
+      ).rejects.toThrow(
+        /^Google Workspace rejected the bounded request\. \(Google: invalidParameter\)$/u,
+      );
+    } finally {
+      await fixture.provider.close();
+    }
+  });
+
   it("recognizes Google's 403 rate-limit reasons without exposing the remote payload", async () => {
     const fixture = oauthFixture({
       api: () =>
