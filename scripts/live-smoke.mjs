@@ -1,22 +1,16 @@
-// Live, read-only smoke test of this checkout's built providers against the accounts already
-// connected in a local TritonAI Harness desktop app. See docs/release-checklist.md.
+// Live, read-only smoke test of this checkout's built providers against a real account, signed in
+// once with `--sign-in`. See docs/release-checklist.md.
 //
 // Read-only is enforced twice: only tools the manifest marks `effect: "read"` (and the provider
-// marks readOnly) are invoked, and every outgoing request other than GET/HEAD is refused except an
-// OAuth token refresh. Results stay in memory; the report prints tool names, HTTP status and
-// provider error codes only.
+// marks readOnly) are invoked, and every outgoing request other than GET/HEAD is refused except
+// OAuth sign-in and token refresh. Results stay in memory; the report prints tool names, HTTP
+// status and provider error codes only.
+import { spawnSync } from "node:child_process";
 import * as Fs from "node:fs";
 import * as Path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
-
-import {
-  findConnectedProfile,
-  readPluginConfiguration,
-  readStoredSecret,
-} from "./harness-local-credentials.mjs";
+import { keychainSecretStore, readPluginConfiguration } from "./live-smoke-credentials.mjs";
 
 const repositoryRoot = Path.resolve(import.meta.dirname, "..");
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -76,7 +70,14 @@ export const PLANS = {
       [
         "googleworkspace.drive.permissions.list",
         (r) => ({
-          itemId: need(r["googleworkspace.drive.search"]?.files?.[0]?.id, "drive.search"),
+          itemId: need(
+            r["googleworkspace.drive.search"]?.files?.find((file) =>
+              file.owners.some(
+                (owner) => owner.emailAddress === r["googleworkspace.identity.get"]?.email,
+              ),
+            )?.id,
+            "drive.search (a file you own)",
+          ),
           limit: 5,
         }),
       ],
@@ -108,7 +109,7 @@ export const PLANS = {
       ["googleworkspace.calendar.list", () => ({ limit: 10 })],
       [
         "googleworkspace.calendar.events.list",
-        () => ({ calendarId: "primary", ...window(30), limit: 10 }),
+        () => ({ calendarId: "primary", ...window(15), limit: 10 }),
       ],
       [
         "googleworkspace.calendar.event.get",
@@ -122,6 +123,11 @@ export const PLANS = {
       ],
     ],
     probes: [],
+    // Provider error codes that mean the service is turned off for this account, not a defect.
+    unavailable: {
+      failedPrecondition: "Gmail is not enabled for this account",
+      notACalendarUser: "Google Calendar is not enabled for this account",
+    },
   },
   "microsoft-365": {
     reads: [
@@ -273,7 +279,7 @@ const TOKEN_ENDPOINTS = [
   (url) => url.origin === "https://oauth2.googleapis.com" && url.pathname === "/token",
   (url) =>
     url.origin === "https://login.microsoftonline.com" &&
-    /^\/[^/]+\/oauth2\/v2\.0\/token$/u.test(url.pathname),
+    /^\/[^/]+\/oauth2\/v2\.0\/(token|devicecode)$/u.test(url.pathname),
 ];
 
 const SAFE_CODE = /^[A-Za-z0-9_.:-]{1,80}$/u;
@@ -321,15 +327,6 @@ export function createReadOnlyFetch(realFetch, log) {
   };
 }
 
-function memorySecretStore(initial) {
-  const values = new Map(Object.entries(initial));
-  return {
-    get: (name) => Effect.sync(() => Option.fromNullishOr(values.get(name))),
-    set: (name, value) => Effect.sync(() => void values.set(name, value)),
-    remove: (name) => Effect.sync(() => void values.delete(name)),
-  };
-}
-
 function describeFailure(log, error) {
   const parts = log.failures.map(
     (failure) => `HTTP ${failure.status} ${failure.host}${failure.code ? ` ${failure.code}` : ""}`,
@@ -346,7 +343,42 @@ function describeFailure(log, error) {
   return parts.join("; ");
 }
 
-async function smokePlugin(pluginId, plan, log, report) {
+function requiredCapabilities(manifest, plan) {
+  const used = new Set([
+    ...plan.reads.map(([name]) => name),
+    ...plan.probes.map((probe) => probe.tool),
+  ]);
+  return [
+    ...new Set(
+      manifest.tools.filter((tool) => used.has(tool.name)).flatMap((tool) => tool.capabilities),
+    ),
+  ];
+}
+
+async function signIn(provider, manifest, plan) {
+  const signal = AbortSignal.timeout(10 * 60_000);
+  const context = { signal, beginCommit: async () => signal };
+  const flow = await provider.connect(requiredCapabilities(manifest, plan), context);
+  if (flow.kind === "device_code") {
+    console.log(
+      `Sign in to ${manifest.name} at ${flow.verificationUri} with code ${flow.userCode}`,
+    );
+  } else if (flow.kind === "authorization_url") {
+    console.log(`Opening the ${manifest.name} sign-in page in your browser.`);
+  }
+  const page = flow.verificationUriComplete ?? flow.verificationUri ?? flow.authorizationUrl;
+  if (page) spawnSync("/usr/bin/open", [page], { stdio: "ignore" });
+  let wait = flow.intervalSeconds ?? 2;
+  while (flow.kind !== "connected") {
+    await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+    const result = await provider.poll(flow.flowId, context);
+    if (result.state === "connected") break;
+    if (result.state !== "pending") throw new Error(`${manifest.name} sign-in ${result.state}.`);
+    wait = result.retryAfterSeconds ?? wait;
+  }
+}
+
+async function smokePlugin(pluginId, plan, log, report, { signInFirst }) {
   const packageRoot = Path.join(repositoryRoot, "plugins", pluginId);
   const manifest = JSON.parse(
     Fs.readFileSync(Path.join(packageRoot, ".tritonai-plugin", "plugin.json"), "utf8"),
@@ -357,28 +389,25 @@ async function smokePlugin(pluginId, plan, log, report) {
     report(header, "FAIL", problems.join("; "));
     return;
   }
-  const profile = findConnectedProfile(pluginId, "oauth");
-  if (!profile) {
-    report(header, "SKIP", "not connected in a local Harness");
+  const secrets = keychainSecretStore(pluginId);
+  if (!signInFirst && !secrets.has("oauth")) {
+    report(header, "SKIP", "not signed in; run pnpm smoke:live --sign-in");
     return;
   }
   const module = await import(pathToFileURL(Path.join(packageRoot, "dist", "index.js")).href);
   const provider = module.createIntegrationProvider({
-    secrets: memorySecretStore({ oauth: readStoredSecret(profile, pluginId, "oauth") }),
-    configuration: readPluginConfiguration(profile, pluginId),
+    secrets: secrets.store,
+    configuration: readPluginConfiguration(pluginId),
   });
   const readOnly = new Map(provider.tools.map((tool) => [tool.name, tool.readOnly === true]));
   const capabilities = new Map(manifest.tools.map((tool) => [tool.name, tool.capabilities]));
-  const signal = AbortSignal.timeout(TOOL_TIMEOUT_MS * 4);
   try {
-    // A refreshed credential lands only in the in-memory store above.
+    if (signInFirst) await signIn(provider, manifest, plan);
+    // Token refreshes are saved only to the smoke's own Keychain item.
+    const signal = AbortSignal.timeout(TOOL_TIMEOUT_MS);
     await provider.prepare?.({ signal, beginCommit: async () => signal });
     const status = await provider.status({ signal });
-    report(
-      header,
-      status.state === "connected" ? "INFO" : "FAIL",
-      `${profile.name} Harness, ${status.state}`,
-    );
+    report(header, status.state === "connected" ? "INFO" : "FAIL", status.state);
     if (status.state !== "connected") return;
     const granted = new Set(status.grantedCapabilities);
     const results = {};
@@ -408,7 +437,13 @@ async function smokePlugin(pluginId, plan, log, report) {
           expectRefusal(log.refused[0]) &&
           log.failures.length === 0;
         if (refusedAsExpected) report(name, "PASS", "precheck passed; mutation refused by guard");
-        else report(name, "FAIL", describeFailure(log, error));
+        else {
+          const code = log.failures
+            .flatMap((failure) => failure.code?.split("/") ?? [])
+            .find((candidate) => Object.hasOwn(plan.unavailable ?? {}, candidate));
+          if (code) report(name, "SKIP", plan.unavailable[code]);
+          else report(name, "FAIL", describeFailure(log, error));
+        }
       }
     };
     for (const [name, input] of plan.reads) {
@@ -435,13 +470,17 @@ async function smokePlugin(pluginId, plan, log, report) {
 }
 
 async function main(argv) {
-  const requested = argv.flatMap((arg, index) => (argv[index - 1] === "--plugin" ? [arg] : []));
+  const signInFirst = argv.includes("--sign-in");
+  const rest = argv.filter((arg) => arg !== "--sign-in");
+  const requested = rest.flatMap((arg, index) => (rest[index - 1] === "--plugin" ? [arg] : []));
   const unknown = requested.filter((id) => !Object.hasOwn(PLANS, id));
   if (
     unknown.length > 0 ||
-    argv.some((arg, index) => arg !== "--plugin" && argv[index - 1] !== "--plugin")
+    rest.some((arg, index) => arg !== "--plugin" && rest[index - 1] !== "--plugin")
   ) {
-    console.error(`Usage: pnpm smoke:live [--plugin ${Object.keys(PLANS).join("|")}]...`);
+    console.error(
+      `Usage: pnpm smoke:live [--sign-in] [--plugin ${Object.keys(PLANS).join("|")}]...`,
+    );
     process.exitCode = 2;
     return;
   }
@@ -453,7 +492,7 @@ async function main(argv) {
     console.log(`${outcome.padEnd(4)}  ${name.padEnd(46)}  ${detail}`);
   };
   for (const pluginId of requested.length > 0 ? requested : Object.keys(PLANS)) {
-    await smokePlugin(pluginId, PLANS[pluginId], log, report);
+    await smokePlugin(pluginId, PLANS[pluginId], log, report, { signInFirst });
   }
   console.log(`\n${counts.PASS} passed, ${counts.FAIL} failed, ${counts.SKIP} skipped`);
   if (counts.FAIL > 0) process.exitCode = 1;

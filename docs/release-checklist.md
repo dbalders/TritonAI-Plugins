@@ -40,28 +40,30 @@
 Provider tests use canned responses, so they pass whatever the outgoing request looks like.
 `pnpm smoke:live` (optionally `--plugin google-workspace` or `--plugin microsoft-365`) loads each
 plugin's committed `dist/index.js` from this checkout and calls every manifest read tool once
-against the account already connected in a local TritonAI Harness desktop app. Run it on a Mac
-where the plugin is connected in the stable or nightly Harness; it is not a CI job.
+against a real account. It runs on a maintainer's Mac with TritonAI Harness installed; it is not a
+CI job and adds no CI secrets.
 
+- **Sign-in.** Run `pnpm smoke:live --sign-in` once per Mac. It runs each plugin's own sign-in
+  (a browser page for Google, a device code for Microsoft 365) with the OAuth client configuration
+  read from the installed Harness app, then smokes. The credential is kept in login Keychain items
+  named "TritonAI Plugins Live Smoke", separate from Harness's own connections; later runs reuse it
+  and save refreshed tokens there. Delete those items to sign the smoke out.
 - **Read-only, structurally.** It invokes only tools the manifest marks `effect: "read"` and the
   provider marks read-only, and `tests/live-smoke.test.mjs` fails when a read tool has no smoke
-  input. Every outgoing request other than GET/HEAD is refused, except an OAuth token refresh. The
-  Microsoft 365 mail-move probe runs the move's read-only folder check, then must be refused at the
-  move request itself; its message id does not exist.
-- **Inputs** are bounded: small result limits, a short calendar window, and samples (a Doc, a
-  message with an attachment, a file under 256 KB) taken from earlier list results. A tool whose
-  sample does not exist in the account, or whose capability is not granted, is skipped.
+  input. Every outgoing request other than GET/HEAD is refused, except OAuth sign-in and token
+  refresh. The Microsoft 365 mail-move probe runs the move's read-only folder check, then must be
+  refused at the move request itself; its message id does not exist.
+- **Inputs** are bounded: small result limits, a 30-day calendar window, and samples (a Doc, a file
+  you own, a message with an attachment, a file under 256 KB) taken from earlier list results. A
+  tool is skipped when its sample does not exist in the account, its capability is not granted, or
+  the service is off for the account (Gmail `failedPrecondition`, Calendar `notACalendarUser`).
 - **Output** is one line per tool: PASS, FAIL or SKIP, with HTTP status, host, provider error code
   and the provider's fixed public error sentence. Results stay in memory and are never printed.
-- **Credentials.** The script reads `integration-<plugin>--oauth` from that Harness profile's
-  encrypted secret store and the plugin's build configuration from the installed app bundle. macOS
-  asks for Keychain access to "TritonAI Harness Safe Storage" on each run; choose **Allow**, not
-  **Always Allow**. A refreshed token stays in memory and is never written back to Harness.
 
-Tradeoff: unwrapping the Harness data key gives the script process access to every Harness secret
-on that Mac for the run, and the approach is macOS-only. The alternative is a Harness-side command
-that runs a supplied provider inside the server with its own secret store; that is a larger
-cross-repository change and is not built yet.
+Tradeoff: reusing Harness's own connected credentials is not possible from a script. The installed
+app's secret-store key is not readable through the login Keychain, so the smoke keeps its own
+sign-in. A Harness-side command that runs a candidate provider against Harness's secret store
+would remove the second sign-in; it is a larger cross-repository change and is not built.
 
 Publication and release actions are manual owner decisions. Passing this checklist does not mean the
 repository is published, deployed, signed, bundled, or penetration-tested.
