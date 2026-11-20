@@ -3896,10 +3896,11 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
         signal: context?.signal,
         maximumBytes: JSON_RESPONSE_BYTES,
       });
-      if (!Array.isArray(json.items) || json.items.length > limit) {
+      const items = json.items === undefined ? [] : json.items;
+      if (!Array.isArray(items) || items.length > limit) {
         throw new Error("Google Calendar returned an invalid event list.");
       }
-      const events = json.items.map(projectCalendarEvent);
+      const events = items.map(projectCalendarEvent);
       const cursor =
         json.nextPageToken === undefined
           ? null
