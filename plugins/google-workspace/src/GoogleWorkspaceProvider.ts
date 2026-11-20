@@ -1422,14 +1422,13 @@ function projectCalendarEvent(value: unknown) {
               ? null
               : asRecord(solution.key, "Google Calendar conference");
           const entryPoints = Array.isArray(data.entryPoints)
-            ? data.entryPoints.slice(0, 20).map((raw) => {
+            ? data.entryPoints.slice(0, 20).flatMap((raw) => {
                 const entry = asRecord(raw, "Google Calendar conference");
                 const uri = boundedOptionalString(entry.uri, 2_048, "Google Calendar conference");
-                if (uri !== null) {
-                  const parsed = new URL(uri);
-                  if (!["https:", "tel:"].includes(parsed.protocol)) {
-                    throw new Error("Google Calendar conference URI is invalid.");
-                  }
+                // Google also returns sip: and http: entry points (Zoom adds sip:). Omit them
+                // rather than failing the whole event or page.
+                if (uri !== null && !["https:", "tel:"].includes(new URL(uri).protocol)) {
+                  return [];
                 }
                 return {
                   type: boundedOptionalString(
