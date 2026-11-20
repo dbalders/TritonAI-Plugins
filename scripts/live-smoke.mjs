@@ -152,9 +152,10 @@ export const PLANS = {
       [
         "microsoft365.mail.attachment.get",
         (r) => ({
-          messageId: r["microsoft365.mail.search"].messages.find(
-            (message) => message.hasAttachments,
-          ).id,
+          messageId: need(
+            r["microsoft365.mail.search"]?.messages?.find((message) => message.hasAttachments)?.id,
+            "mail.search (a message with attachments)",
+          ),
           attachmentId: need(
             fileAttachment(r["microsoft365.mail.attachments.list"]),
             "mail.attachments.list",
@@ -181,8 +182,10 @@ export const PLANS = {
       [
         "microsoft365.calendar.event.attachment.get",
         (r) => ({
-          eventId: r["microsoft365.calendar.events"].events.find((event) => event.hasAttachments)
-            .id,
+          eventId: need(
+            r["microsoft365.calendar.events"]?.events?.find((event) => event.hasAttachments)?.id,
+            "calendar.events (an event with attachments)",
+          ),
           attachmentId: need(
             fileAttachment(r["microsoft365.calendar.event.attachments.list"]),
             "calendar.event.attachments.list",
@@ -285,9 +288,19 @@ const TOKEN_ENDPOINTS = [
 const SAFE_CODE = /^[A-Za-z0-9_.:-]{1,80}$/u;
 
 async function providerErrorCode(response) {
+  // Read at most a small prefix of the error body; the provider reads the original response.
+  const reader = response.clone().body?.getReader();
+  if (!reader) return null;
+  const chunks = [];
+  let size = 0;
   try {
-    const body = await response.clone().json();
-    const error = body?.error;
+    while (size < 16 * 1024) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.byteLength;
+    }
+    const error = JSON.parse(Buffer.concat(chunks).toString("utf8"))?.error;
     const codes =
       typeof error === "string"
         ? [error]
@@ -297,6 +310,8 @@ async function providerErrorCode(response) {
     );
   } catch {
     return null;
+  } finally {
+    await reader.cancel().catch(() => undefined);
   }
 }
 
@@ -394,11 +409,18 @@ async function smokePlugin(pluginId, plan, log, report, { signInFirst }) {
     report(header, "SKIP", "not signed in; run pnpm smoke:live --sign-in");
     return;
   }
-  const module = await import(pathToFileURL(Path.join(packageRoot, "dist", "index.js")).href);
-  const provider = module.createIntegrationProvider({
-    secrets: secrets.store,
-    configuration: readPluginConfiguration(pluginId),
-  });
+  let provider;
+  try {
+    const module = await import(pathToFileURL(Path.join(packageRoot, "dist", "index.js")).href);
+    provider = module.createIntegrationProvider({
+      secrets: secrets.store,
+      configuration: readPluginConfiguration(pluginId),
+    });
+  } catch (error) {
+    // Configuration errors can quote the private build configuration, so show only the type.
+    report(header, "FAIL", `could not load the provider (${error?.name ?? "error"})`);
+    return;
+  }
   const readOnly = new Map(provider.tools.map((tool) => [tool.name, tool.readOnly === true]));
   const capabilities = new Map(manifest.tools.map((tool) => [tool.name, tool.capabilities]));
   try {
@@ -421,7 +443,7 @@ async function smokePlugin(pluginId, plan, log, report, { signInFirst }) {
         args = input(results);
       } catch (error) {
         if (error instanceof Skip) return report(name, "SKIP", error.message);
-        throw error;
+        return report(name, "FAIL", `smoke input failed (${error.name})`);
       }
       log.failures.length = 0;
       log.refused.length = 0;
@@ -498,5 +520,10 @@ async function main(argv) {
   if (counts.FAIL > 0) process.exitCode = 1;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)
-  await main(process.argv.slice(2));
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  await main(process.argv.slice(2)).catch((error) => {
+    // Never let Node print an unexpected error, which could carry account content.
+    console.error(`Live smoke stopped unexpectedly (${error?.name ?? "error"}).`);
+    process.exitCode = 1;
+  });
+}
