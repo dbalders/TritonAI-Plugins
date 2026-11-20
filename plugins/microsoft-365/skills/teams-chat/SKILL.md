@@ -12,7 +12,10 @@ Use the narrow chat tool that matches the request:
 - Use `microsoft365.chat.message.send` only when the user explicitly asks to send a plain-text
   message to an existing chat.
 
-When `hasMore` is true, describe the chat list or history as partial. When `body.truncated` is true,
+When `hasMore` is true, describe the chat list or history as partial. To read older chat history,
+call `microsoft365.chat.messages` again with the same `chatId` and `cursor` set to the returned
+`nextCursor` (omit `limit`). A page can contain only system events with no readable text;
+continue rather than concluding the chat has no messages. When `body.truncated` is true,
 do not imply that the full message body was returned. A null `body` means Microsoft returned no
 message content; do not invent replacement text.
 
