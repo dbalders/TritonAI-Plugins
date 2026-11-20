@@ -75,8 +75,11 @@ The fixed endpoints follow the Microsoft Graph contracts for [reading a message]
 and [renaming a drive item](https://learn.microsoft.com/en-us/graph/api/driveitem-update?view=graph-rest-1.0).
 
 Inputs, result counts, date ranges, response bytes, strings, OAuth scopes, and request duration are
-bounded. Pagination links are neither followed nor returned; collection results expose only a
-`hasMore` boolean. Draft bodies and chat messages use plain text; draft file contents use base64 as
+bounded. Collection results expose a `hasMore` boolean, and Graph pagination links are never
+returned. Chat history also returns `nextCursor` (or `null` when history is exhausted); passing it
+back as `cursor` for the same chat reads the next older page. The provider accepts a cursor only for
+the chat it came from and rebuilds the request on the fixed Graph host, keeping only Graph's skip
+token. Draft bodies and chat messages use plain text; draft file contents use base64 as
 required by Microsoft Graph.
 
 Mail search requests only identification fields, read state, the follow-up flag, previews, and
@@ -91,8 +94,8 @@ report the flag. Every tool result uses an explicit, byte-bounded projection. A 
 `truncated` field reports provider truncation, while `previewIsPartial` is true for every non-null
 Graph preview because the upstream preview is semantically partial. Unknown Graph fields and
 server-provided continuation URLs are not included. Chat messages with no returned content use
-`body: null`; oversized chat collections retain the leading projected messages that fit and set
-`hasMore`.
+`body: null`; oversized chat collections retain the leading projected messages that fit, set
+`hasMore`, and return a `nextCursor` that resumes at the first omitted message.
 
 Attachment list tools request metadata only so file bytes cannot make the list unusable; each file
 also gets a `category` from its name and declared type. The single-attachment tools read metadata
