@@ -357,7 +357,13 @@ const ChatMessagesInput = Schema.Struct({
   }),
   limit: Schema.optionalKey(
     Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })).annotate({
-      description: "Maximum number of messages (1-50).",
+      description: "Maximum number of messages (1-50). Omit when passing cursor.",
+    }),
+  ),
+  cursor: Schema.optionalKey(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(8_192)).annotate({
+      description:
+        "nextCursor from an earlier result for this same chat, to read the next older messages.",
     }),
   ),
 });
@@ -652,7 +658,7 @@ export const MICROSOFT_GRAPH_TOOLS = [
   {
     name: "microsoft365.chat.messages",
     description:
-      "Read bounded message history from one exact Microsoft 365 chat; body is null without content, otherwise body.truncated reports provider truncation.",
+      "Read bounded message history from one exact Microsoft 365 chat, newest first; while hasMore is true, pass nextCursor back as cursor to read older messages. body is null without content, otherwise body.truncated reports provider truncation.",
     input: ChatMessagesInput,
     readOnly: true,
     destructive: false,
@@ -1461,23 +1467,101 @@ function projectChatMessage(value: Record<string, unknown>) {
   };
 }
 
-function chatMessagesResult(value: Record<string, unknown>, limit: number) {
-  const collection = collectionResult(value, limit);
+// One Graph page of a chat's history, plus how many of its leading messages were already returned.
+// A cursor carries only these values; the request is always rebuilt for the fixed Graph host and
+// the named chat, so a cursor cannot reach another host, path, or chat.
+type ChatPage = {
+  readonly chatId: string;
+  readonly top: number;
+  readonly skipToken: string | null;
+  readonly skip: number;
+};
+
+function chatPagePath(page: ChatPage): string {
+  const params = new URLSearchParams({ $top: String(page.top), $orderby: "createdDateTime desc" });
+  if (page.skipToken !== null) params.set("$skiptoken", page.skipToken);
+  return `/chats/${encodeURIComponent(page.chatId)}/messages?${params.toString()}`;
+}
+
+function encodeChatCursor(page: ChatPage): string {
+  return Buffer.from(
+    JSON.stringify([page.chatId, page.top, page.skipToken, page.skip]),
+    "utf8",
+  ).toString("base64url");
+}
+
+function decodeChatCursor(cursor: string, chatId: string): ChatPage {
+  let value: unknown = null;
+  try {
+    value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    // Reported below.
+  }
+  if (Array.isArray(value) && value.length === 4) {
+    const [cursorChatId, top, skipToken, skip] = value as Array<unknown>;
+    if (
+      cursorChatId === chatId &&
+      Number.isInteger(top) &&
+      (top as number) >= 1 &&
+      (top as number) <= 50 &&
+      (skipToken === null ||
+        (typeof skipToken === "string" && skipToken.length > 0 && skipToken.length <= 2_048)) &&
+      Number.isInteger(skip) &&
+      (skip as number) >= 0 &&
+      (skip as number) < (top as number)
+    ) {
+      return { chatId, top: top as number, skipToken, skip: skip as number };
+    }
+  }
+  throw new IntegrationProviderPublicError(
+    "The chat history cursor is invalid or belongs to another chat; read the chat again without a cursor.",
+  );
+}
+
+// Only the skip token from Graph's next link is kept; the next request is rebuilt by chatPagePath.
+function chatNextSkipToken(nextLink: string): string {
+  let skipToken = "";
+  try {
+    skipToken = new URL(nextLink).searchParams.get("$skiptoken") ?? "";
+  } catch {
+    // Reported below.
+  }
+  if (skipToken.length === 0 || skipToken.length > 2_048) {
+    throw new Error("Microsoft Graph returned an invalid continuation link.");
+  }
+  return skipToken;
+}
+
+function chatMessagesResult(value: Record<string, unknown>, page: ChatPage) {
+  const collection = collectionResult(value, page.top);
+  const items = collection.items.slice(page.skip);
+  const pageEnd = collection.hasMore
+    ? encodeChatCursor({
+        chatId: page.chatId,
+        top: page.top,
+        skipToken: chatNextSkipToken(value["@odata.nextLink"] as string),
+        skip: 0,
+      })
+    : null;
+  // Messages clipped by the result-size cap are resumed from this same Graph page.
+  const resume = (returned: number) => encodeChatCursor({ ...page, skip: page.skip + returned });
   const messages: Array<ReturnType<typeof projectChatMessage>> = [];
-  let locallyOmitted = false;
-  for (const [index, raw] of collection.items.entries()) {
+  let nextCursor = pageEnd;
+  for (const [index, raw] of items.entries()) {
     const message = projectChatMessage(asRecord(raw));
+    const candidateCursor = index < items.length - 1 ? resume(index + 1) : pageEnd;
     const candidate = {
       messages: [...messages, message],
-      hasMore: collection.hasMore || index < collection.items.length - 1,
+      hasMore: candidateCursor !== null,
+      nextCursor: candidateCursor,
     };
     if (utf8Length(JSON.stringify(candidate)) > MAX_RESULT_BYTES) {
-      locallyOmitted = true;
+      nextCursor = resume(messages.length);
       break;
     }
     messages.push(message);
   }
-  return boundedResult({ messages, hasMore: collection.hasMore || locallyOmitted });
+  return boundedResult({ messages, hasMore: nextCursor !== null, nextCursor });
 }
 
 function chatMessageResult(value: Record<string, unknown>) {
@@ -3080,18 +3164,20 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         errors: "all",
         onExcessProperty: "error",
       });
-      const limit = values.limit ?? 20;
-      const params = new URLSearchParams({
-        $top: String(limit),
-        $orderby: "createdDateTime desc",
+      if (values.cursor !== undefined && values.limit !== undefined) {
+        throw new IntegrationProviderPublicError(
+          "Pass either limit or cursor; a cursor keeps the page size of the first read.",
+        );
+      }
+      const page =
+        values.cursor === undefined
+          ? { chatId: values.chatId, top: values.limit ?? 20, skipToken: null, skip: 0 }
+          : decodeChatCursor(values.cursor, values.chatId);
+      const result = await this.#graph(chatPagePath(page), access.value, {
+        signal: context?.signal,
       });
-      const result = await this.#graph(
-        `/chats/${encodeURIComponent(values.chatId)}/messages?${params.toString()}`,
-        access.value,
-        { signal: context?.signal },
-      );
       this.#assertInvocationCurrent(generation);
-      return chatMessagesResult(result, limit);
+      return chatMessagesResult(result, page);
     }
     if (toolName === "microsoft365.chat.message.send") {
       this.#requireCapability(access, "chat.write");

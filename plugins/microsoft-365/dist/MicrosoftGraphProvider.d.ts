@@ -209,10 +209,11 @@ export declare const MICROSOFT_GRAPH_TOOLS: readonly [{
     readonly openWorld: true;
 }, {
     readonly name: "microsoft365.chat.messages";
-    readonly description: "Read bounded message history from one exact Microsoft 365 chat; body is null without content, otherwise body.truncated reports provider truncation.";
+    readonly description: "Read bounded message history from one exact Microsoft 365 chat, newest first; while hasMore is true, pass nextCursor back as cursor to read older messages. body is null without content, otherwise body.truncated reports provider truncation.";
     readonly input: Schema.Struct<{
         readonly chatId: Schema.String;
         readonly limit: Schema.optionalKey<Schema.Int>;
+        readonly cursor: Schema.optionalKey<Schema.String>;
     }>;
     readonly readOnly: true;
     readonly destructive: false;
@@ -528,10 +529,11 @@ export declare class MicrosoftGraphProvider implements IntegrationProvider {
         readonly openWorld: true;
     }, {
         readonly name: "microsoft365.chat.messages";
-        readonly description: "Read bounded message history from one exact Microsoft 365 chat; body is null without content, otherwise body.truncated reports provider truncation.";
+        readonly description: "Read bounded message history from one exact Microsoft 365 chat, newest first; while hasMore is true, pass nextCursor back as cursor to read older messages. body is null without content, otherwise body.truncated reports provider truncation.";
         readonly input: Schema.Struct<{
             readonly chatId: Schema.String;
             readonly limit: Schema.optionalKey<Schema.Int>;
+            readonly cursor: Schema.optionalKey<Schema.String>;
         }>;
         readonly readOnly: true;
         readonly destructive: false;

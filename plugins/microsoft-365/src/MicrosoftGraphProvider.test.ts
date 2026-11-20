@@ -2802,7 +2802,8 @@ describe("MicrosoftGraphProvider tools", () => {
         ? jsonResponse(message, 201)
         : jsonResponse({
             value: [message],
-            "@odata.nextLink": "https://graph.microsoft.com/v1.0/ignored-message-page",
+            "@odata.nextLink":
+              "https://graph.microsoft.com/v1.0/chats/chat%2Fid%3Ffixture/messages?$top=5&$skiptoken=fixture",
           });
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
@@ -2831,7 +2832,11 @@ describe("MicrosoftGraphProvider tools", () => {
     };
     await expect(
       graph.invoke("microsoft365.chat.messages", { chatId: "chat/id?fixture", limit: 5 }),
-    ).resolves.toEqual({ messages: [projectedMessage], hasMore: true });
+    ).resolves.toEqual({
+      messages: [projectedMessage],
+      hasMore: true,
+      nextCursor: expect.any(String),
+    });
     await expect(
       graph.invoke(
         "microsoft365.chat.message.send",
@@ -2924,6 +2929,7 @@ describe("MicrosoftGraphProvider tools", () => {
     ).resolves.toEqual({
       messages: [projectedDeletedMessage, projectedSystemMessage, projectedNullContentMessage],
       hasMore: false,
+      nextCursor: null,
     });
     await expect(
       graph.invoke(
@@ -3395,18 +3401,7 @@ describe("MicrosoftGraphProvider tools", () => {
     const leadingProjected = Array.from({ length: 7 }, (_, index) =>
       projectedMessage(`message-${index}`, "x".repeat(50_000)),
     );
-    const emptyBoundary = projectedMessage("message-boundary", "");
-    const emptyBoundaryBytes = new TextEncoder().encode(
-      JSON.stringify({ messages: [...leadingProjected, emptyBoundary], hasMore: true }),
-    ).byteLength;
-    const boundaryContentBytes = resultBudget - emptyBoundaryBytes;
-    expect(boundaryContentBytes).toBeGreaterThan(0);
-    expect(boundaryContentBytes).toBeLessThanOrEqual(50_000);
-    const boundaryContent = `${"😀".repeat(Math.floor(boundaryContentBytes / 4))}${"x".repeat(
-      boundaryContentBytes % 4,
-    )}`;
-    expect(new TextEncoder().encode(boundaryContent).byteLength).toBe(boundaryContentBytes);
-    const boundaryMessage = projectedMessage("message-boundary", boundaryContent);
+    let boundaryContent = "x".repeat(30_000);
     const fetchImplementation = (async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
@@ -3415,12 +3410,35 @@ describe("MicrosoftGraphProvider tools", () => {
         value: [
           ...leadingRaw,
           rawMessage("message-boundary", boundaryContent),
-          rawMessage("message-omitted", "😀"),
+          rawMessage("message-omitted", "x".repeat(50_000)),
         ],
       });
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
     await authorize(graph, ["chat.read"]);
+    // A probe read clipped at the same message yields the same resume cursor.
+    const probe = (await graph.invoke("microsoft365.chat.messages", {
+      chatId: "chat-1",
+      limit: 9,
+    })) as { readonly messages: ReadonlyArray<unknown>; readonly nextCursor: string };
+    expect(probe.messages).toHaveLength(8);
+
+    const emptyBoundary = projectedMessage("message-boundary", "");
+    const emptyBoundaryBytes = new TextEncoder().encode(
+      JSON.stringify({
+        messages: [...leadingProjected, emptyBoundary],
+        hasMore: true,
+        nextCursor: probe.nextCursor,
+      }),
+    ).byteLength;
+    const boundaryContentBytes = resultBudget - emptyBoundaryBytes;
+    expect(boundaryContentBytes).toBeGreaterThan(0);
+    expect(boundaryContentBytes).toBeLessThanOrEqual(50_000);
+    boundaryContent = `${"😀".repeat(Math.floor(boundaryContentBytes / 4))}${"x".repeat(
+      boundaryContentBytes % 4,
+    )}`;
+    expect(new TextEncoder().encode(boundaryContent).byteLength).toBe(boundaryContentBytes);
+    const boundaryMessage = projectedMessage("message-boundary", boundaryContent);
 
     const result = await graph.invoke("microsoft365.chat.messages", {
       chatId: "chat-1",
@@ -3429,9 +3447,100 @@ describe("MicrosoftGraphProvider tools", () => {
     expect(result).toEqual({
       messages: [...leadingProjected, boundaryMessage],
       hasMore: true,
+      nextCursor: probe.nextCursor,
     });
     expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBe(resultBudget);
     expect(JSON.stringify(result)).not.toContain("message-omitted");
+  });
+
+  it("continues chat history past a system-event page and a size-clipped page", async () => {
+    const secrets = memorySecrets();
+    const chatId = "19:group@thread.v2";
+    const systemEvent = (id: string) => ({
+      id,
+      createdDateTime: "2026-07-16T12:00:00Z",
+      lastModifiedDateTime: null,
+      from: null,
+      body: { contentType: "html", content: "<systemEventMessage/>" },
+      webUrl: null,
+      messageType: "systemEventMessage",
+    });
+    const large = (id: string) => ({
+      id,
+      createdDateTime: "2026-07-15T12:00:00Z",
+      lastModifiedDateTime: null,
+      from: null,
+      body: { contentType: "text", content: "x".repeat(50_000) },
+      webUrl: null,
+    });
+    const earlier = {
+      id: "message-earlier",
+      createdDateTime: "2026-07-01T09:30:00Z",
+      lastModifiedDateTime: null,
+      from: { user: { id: "user-1", displayName: "Person" } },
+      body: { contentType: "text", content: "Earlier hello" },
+      webUrl: null,
+    };
+    const graphUrls: Array<URL> = [];
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Chat.Read"));
+      const request = new URL(url);
+      graphUrls.push(request);
+      return request.searchParams.get("$skiptoken") === "page-2"
+        ? jsonResponse({
+            value: [...Array.from({ length: 8 }, (_, index) => large(`large-${index}`)), earlier],
+          })
+        : jsonResponse({
+            value: [systemEvent("system-1"), systemEvent("system-2"), systemEvent("system-3")],
+            "@odata.nextLink": `https://graph.microsoft.com/v1.0/chats/${chatId}/messages?$top=10&$orderby=createdDateTime+desc&$skiptoken=page-2`,
+          });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["chat.read"]);
+    type Page = {
+      readonly messages: ReadonlyArray<{ readonly id: string }>;
+      readonly hasMore: boolean;
+      readonly nextCursor: string | null;
+    };
+    const read = async (input: Record<string, unknown>) =>
+      (await graph.invoke("microsoft365.chat.messages", { chatId, ...input })) as Page;
+
+    const first = await read({ limit: 10 });
+    expect(first.messages.map((message) => message.id)).toEqual([
+      "system-1",
+      "system-2",
+      "system-3",
+    ]);
+    expect(first.hasMore).toBe(true);
+    await expect(
+      graph.invoke("microsoft365.chat.messages", {
+        chatId: "19:other@thread.v2",
+        cursor: first.nextCursor,
+      }),
+    ).rejects.toThrow(/another chat/u);
+
+    const clipped = await read({ cursor: first.nextCursor });
+    expect(clipped.messages.map((message) => message.id)).toEqual(
+      Array.from({ length: 7 }, (_, index) => `large-${index}`),
+    );
+    expect(clipped.hasMore).toBe(true);
+
+    const last = await read({ cursor: clipped.nextCursor });
+    expect(last.messages.map((message) => message.id)).toEqual(["large-7", "message-earlier"]);
+    expect(last.messages[1]).toEqual({
+      id: "message-earlier",
+      createdDateTime: "2026-07-01T09:30:00Z",
+      lastModifiedDateTime: null,
+      from: { id: "user-1", displayName: "Person" },
+      body: { contentType: "text", content: "Earlier hello", truncated: false },
+      webUrl: null,
+    });
+    expect(last).toMatchObject({ hasMore: false, nextCursor: null });
+    expect(graphUrls.map((url) => [url.origin, url.pathname])).toEqual(
+      Array(3).fill(["https://graph.microsoft.com", "/v1.0/chats/19%3Agroup%40thread.v2/messages"]),
+    );
   });
 
   it("rejects malformed continuation metadata and attachment content", async () => {
