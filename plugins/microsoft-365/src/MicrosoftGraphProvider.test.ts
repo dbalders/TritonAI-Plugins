@@ -1471,6 +1471,7 @@ describe("MicrosoftGraphProvider tools", () => {
           start: { dateTime: "2026-07-15T09:00:00", timeZone: "Pacific Standard Time" },
           end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
           location: { displayName: "Online" },
+          responseStatus: { response: "tentativelyAccepted", time: "2026-07-14T16:00:00Z" },
           attendees: [
             {
               emailAddress: { name: "Person", address: "person@example.edu" },
@@ -1492,6 +1493,7 @@ describe("MicrosoftGraphProvider tools", () => {
             end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
             location: { displayName: "Online" },
             organizer: { emailAddress: { name: "Person", address: "person@example.edu" } },
+            responseStatus: { response: "accepted", time: "2026-07-14T16:00:00Z" },
             bodyPreview: "Complete agenda",
             hasAttachments: true,
             fixtureProperty: { preserved: true },
@@ -1525,6 +1527,7 @@ describe("MicrosoftGraphProvider tools", () => {
           end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
           location: "Online",
           organizer: { name: "Person", address: "person@example.edu" },
+          responseStatus: { response: "accepted", time: "2026-07-14T16:00:00Z" },
           preview: "Complete agenda",
           previewIsPartial: true,
           hasAttachments: true,
@@ -1536,6 +1539,7 @@ describe("MicrosoftGraphProvider tools", () => {
           end: { dateTime: "2026-07-15T12:00:00", timeZone: "Pacific Standard Time" },
           location: null,
           organizer: null,
+          responseStatus: null,
           preview: null,
           previewIsPartial: false,
           hasAttachments: false,
@@ -1546,7 +1550,7 @@ describe("MicrosoftGraphProvider tools", () => {
     const calendarUrl = calls.find((url) => url.includes("/me/calendarView?")) ?? "";
     expect(calendarUrl.startsWith("https://graph.microsoft.com/v1.0/me/calendarView?")).toBe(true);
     expect(decodeURIComponent(calendarUrl)).toContain(
-      "$select=id,subject,start,end,location,organizer,bodyPreview,hasAttachments",
+      "$select=id,subject,start,end,location,organizer,responseStatus,bodyPreview,hasAttachments",
     );
     await expect(
       graph.invoke("microsoft365.calendar.event.get", { eventId: "event/id?fixture" }),
@@ -1556,10 +1560,12 @@ describe("MicrosoftGraphProvider tools", () => {
       start: { dateTime: "2026-07-15T09:00:00", timeZone: "Pacific Standard Time" },
       end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
       location: "Online",
+      responseStatus: { response: "tentativelyAccepted", time: "2026-07-14T16:00:00Z" },
       attendees: [
         {
           emailAddress: { name: "Person", address: "person@example.edu" },
           type: "required",
+          response: "accepted",
         },
       ],
       webLink: "https://outlook.office.com/calendar/event-1",
@@ -2365,8 +2371,18 @@ describe("MicrosoftGraphProvider tools", () => {
       if (url.includes("/mailFolders/parent%2Fid%3Ffixture?")) {
         return jsonResponse({ id: "parent/id?fixture", parentFolderId: null });
       }
+      if (url.includes("/mailFolders/msgfolderroot?")) {
+        return jsonResponse({ id: "mailbox-root-id" });
+      }
+      // Graph's real shape: the mailbox root points at a hidden, self-parented store root.
       if (url.includes("/mailFolders/archive?")) {
-        return jsonResponse({ id: "opaque-archive-id", parentFolderId: null });
+        return jsonResponse({ id: "opaque-archive-id", parentFolderId: "mailbox-root-id" });
+      }
+      if (url.includes("/mailFolders/mailbox-root-id?")) {
+        return jsonResponse({ id: "mailbox-root-id", parentFolderId: "store-root-id" });
+      }
+      if (url.includes("/mailFolders/store-root-id?")) {
+        return jsonResponse({ id: "store-root-id", parentFolderId: "store-root-id" });
       }
       if (init?.method !== "POST") {
         return jsonResponse({
@@ -2458,24 +2474,33 @@ describe("MicrosoftGraphProvider tools", () => {
       "https://graph.microsoft.com/v1.0/me/mailFolders/recoverableitemsdeletions?%24select=id",
     );
     expect(graphCalls[5]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture?%24select=id%2CparentFolderId",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/msgfolderroot?%24select=id",
     );
     expect(graphCalls[6]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture/childFolders",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture?%24select=id%2CparentFolderId",
     );
     expect(graphCalls[7]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/deleteditems?%24select=id",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture/childFolders",
     );
     expect(graphCalls[8]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/recoverableitemsdeletions?%24select=id",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/deleteditems?%24select=id",
     );
     expect(graphCalls[9]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/archive?%24select=id%2CparentFolderId",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/recoverableitemsdeletions?%24select=id",
     );
     expect(graphCalls[10]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/msgfolderroot?%24select=id",
+    );
+    expect(graphCalls[11]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/archive?%24select=id%2CparentFolderId",
+    );
+    expect(graphCalls[12]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/mailbox-root-id?%24select=id%2CparentFolderId",
+    );
+    expect(graphCalls[13]?.url).toBe(
       "https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture/move",
     );
-    expect(JSON.parse(String(graphCalls[10]?.init?.body))).toEqual({ destinationId: "archive" });
+    expect(JSON.parse(String(graphCalls[13]?.init?.body))).toEqual({ destinationId: "archive" });
   });
 
   it("rejects opaque deletion-folder IDs before moving a message", async () => {
@@ -2722,9 +2747,11 @@ describe("MicrosoftGraphProvider tools", () => {
       start: { dateTime: "2026-07-20T16:00:00.0000000", timeZone: "UTC" },
       end: { dateTime: "2026-07-20T17:00:00.0000000", timeZone: "UTC" },
       location: "Online",
+      responseStatus: null,
       attendees: Array.from({ length: 51 }, () => ({
         emailAddress: { name: "Person", address: "person@example.edu" },
         type: "required",
+        response: null,
       })),
       webLink: "https://outlook.office.com/calendar/event",
     };
@@ -2974,6 +3001,7 @@ describe("MicrosoftGraphProvider tools", () => {
           end: { dateTime: "2026-07-15T10:00:00", timeZone: "UTC" },
           location: "",
           organizer: { name: "", address: "" },
+          responseStatus: null,
           preview: "",
           previewIsPartial: true,
           hasAttachments: false,

@@ -80,8 +80,10 @@ bounded. Pagination links are neither followed nor returned; collection results 
 required by Microsoft Graph.
 
 Mail search requests only identification fields, read state, the follow-up flag, previews, and
-attachment presence; calendar view requests only identification fields, previews, and attachment
-presence. Exact message reads request a narrow field set and prefer a plain-text body. Both mail
+attachment presence; calendar view requests only identification fields, the signed-in user's
+response, previews, and attachment presence. Both calendar read tools return that response as
+`responseStatus` (`response` and `time`), and exact event reads add each attendee's `response`.
+Exact message reads request a narrow field set and prefer a plain-text body. Both mail
 tools return the Outlook follow-up flag as `flagStatus` (`notFlagged`, `flagged`, `complete`, or
 `null` when Graph returns no recognized status). Graph currently leaves the flag out of `$search`
 results, so keyword searches report `null`; listing the Inbox (no or blank `query`) and exact reads

@@ -1079,6 +1079,25 @@ function graphDateTime(value) {
         timeZone: boundedString(item.timeZone, 128),
     };
 }
+// Graph's responseType, or null when Graph returns no recognized response.
+function projectedResponse(value) {
+    const response = value?.response;
+    return response === "none" ||
+        response === "organizer" ||
+        response === "tentativelyAccepted" ||
+        response === "accepted" ||
+        response === "declined" ||
+        response === "notResponded"
+        ? response
+        : null;
+}
+// The signed-in user's own RSVP to the event.
+function projectedResponseStatus(value) {
+    if (value === null || typeof value !== "object")
+        return null;
+    const item = asRecord(value);
+    return { response: projectedResponse(item), time: boundedOptionalString(item.time, 64) };
+}
 function calendarResult(value) {
     const collection = collectionResult(value, 50);
     const events = collection.items.map((raw) => {
@@ -1100,6 +1119,7 @@ function calendarResult(value) {
                     name: boundedOptionalString(emailAddress.name, 512),
                     address: boundedOptionalString(emailAddress.address, 320),
                 },
+            responseStatus: projectedResponseStatus(item.responseStatus),
             ...projectedPreview(item.bodyPreview),
             hasAttachments: requiredBoolean(item.hasAttachments),
         };
@@ -1115,6 +1135,7 @@ function graphAttendees(value) {
         return {
             emailAddress: graphEmailAddress(item.emailAddress),
             type: boundedString(item.type, 32),
+            response: projectedResponse(item.status),
         };
     });
 }
@@ -1126,6 +1147,7 @@ function eventResult(value) {
         start: graphDateTime(value.start),
         end: graphDateTime(value.end),
         location: location === null ? null : boundedOptionalString(location.displayName, 1_000),
+        responseStatus: projectedResponseStatus(value.responseStatus),
         attendees: graphAttendees(value.attendees),
         webLink: boundedOptionalHttpsUrl(value.webLink, 2_048, OUTLOOK_WEB_HOSTS),
         ...(value.body === null || value.body === undefined ? {} : { body: projectedBody(value.body) }),
@@ -2051,6 +2073,12 @@ export class MicrosoftGraphProvider {
             this.#assertInvocationCurrent(generation);
             deletionFolderIds.add(boundedString(folder.id, 512));
         }
+        // Graph never reports a null parent for the mailbox root (msgfolderroot): it points at a hidden,
+        // self-parented store root. The walk stops at the mailbox root once every folder on the way
+        // has been checked; a folder outside it, such as one under Recoverable Items, still fails closed.
+        const mailboxRoot = await this.#graph(`/me/mailFolders/msgfolderroot?${selectId.toString()}`, accessToken, { signal });
+        this.#assertInvocationCurrent(generation);
+        const mailboxRootId = boundedString(mailboxRoot.id, 512);
         const visitedFolderIds = new Set();
         const selectAncestry = new URLSearchParams({ $select: "id,parentFolderId" });
         let currentFolderId = initialFolderId;
@@ -2066,6 +2094,8 @@ export class MicrosoftGraphProvider {
             const resolvedFolderId = boundedString(folder.id, 512);
             if (deletionFolderIds.has(resolvedFolderId))
                 throw deletionFolderError();
+            if (resolvedFolderId === mailboxRootId)
+                return;
             if (resolvedFolderId !== currentFolderId) {
                 if (visitedFolderIds.has(resolvedFolderId)) {
                     throw new IntegrationProviderPublicError("Microsoft 365 could not safely verify the mail folder hierarchy.", { unchanged: true });
@@ -2406,7 +2436,7 @@ export class MicrosoftGraphProvider {
                 endDateTime: end,
                 $top: "50",
                 $orderby: "start/dateTime",
-                $select: "id,subject,start,end,location,organizer,bodyPreview,hasAttachments",
+                $select: "id,subject,start,end,location,organizer,responseStatus,bodyPreview,hasAttachments",
             });
             const result = await this.#graph(`/me/calendarView?${params.toString()}`, access.value, {
                 signal: context?.signal,
