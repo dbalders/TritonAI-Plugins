@@ -39,3 +39,23 @@ test("the live smoke refuses every request except reads and token refreshes", as
   assert.deepEqual(sent, ["GET", "POST"]);
   assert.equal(log.refused.length, 5);
 });
+
+test("the live smoke hands large provider errors back intact", { timeout: 5_000 }, async () => {
+  const log = { failures: [], refused: [] };
+  const body = JSON.stringify({ error: { code: "TooLarge", detail: "x".repeat(64 * 1024) } });
+  // Several chunks, so the guard stops reading before the stream ends.
+  const chunks = body.match(/[^]{1,8192}/gu).map((chunk) => new TextEncoder().encode(chunk));
+  const guarded = createReadOnlyFetch(async () => {
+    const stream = new ReadableStream({
+      pull(controller) {
+        const next = chunks.shift();
+        if (next) controller.enqueue(next);
+        else controller.close();
+      },
+    });
+    return new Response(stream, { status: 400 });
+  }, log);
+  const response = await guarded("https://graph.microsoft.com/v1.0/me/messages");
+  assert.equal((await response.text()).length, body.length);
+  assert.deepEqual(log.failures, [{ host: "graph.microsoft.com", status: 400, code: null }]);
+});

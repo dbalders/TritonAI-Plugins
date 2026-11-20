@@ -311,7 +311,8 @@ async function providerErrorCode(response) {
   } catch {
     return null;
   } finally {
-    await reader.cancel().catch(() => undefined);
+    // Do not await: a tee branch's cancel settles only once the original is read too.
+    void reader.cancel().catch(() => undefined);
   }
 }
 
