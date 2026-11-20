@@ -95,6 +95,11 @@ This proves the packaged provider's scoped HTTP behavior; it does not prove live
 OAuth consent, or a released Harness connection. Live verification must use an existing authorized
 connection without printing credentials or creating production records.
 
+Before a Google Workspace or Microsoft 365 release, run `pnpm smoke:live` on a Mac where the
+plugin is connected in TritonAI Harness. It calls every read tool once against that real account
+and prints only pass or fail per tool; see the
+[release checklist](docs/release-checklist.md#live-read-only-smoke).
+
 Publication, GitHub repository creation, tags, pushes, Harness composition, and releases remain
 explicit owner actions.
 

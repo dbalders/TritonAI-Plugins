@@ -32,6 +32,36 @@
 7. For providers with write tools, prove `connect`/`disconnect` recovery and `writeApproved` plus
    `beginCommit()` admission immediately before each remote mutation.
 8. Complete secret scanning, structured review, and security validation for the full plugin diff.
+9. Run `pnpm smoke:live` on the release commit (see below) and confirm every Google Workspace and
+   Microsoft 365 tool passes or is skipped for a stated reason.
+
+## Live read-only smoke
+
+Provider tests use canned responses, so they pass whatever the outgoing request looks like.
+`pnpm smoke:live` (optionally `--plugin google-workspace` or `--plugin microsoft-365`) loads each
+plugin's committed `dist/index.js` from this checkout and calls every manifest read tool once
+against the account already connected in a local TritonAI Harness desktop app. Run it on a Mac
+where the plugin is connected in the stable or nightly Harness; it is not a CI job.
+
+- **Read-only, structurally.** It invokes only tools the manifest marks `effect: "read"` and the
+  provider marks read-only, and `tests/live-smoke.test.mjs` fails when a read tool has no smoke
+  input. Every outgoing request other than GET/HEAD is refused, except an OAuth token refresh. The
+  Microsoft 365 mail-move probe runs the move's read-only folder check, then must be refused at the
+  move request itself; its message id does not exist.
+- **Inputs** are bounded: small result limits, a short calendar window, and samples (a Doc, a
+  message with an attachment, a file under 256 KB) taken from earlier list results. A tool whose
+  sample does not exist in the account, or whose capability is not granted, is skipped.
+- **Output** is one line per tool: PASS, FAIL or SKIP, with HTTP status, host, provider error code
+  and the provider's fixed public error sentence. Results stay in memory and are never printed.
+- **Credentials.** The script reads `integration-<plugin>--oauth` from that Harness profile's
+  encrypted secret store and the plugin's build configuration from the installed app bundle. macOS
+  asks for Keychain access to "TritonAI Harness Safe Storage" on each run; choose **Allow**, not
+  **Always Allow**. A refreshed token stays in memory and is never written back to Harness.
+
+Tradeoff: unwrapping the Harness data key gives the script process access to every Harness secret
+on that Mac for the run, and the approach is macOS-only. The alternative is a Harness-side command
+that runs a supplied provider inside the server with its own secret store; that is a larger
+cross-repository change and is not built yet.
 
 Publication and release actions are manual owner decisions. Passing this checklist does not mean the
 repository is published, deployed, signed, bundled, or penetration-tested.
