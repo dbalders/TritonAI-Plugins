@@ -1471,6 +1471,7 @@ describe("MicrosoftGraphProvider tools", () => {
           start: { dateTime: "2026-07-15T09:00:00", timeZone: "Pacific Standard Time" },
           end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
           location: { displayName: "Online" },
+          responseStatus: { response: "tentativelyAccepted", time: "2026-07-14T16:00:00Z" },
           attendees: [
             {
               emailAddress: { name: "Person", address: "person@example.edu" },
@@ -1492,6 +1493,7 @@ describe("MicrosoftGraphProvider tools", () => {
             end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
             location: { displayName: "Online" },
             organizer: { emailAddress: { name: "Person", address: "person@example.edu" } },
+            responseStatus: { response: "accepted", time: "2026-07-14T16:00:00Z" },
             bodyPreview: "Complete agenda",
             hasAttachments: true,
             fixtureProperty: { preserved: true },
@@ -1525,6 +1527,7 @@ describe("MicrosoftGraphProvider tools", () => {
           end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
           location: "Online",
           organizer: { name: "Person", address: "person@example.edu" },
+          responseStatus: { response: "accepted", time: "2026-07-14T16:00:00Z" },
           preview: "Complete agenda",
           previewIsPartial: true,
           hasAttachments: true,
@@ -1536,6 +1539,7 @@ describe("MicrosoftGraphProvider tools", () => {
           end: { dateTime: "2026-07-15T12:00:00", timeZone: "Pacific Standard Time" },
           location: null,
           organizer: null,
+          responseStatus: null,
           preview: null,
           previewIsPartial: false,
           hasAttachments: false,
@@ -1546,7 +1550,7 @@ describe("MicrosoftGraphProvider tools", () => {
     const calendarUrl = calls.find((url) => url.includes("/me/calendarView?")) ?? "";
     expect(calendarUrl.startsWith("https://graph.microsoft.com/v1.0/me/calendarView?")).toBe(true);
     expect(decodeURIComponent(calendarUrl)).toContain(
-      "$select=id,subject,start,end,location,organizer,bodyPreview,hasAttachments",
+      "$select=id,subject,start,end,location,organizer,responseStatus,bodyPreview,hasAttachments",
     );
     await expect(
       graph.invoke("microsoft365.calendar.event.get", { eventId: "event/id?fixture" }),
@@ -1556,10 +1560,12 @@ describe("MicrosoftGraphProvider tools", () => {
       start: { dateTime: "2026-07-15T09:00:00", timeZone: "Pacific Standard Time" },
       end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
       location: "Online",
+      responseStatus: { response: "tentativelyAccepted", time: "2026-07-14T16:00:00Z" },
       attendees: [
         {
           emailAddress: { name: "Person", address: "person@example.edu" },
           type: "required",
+          response: "accepted",
         },
       ],
       webLink: "https://outlook.office.com/calendar/event-1",
@@ -2362,8 +2368,18 @@ describe("MicrosoftGraphProvider tools", () => {
       if (url.includes("/mailFolders/parent%2Fid%3Ffixture?")) {
         return jsonResponse({ id: "parent/id?fixture", parentFolderId: null });
       }
+      if (url.includes("/mailFolders/msgfolderroot?")) {
+        return jsonResponse({ id: "mailbox-root-id" });
+      }
+      // Graph's real shape: the mailbox root points at a hidden, self-parented store root.
       if (url.includes("/mailFolders/archive?")) {
-        return jsonResponse({ id: "opaque-archive-id", parentFolderId: null });
+        return jsonResponse({ id: "opaque-archive-id", parentFolderId: "mailbox-root-id" });
+      }
+      if (url.includes("/mailFolders/mailbox-root-id?")) {
+        return jsonResponse({ id: "mailbox-root-id", parentFolderId: "store-root-id" });
+      }
+      if (url.includes("/mailFolders/store-root-id?")) {
+        return jsonResponse({ id: "store-root-id", parentFolderId: "store-root-id" });
       }
       if (init?.method !== "POST") {
         return jsonResponse({
@@ -2455,24 +2471,33 @@ describe("MicrosoftGraphProvider tools", () => {
       "https://graph.microsoft.com/v1.0/me/mailFolders/recoverableitemsdeletions?%24select=id",
     );
     expect(graphCalls[5]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture?%24select=id%2CparentFolderId",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/msgfolderroot?%24select=id",
     );
     expect(graphCalls[6]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture/childFolders",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture?%24select=id%2CparentFolderId",
     );
     expect(graphCalls[7]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/deleteditems?%24select=id",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture/childFolders",
     );
     expect(graphCalls[8]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/recoverableitemsdeletions?%24select=id",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/deleteditems?%24select=id",
     );
     expect(graphCalls[9]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/archive?%24select=id%2CparentFolderId",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/recoverableitemsdeletions?%24select=id",
     );
     expect(graphCalls[10]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/msgfolderroot?%24select=id",
+    );
+    expect(graphCalls[11]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/archive?%24select=id%2CparentFolderId",
+    );
+    expect(graphCalls[12]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/mailbox-root-id?%24select=id%2CparentFolderId",
+    );
+    expect(graphCalls[13]?.url).toBe(
       "https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture/move",
     );
-    expect(JSON.parse(String(graphCalls[10]?.init?.body))).toEqual({ destinationId: "archive" });
+    expect(JSON.parse(String(graphCalls[13]?.init?.body))).toEqual({ destinationId: "archive" });
   });
 
   it("rejects opaque deletion-folder IDs before moving a message", async () => {
@@ -2719,9 +2744,11 @@ describe("MicrosoftGraphProvider tools", () => {
       start: { dateTime: "2026-07-20T16:00:00.0000000", timeZone: "UTC" },
       end: { dateTime: "2026-07-20T17:00:00.0000000", timeZone: "UTC" },
       location: "Online",
+      responseStatus: null,
       attendees: Array.from({ length: 51 }, () => ({
         emailAddress: { name: "Person", address: "person@example.edu" },
         type: "required",
+        response: null,
       })),
       webLink: "https://outlook.office.com/calendar/event",
     };
@@ -2802,7 +2829,8 @@ describe("MicrosoftGraphProvider tools", () => {
         ? jsonResponse(message, 201)
         : jsonResponse({
             value: [message],
-            "@odata.nextLink": "https://graph.microsoft.com/v1.0/ignored-message-page",
+            "@odata.nextLink":
+              "https://graph.microsoft.com/v1.0/chats/chat%2Fid%3Ffixture/messages?$top=5&$skiptoken=fixture",
           });
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
@@ -2831,7 +2859,11 @@ describe("MicrosoftGraphProvider tools", () => {
     };
     await expect(
       graph.invoke("microsoft365.chat.messages", { chatId: "chat/id?fixture", limit: 5 }),
-    ).resolves.toEqual({ messages: [projectedMessage], hasMore: true });
+    ).resolves.toEqual({
+      messages: [projectedMessage],
+      hasMore: true,
+      nextCursor: expect.any(String),
+    });
     await expect(
       graph.invoke(
         "microsoft365.chat.message.send",
@@ -2924,6 +2956,7 @@ describe("MicrosoftGraphProvider tools", () => {
     ).resolves.toEqual({
       messages: [projectedDeletedMessage, projectedSystemMessage, projectedNullContentMessage],
       hasMore: false,
+      nextCursor: null,
     });
     await expect(
       graph.invoke(
@@ -2971,6 +3004,7 @@ describe("MicrosoftGraphProvider tools", () => {
           end: { dateTime: "2026-07-15T10:00:00", timeZone: "UTC" },
           location: "",
           organizer: { name: "", address: "" },
+          responseStatus: null,
           preview: "",
           previewIsPartial: true,
           hasAttachments: false,
@@ -3395,18 +3429,7 @@ describe("MicrosoftGraphProvider tools", () => {
     const leadingProjected = Array.from({ length: 7 }, (_, index) =>
       projectedMessage(`message-${index}`, "x".repeat(50_000)),
     );
-    const emptyBoundary = projectedMessage("message-boundary", "");
-    const emptyBoundaryBytes = new TextEncoder().encode(
-      JSON.stringify({ messages: [...leadingProjected, emptyBoundary], hasMore: true }),
-    ).byteLength;
-    const boundaryContentBytes = resultBudget - emptyBoundaryBytes;
-    expect(boundaryContentBytes).toBeGreaterThan(0);
-    expect(boundaryContentBytes).toBeLessThanOrEqual(50_000);
-    const boundaryContent = `${"😀".repeat(Math.floor(boundaryContentBytes / 4))}${"x".repeat(
-      boundaryContentBytes % 4,
-    )}`;
-    expect(new TextEncoder().encode(boundaryContent).byteLength).toBe(boundaryContentBytes);
-    const boundaryMessage = projectedMessage("message-boundary", boundaryContent);
+    let boundaryContent = "x".repeat(30_000);
     const fetchImplementation = (async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
@@ -3415,12 +3438,35 @@ describe("MicrosoftGraphProvider tools", () => {
         value: [
           ...leadingRaw,
           rawMessage("message-boundary", boundaryContent),
-          rawMessage("message-omitted", "😀"),
+          rawMessage("message-omitted", "x".repeat(50_000)),
         ],
       });
     }) as typeof fetch;
     const graph = provider(secrets.service, fetchImplementation);
     await authorize(graph, ["chat.read"]);
+    // A probe read clipped at the same message yields the same resume cursor.
+    const probe = (await graph.invoke("microsoft365.chat.messages", {
+      chatId: "chat-1",
+      limit: 9,
+    })) as { readonly messages: ReadonlyArray<unknown>; readonly nextCursor: string };
+    expect(probe.messages).toHaveLength(8);
+
+    const emptyBoundary = projectedMessage("message-boundary", "");
+    const emptyBoundaryBytes = new TextEncoder().encode(
+      JSON.stringify({
+        messages: [...leadingProjected, emptyBoundary],
+        hasMore: true,
+        nextCursor: probe.nextCursor,
+      }),
+    ).byteLength;
+    const boundaryContentBytes = resultBudget - emptyBoundaryBytes;
+    expect(boundaryContentBytes).toBeGreaterThan(0);
+    expect(boundaryContentBytes).toBeLessThanOrEqual(50_000);
+    boundaryContent = `${"😀".repeat(Math.floor(boundaryContentBytes / 4))}${"x".repeat(
+      boundaryContentBytes % 4,
+    )}`;
+    expect(new TextEncoder().encode(boundaryContent).byteLength).toBe(boundaryContentBytes);
+    const boundaryMessage = projectedMessage("message-boundary", boundaryContent);
 
     const result = await graph.invoke("microsoft365.chat.messages", {
       chatId: "chat-1",
@@ -3429,9 +3475,100 @@ describe("MicrosoftGraphProvider tools", () => {
     expect(result).toEqual({
       messages: [...leadingProjected, boundaryMessage],
       hasMore: true,
+      nextCursor: probe.nextCursor,
     });
     expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBe(resultBudget);
     expect(JSON.stringify(result)).not.toContain("message-omitted");
+  });
+
+  it("continues chat history past a system-event page and a size-clipped page", async () => {
+    const secrets = memorySecrets();
+    const chatId = "19:group@thread.v2";
+    const systemEvent = (id: string) => ({
+      id,
+      createdDateTime: "2026-07-16T12:00:00Z",
+      lastModifiedDateTime: null,
+      from: null,
+      body: { contentType: "html", content: "<systemEventMessage/>" },
+      webUrl: null,
+      messageType: "systemEventMessage",
+    });
+    const large = (id: string) => ({
+      id,
+      createdDateTime: "2026-07-15T12:00:00Z",
+      lastModifiedDateTime: null,
+      from: null,
+      body: { contentType: "text", content: "x".repeat(50_000) },
+      webUrl: null,
+    });
+    const earlier = {
+      id: "message-earlier",
+      createdDateTime: "2026-07-01T09:30:00Z",
+      lastModifiedDateTime: null,
+      from: { user: { id: "user-1", displayName: "Person" } },
+      body: { contentType: "text", content: "Earlier hello" },
+      webUrl: null,
+    };
+    const graphUrls: Array<URL> = [];
+    const fetchImplementation = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/devicecode")) return jsonResponse(deviceBody());
+      if (url.endsWith("/token")) return jsonResponse(tokenBody("offline_access Chat.Read"));
+      const request = new URL(url);
+      graphUrls.push(request);
+      return request.searchParams.get("$skiptoken") === "page-2"
+        ? jsonResponse({
+            value: [...Array.from({ length: 8 }, (_, index) => large(`large-${index}`)), earlier],
+          })
+        : jsonResponse({
+            value: [systemEvent("system-1"), systemEvent("system-2"), systemEvent("system-3")],
+            "@odata.nextLink": `https://graph.microsoft.com/v1.0/chats/${chatId}/messages?$top=10&$orderby=createdDateTime+desc&$skiptoken=page-2`,
+          });
+    }) as typeof fetch;
+    const graph = provider(secrets.service, fetchImplementation);
+    await authorize(graph, ["chat.read"]);
+    type Page = {
+      readonly messages: ReadonlyArray<{ readonly id: string }>;
+      readonly hasMore: boolean;
+      readonly nextCursor: string | null;
+    };
+    const read = async (input: Record<string, unknown>) =>
+      (await graph.invoke("microsoft365.chat.messages", { chatId, ...input })) as Page;
+
+    const first = await read({ limit: 10 });
+    expect(first.messages.map((message) => message.id)).toEqual([
+      "system-1",
+      "system-2",
+      "system-3",
+    ]);
+    expect(first.hasMore).toBe(true);
+    await expect(
+      graph.invoke("microsoft365.chat.messages", {
+        chatId: "19:other@thread.v2",
+        cursor: first.nextCursor,
+      }),
+    ).rejects.toThrow(/another chat/u);
+
+    const clipped = await read({ cursor: first.nextCursor });
+    expect(clipped.messages.map((message) => message.id)).toEqual(
+      Array.from({ length: 7 }, (_, index) => `large-${index}`),
+    );
+    expect(clipped.hasMore).toBe(true);
+
+    const last = await read({ cursor: clipped.nextCursor });
+    expect(last.messages.map((message) => message.id)).toEqual(["large-7", "message-earlier"]);
+    expect(last.messages[1]).toEqual({
+      id: "message-earlier",
+      createdDateTime: "2026-07-01T09:30:00Z",
+      lastModifiedDateTime: null,
+      from: { id: "user-1", displayName: "Person" },
+      body: { contentType: "text", content: "Earlier hello", truncated: false },
+      webUrl: null,
+    });
+    expect(last).toMatchObject({ hasMore: false, nextCursor: null });
+    expect(graphUrls.map((url) => [url.origin, url.pathname])).toEqual(
+      Array(3).fill(["https://graph.microsoft.com", "/v1.0/chats/19%3Agroup%40thread.v2/messages"]),
+    );
   });
 
   it("rejects malformed continuation metadata and attachment content", async () => {
