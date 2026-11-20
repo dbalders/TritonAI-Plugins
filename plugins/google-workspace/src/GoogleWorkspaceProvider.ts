@@ -2006,7 +2006,15 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
       },
       LARGE_RESPONSE_BYTES,
     );
-    if (!response.ok) throw this.#publicApiError(response);
+    if (!response.ok) {
+      let error: Record<string, unknown> | undefined;
+      try {
+        error = parseJsonResponse(response, bytes);
+      } catch {
+        // A non-JSON refusal keeps its fixed message.
+      }
+      throw this.#publicApiError(response, error);
+    }
     return { response, bytes };
   }
 
@@ -2014,11 +2022,6 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
     response: Response,
     json?: Record<string, unknown>,
   ): IntegrationProviderPublicError {
-    if (response.status === 401) {
-      return new IntegrationProviderPublicError(
-        "Google Workspace authorization expired. Disconnect and reconnect.",
-      );
-    }
     const error = json?.error;
     const fields =
       error && typeof error === "object" && !Array.isArray(error)
@@ -2028,6 +2031,9 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
     const code = googleErrorCode(fields);
     const publicError = (message: string) =>
       new IntegrationProviderPublicError(code === null ? message : `${message} (Google: ${code})`);
+    if (response.status === 401) {
+      return publicError("Google Workspace authorization expired. Disconnect and reconnect.");
+    }
     const rateLimited =
       response.status === 429 ||
       (response.status === 403 &&

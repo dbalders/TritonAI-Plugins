@@ -2702,12 +2702,14 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
       },
       async (response) => {
         if (!response.ok) {
+          // Only a small JSON error body is read, for its code; anything else is discarded.
+          const error = await readJson(response, 64 * 1024).catch(() => undefined);
           await response.body?.cancel().catch(() => undefined);
           if (response.status === 401 && this.#accessToken?.value === accessToken) {
             this.#accessToken = null;
           }
           throw (
-            graphRefusal(response.status) ??
+            graphRefusal(response.status, error) ??
             new Error(`Microsoft Graph request failed with HTTP ${response.status}.`)
           );
         }
