@@ -2287,7 +2287,10 @@ describe("MicrosoftGraphProvider tools", () => {
 
   it("separates refused reply drafts from ones that may exist", async () => {
     const created = [
-      jsonResponse({ error: { code: "ErrorItemNotFound" } }, 404),
+      jsonResponse(
+        { error: { code: "ErrorItemNotFound", message: "No message for ana@ucsd.edu: Budget" } },
+        404,
+      ),
       new Response("upstream", { status: 503 }),
       new Response("{not json", { status: 201, headers: { "content-type": "application/json" } }),
     ];
@@ -2301,7 +2304,7 @@ describe("MicrosoftGraphProvider tools", () => {
       );
 
     await expect(reply()).rejects.toMatchObject({
-      message: "The requested Microsoft 365 item was not found.",
+      message: "The requested Microsoft 365 item was not found. (Graph: ErrorItemNotFound)",
       unchanged: true,
     });
     for (let index = 0; index < 2; index += 1) {

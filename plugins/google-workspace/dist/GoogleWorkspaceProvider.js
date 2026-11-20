@@ -75,6 +75,7 @@ const WRITE_TOOLS = new Set([
 ]);
 const GOOGLE_CLIENT_ID = /^\d{6,30}-[a-z0-9]{8,128}\.apps\.googleusercontent\.com$/u;
 const GOOGLE_CLIENT_SECRET = /^[A-Za-z0-9_-]{16,256}$/u;
+const PROVIDER_ERROR_CODE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const FLOW_LIFETIME_MS = 5 * 60_000;
 const FLOW_CALLBACK_CLAIM_MS = 60_000;
@@ -960,6 +961,24 @@ async function readResponseBytes(response, maximumBytes) {
     }
     return bytes;
 }
+/**
+ * Google's machine-readable error reason or status, only when it is a plain token. Google's error
+ * message text can quote request parameters or Workspace content, so it is never kept.
+ */
+function googleErrorCode(error) {
+    const reasons = Array.isArray(error?.errors) ? error.errors.slice(0, 20) : [];
+    const candidates = [
+        ...reasons.map((raw) => raw && typeof raw === "object" && !Array.isArray(raw)
+            ? raw.reason
+            : undefined),
+        error?.status,
+    ];
+    for (const candidate of candidates) {
+        if (typeof candidate === "string" && PROVIDER_ERROR_CODE.test(candidate))
+            return candidate;
+    }
+    return null;
+}
 function parseJsonResponse(response, bytes) {
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
     if (contentType && !contentType.includes("application/json")) {
@@ -1586,9 +1605,12 @@ export class GoogleWorkspaceProvider {
             return new IntegrationProviderPublicError("Google Workspace authorization expired. Disconnect and reconnect.");
         }
         const error = json?.error;
-        const reasons = error && typeof error === "object" && !Array.isArray(error)
-            ? error.errors
+        const fields = error && typeof error === "object" && !Array.isArray(error)
+            ? error
             : undefined;
+        const reasons = fields?.errors;
+        const code = googleErrorCode(fields);
+        const publicError = (message) => new IntegrationProviderPublicError(code === null ? message : `${message} (Google: ${code})`);
         const rateLimited = response.status === 429 ||
             (response.status === 403 &&
                 Array.isArray(reasons) &&
@@ -1605,18 +1627,18 @@ export class GoogleWorkspaceProvider {
             const retry = Number.isInteger(rawRetry) && rawRetry >= 1 && rawRetry <= 3_600
                 ? ` Retry after about ${rawRetry} seconds.`
                 : "";
-            return new IntegrationProviderPublicError(`Google Workspace is rate limiting requests.${retry}`);
+            return publicError(`Google Workspace is rate limiting requests.${retry}`);
         }
         if (response.status === 404) {
-            return new IntegrationProviderPublicError("The requested Google Workspace resource was not found or is not accessible.");
+            return publicError("The requested Google Workspace resource was not found or is not accessible.");
         }
         if (response.status === 403) {
-            return new IntegrationProviderPublicError("Google Workspace denied this operation. The account, scope, or administrator policy may not allow it.");
+            return publicError("Google Workspace denied this operation. The account, scope, or administrator policy may not allow it.");
         }
         if (response.status === 400) {
-            return new IntegrationProviderPublicError("Google Workspace rejected the bounded request.");
+            return publicError("Google Workspace rejected the bounded request.");
         }
-        return new IntegrationProviderPublicError("Google Workspace could not complete the operation. Try again later.");
+        return publicError("Google Workspace could not complete the operation. Try again later.");
     }
     async #readCredential(signal) {
         const value = await Effect.runPromise(this.#secrets.get(GOOGLE_WORKSPACE_SECRET_SUFFIX), {
