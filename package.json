@@ -13,6 +13,7 @@
     "package:dry-run": "node scripts/package-dry-run.mjs",
     "readiness": "pnpm check && pnpm artifacts:sdk:check && pnpm typecheck && pnpm test && pnpm package:dry-run",
     "readiness:local": "pnpm readiness && pnpm contract:harness",
+    "smoke:live": "node scripts/live-smoke.mjs",
     "typecheck": "vp run -r typecheck",
     "test": "node --test tests/*.test.mjs && node scripts/test-plugins.mjs",
     "validate": "node scripts/validate-repository.mjs"
