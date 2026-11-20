@@ -1471,6 +1471,7 @@ describe("MicrosoftGraphProvider tools", () => {
           start: { dateTime: "2026-07-15T09:00:00", timeZone: "Pacific Standard Time" },
           end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
           location: { displayName: "Online" },
+          responseStatus: { response: "tentativelyAccepted", time: "2026-07-14T16:00:00Z" },
           attendees: [
             {
               emailAddress: { name: "Person", address: "person@example.edu" },
@@ -1492,6 +1493,7 @@ describe("MicrosoftGraphProvider tools", () => {
             end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
             location: { displayName: "Online" },
             organizer: { emailAddress: { name: "Person", address: "person@example.edu" } },
+            responseStatus: { response: "accepted", time: "2026-07-14T16:00:00Z" },
             bodyPreview: "Complete agenda",
             hasAttachments: true,
             fixtureProperty: { preserved: true },
@@ -1525,6 +1527,7 @@ describe("MicrosoftGraphProvider tools", () => {
           end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
           location: "Online",
           organizer: { name: "Person", address: "person@example.edu" },
+          responseStatus: { response: "accepted", time: "2026-07-14T16:00:00Z" },
           preview: "Complete agenda",
           previewIsPartial: true,
           hasAttachments: true,
@@ -1536,6 +1539,7 @@ describe("MicrosoftGraphProvider tools", () => {
           end: { dateTime: "2026-07-15T12:00:00", timeZone: "Pacific Standard Time" },
           location: null,
           organizer: null,
+          responseStatus: null,
           preview: null,
           previewIsPartial: false,
           hasAttachments: false,
@@ -1546,7 +1550,7 @@ describe("MicrosoftGraphProvider tools", () => {
     const calendarUrl = calls.find((url) => url.includes("/me/calendarView?")) ?? "";
     expect(calendarUrl.startsWith("https://graph.microsoft.com/v1.0/me/calendarView?")).toBe(true);
     expect(decodeURIComponent(calendarUrl)).toContain(
-      "$select=id,subject,start,end,location,organizer,bodyPreview,hasAttachments",
+      "$select=id,subject,start,end,location,organizer,responseStatus,bodyPreview,hasAttachments",
     );
     await expect(
       graph.invoke("microsoft365.calendar.event.get", { eventId: "event/id?fixture" }),
@@ -1556,10 +1560,12 @@ describe("MicrosoftGraphProvider tools", () => {
       start: { dateTime: "2026-07-15T09:00:00", timeZone: "Pacific Standard Time" },
       end: { dateTime: "2026-07-15T10:00:00", timeZone: "Pacific Standard Time" },
       location: "Online",
+      responseStatus: { response: "tentativelyAccepted", time: "2026-07-14T16:00:00Z" },
       attendees: [
         {
           emailAddress: { name: "Person", address: "person@example.edu" },
           type: "required",
+          response: "accepted",
         },
       ],
       webLink: "https://outlook.office.com/calendar/event-1",
@@ -2738,9 +2744,11 @@ describe("MicrosoftGraphProvider tools", () => {
       start: { dateTime: "2026-07-20T16:00:00.0000000", timeZone: "UTC" },
       end: { dateTime: "2026-07-20T17:00:00.0000000", timeZone: "UTC" },
       location: "Online",
+      responseStatus: null,
       attendees: Array.from({ length: 51 }, () => ({
         emailAddress: { name: "Person", address: "person@example.edu" },
         type: "required",
+        response: null,
       })),
       webLink: "https://outlook.office.com/calendar/event",
     };
@@ -2996,6 +3004,7 @@ describe("MicrosoftGraphProvider tools", () => {
           end: { dateTime: "2026-07-15T10:00:00", timeZone: "UTC" },
           location: "",
           organizer: { name: "", address: "" },
+          responseStatus: null,
           preview: "",
           previewIsPartial: true,
           hasAttachments: false,

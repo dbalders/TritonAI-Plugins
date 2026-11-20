@@ -1372,6 +1372,26 @@ function graphDateTime(value: unknown): { readonly dateTime: string; readonly ti
   };
 }
 
+// Graph's responseType, or null when Graph returns no recognized response.
+function projectedResponse(value: unknown) {
+  const response = (value as { readonly response?: unknown } | null | undefined)?.response;
+  return response === "none" ||
+    response === "organizer" ||
+    response === "tentativelyAccepted" ||
+    response === "accepted" ||
+    response === "declined" ||
+    response === "notResponded"
+    ? response
+    : null;
+}
+
+// The signed-in user's own RSVP to the event.
+function projectedResponseStatus(value: unknown) {
+  if (value === null || typeof value !== "object") return null;
+  const item = asRecord(value);
+  return { response: projectedResponse(item), time: boundedOptionalString(item.time, 64) };
+}
+
 function calendarResult(value: Record<string, unknown>) {
   const collection = collectionResult(value, 50);
   const events = collection.items.map((raw) => {
@@ -1397,6 +1417,7 @@ function calendarResult(value: Record<string, unknown>) {
               name: boundedOptionalString(emailAddress.name, 512),
               address: boundedOptionalString(emailAddress.address, 320),
             },
+      responseStatus: projectedResponseStatus(item.responseStatus),
       ...projectedPreview(item.bodyPreview),
       hasAttachments: requiredBoolean(item.hasAttachments),
     };
@@ -1413,6 +1434,7 @@ function graphAttendees(value: unknown) {
     return {
       emailAddress: graphEmailAddress(item.emailAddress),
       type: boundedString(item.type, 32),
+      response: projectedResponse(item.status),
     };
   });
 }
@@ -1426,6 +1448,7 @@ function eventResult(value: Record<string, unknown>) {
     start: graphDateTime(value.start),
     end: graphDateTime(value.end),
     location: location === null ? null : boundedOptionalString(location.displayName, 1_000),
+    responseStatus: projectedResponseStatus(value.responseStatus),
     attendees: graphAttendees(value.attendees),
     webLink: boundedOptionalHttpsUrl(value.webLink, 2_048, OUTLOOK_WEB_HOSTS),
     ...(value.body === null || value.body === undefined ? {} : { body: projectedBody(value.body) }),
@@ -3042,7 +3065,8 @@ export class MicrosoftGraphProvider implements IntegrationProvider {
         endDateTime: end,
         $top: "50",
         $orderby: "start/dateTime",
-        $select: "id,subject,start,end,location,organizer,bodyPreview,hasAttachments",
+        $select:
+          "id,subject,start,end,location,organizer,responseStatus,bodyPreview,hasAttachments",
       });
       const result = await this.#graph(`/me/calendarView?${params.toString()}`, access.value, {
         signal: context?.signal,
