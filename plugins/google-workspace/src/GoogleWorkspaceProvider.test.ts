@@ -1304,6 +1304,53 @@ describe("GoogleWorkspaceProvider fixed tools", () => {
     }
   });
 
+  it("lists a Zoom event by omitting its sip: entry point instead of failing the page", async () => {
+    const fixture = oauthFixture({
+      api: () =>
+        jsonResponse({
+          items: [
+            {
+              id: "event-zoom",
+              status: "confirmed",
+              summary: "Weekly sync",
+              start: { dateTime: "2026-11-20T17:00:00.000Z" },
+              end: { dateTime: "2026-11-20T17:30:00.000Z" },
+              conferenceData: {
+                conferenceId: "93012345678",
+                conferenceSolution: { key: { type: "addOn" }, name: "Zoom Meeting" },
+                entryPoints: [
+                  { entryPointType: "video", uri: "https://ucsd.zoom.us/j/93012345678" },
+                  { entryPointType: "phone", uri: "tel:+16699006833,,93012345678#" },
+                  { entryPointType: "sip", uri: "sip:93012345678@zoomcrc.com" },
+                ],
+              },
+            },
+          ],
+        }),
+    });
+    try {
+      await fixture.complete(["identity.read", "calendar.read"]);
+      const result = (await fixture.provider.invoke(
+        "googleworkspace.calendar.events.list",
+        { start: "2026-11-20T00:00:00Z", end: "2026-11-21T00:00:00Z" },
+        invocation(),
+      )) as { readonly events: ReadonlyArray<{ readonly conference: unknown }> };
+      expect(result.events.map((event) => event.conference)).toEqual([
+        {
+          conferenceId: "93012345678",
+          solutionName: "Zoom Meeting",
+          solutionType: "addOn",
+          entryPoints: [
+            { type: "video", uri: "https://ucsd.zoom.us/j/93012345678", label: null },
+            { type: "phone", uri: "tel:+16699006833,,93012345678#", label: null },
+          ],
+        },
+      ]);
+    } finally {
+      await fixture.provider.close();
+    }
+  });
+
   it("creates and patches only narrow Calendar fields with invitations disabled", async () => {
     const apiCalls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
     const event = {

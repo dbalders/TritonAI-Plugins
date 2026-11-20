@@ -1422,14 +1422,13 @@ function projectCalendarEvent(value: unknown) {
               ? null
               : asRecord(solution.key, "Google Calendar conference");
           const entryPoints = Array.isArray(data.entryPoints)
-            ? data.entryPoints.slice(0, 20).map((raw) => {
+            ? data.entryPoints.slice(0, 20).flatMap((raw) => {
                 const entry = asRecord(raw, "Google Calendar conference");
                 const uri = boundedOptionalString(entry.uri, 2_048, "Google Calendar conference");
-                if (uri !== null) {
-                  const parsed = new URL(uri);
-                  if (!["https:", "tel:"].includes(parsed.protocol)) {
-                    throw new Error("Google Calendar conference URI is invalid.");
-                  }
+                // Google also returns sip: and http: entry points (Zoom adds sip:). Omit them
+                // rather than failing the whole event or page.
+                if (uri !== null && !["https:", "tel:"].includes(new URL(uri).protocol)) {
+                  return [];
                 }
                 return {
                   type: boundedOptionalString(
@@ -3916,17 +3915,18 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
       url.searchParams.set("maxResults", String(limit));
       url.searchParams.set(
         "fields",
-        "nextPageToken,items(id,status,summary,description,location,start,end,organizer,creator,recurringEventId,hangoutLink,conferenceData(conferenceId,conferenceSolution(key,type,name),entryPoints(entryPointType,uri,label)),attachments(fileId,title,mimeType))",
+        "nextPageToken,items(id,status,summary,description,location,start,end,organizer,creator,recurringEventId,hangoutLink,conferenceData(conferenceId,conferenceSolution(key(type),name),entryPoints(entryPointType,uri,label)),attachments(fileId,title,mimeType))",
       );
       if (pageToken) url.searchParams.set("pageToken", pageToken);
       const json = await this.#apiJson(url, access.value, {
         signal: context?.signal,
         maximumBytes: JSON_RESPONSE_BYTES,
       });
-      if (!Array.isArray(json.items) || json.items.length > limit) {
+      const items = json.items === undefined ? [] : json.items;
+      if (!Array.isArray(items) || items.length > limit) {
         throw new Error("Google Calendar returned an invalid event list.");
       }
-      const events = json.items.map(projectCalendarEvent);
+      const events = items.map(projectCalendarEvent);
       const cursor =
         json.nextPageToken === undefined
           ? null
@@ -3949,7 +3949,7 @@ export class GoogleWorkspaceProvider implements IntegrationProvider {
       );
       url.searchParams.set(
         "fields",
-        "id,status,summary,description,location,start,end,organizer,creator,recurringEventId,hangoutLink,conferenceData(conferenceId,conferenceSolution(key,type,name),entryPoints(entryPointType,uri,label)),attachments(fileId,title,mimeType)",
+        "id,status,summary,description,location,start,end,organizer,creator,recurringEventId,hangoutLink,conferenceData(conferenceId,conferenceSolution(key(type),name),entryPoints(entryPointType,uri,label)),attachments(fileId,title,mimeType)",
       );
       const result = projectCalendarEvent(
         await this.#apiJson(url, access.value, {
