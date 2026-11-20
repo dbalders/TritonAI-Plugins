@@ -2368,8 +2368,18 @@ describe("MicrosoftGraphProvider tools", () => {
       if (url.includes("/mailFolders/parent%2Fid%3Ffixture?")) {
         return jsonResponse({ id: "parent/id?fixture", parentFolderId: null });
       }
+      if (url.includes("/mailFolders/msgfolderroot?")) {
+        return jsonResponse({ id: "mailbox-root-id" });
+      }
+      // Graph's real shape: the mailbox root points at a hidden, self-parented store root.
       if (url.includes("/mailFolders/archive?")) {
-        return jsonResponse({ id: "opaque-archive-id", parentFolderId: null });
+        return jsonResponse({ id: "opaque-archive-id", parentFolderId: "mailbox-root-id" });
+      }
+      if (url.includes("/mailFolders/mailbox-root-id?")) {
+        return jsonResponse({ id: "mailbox-root-id", parentFolderId: "store-root-id" });
+      }
+      if (url.includes("/mailFolders/store-root-id?")) {
+        return jsonResponse({ id: "store-root-id", parentFolderId: "store-root-id" });
       }
       if (init?.method !== "POST") {
         return jsonResponse({
@@ -2461,24 +2471,33 @@ describe("MicrosoftGraphProvider tools", () => {
       "https://graph.microsoft.com/v1.0/me/mailFolders/recoverableitemsdeletions?%24select=id",
     );
     expect(graphCalls[5]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture?%24select=id%2CparentFolderId",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/msgfolderroot?%24select=id",
     );
     expect(graphCalls[6]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture/childFolders",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture?%24select=id%2CparentFolderId",
     );
     expect(graphCalls[7]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/deleteditems?%24select=id",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/parent%2Fid%3Ffixture/childFolders",
     );
     expect(graphCalls[8]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/recoverableitemsdeletions?%24select=id",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/deleteditems?%24select=id",
     );
     expect(graphCalls[9]?.url).toBe(
-      "https://graph.microsoft.com/v1.0/me/mailFolders/archive?%24select=id%2CparentFolderId",
+      "https://graph.microsoft.com/v1.0/me/mailFolders/recoverableitemsdeletions?%24select=id",
     );
     expect(graphCalls[10]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/msgfolderroot?%24select=id",
+    );
+    expect(graphCalls[11]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/archive?%24select=id%2CparentFolderId",
+    );
+    expect(graphCalls[12]?.url).toBe(
+      "https://graph.microsoft.com/v1.0/me/mailFolders/mailbox-root-id?%24select=id%2CparentFolderId",
+    );
+    expect(graphCalls[13]?.url).toBe(
       "https://graph.microsoft.com/v1.0/me/messages/message%2Fid%3Ffixture/move",
     );
-    expect(JSON.parse(String(graphCalls[10]?.init?.body))).toEqual({ destinationId: "archive" });
+    expect(JSON.parse(String(graphCalls[13]?.init?.body))).toEqual({ destinationId: "archive" });
   });
 
   it("rejects opaque deletion-folder IDs before moving a message", async () => {
